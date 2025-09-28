@@ -1,0 +1,26 @@
+{
+  "templates": {
+    "incisor_central": ["m","ma","da","mc","dc","bgb","lgb"],                       
+    "incisor_lateral": ["m","ma","da","mc","dc","bgb","lgb"],                       
+    "canine":          ["m","mc","dc","bgb","lgb"],                                 
+    "premolar_1":      ["b","l","m","mr","dr","mc","dc","bgb","lgb"],               
+    "premolar_2":      ["b","l","m","mr","dr","mc","dc","bgb","lgb"],               
+    "molar_1":         ["mb","db","ml","dl","bg","m","mr","dr","mc","dc","bgb","lgb"], 
+    "molar_2":         ["mb","db","ml","dl","bg","m","mr","dr","mc","dc","bgb","lgb"]  
+  },
+  "per_tooth": {
+    "t11": "incisor_central", "t12": "incisor_lateral", "t13": "canine",
+    "t14": "premolar_1",     "t15": "premolar_2",      "t16": "molar_1", "t17": "molar_2",
+
+    "t21": "incisor_central", "t22": "incisor_lateral", "t23": "canine",
+    "t24": "premolar_1",     "t25": "premolar_2",      "t26": "molar_1", "t27": "molar_2",
+
+    "t31": "incisor_central", "t32": "incisor_lateral", "t33": "canine",
+    "t34": "premolar_1",     "t35": "premolar_2",      "t36": "molar_1", "t37": "molar_2",
+
+    "t41": "incisor_central", "t42": "incisor_lateral", "t43": "canine",
+    "t44": "premolar_1",     "t45": "premolar_2",      "t46": "molar_1", "t47": "molar_2"
+  },
+  "L_max": 12,
+  "note": "不含智齿；若以后需要增减点，直接在 templates 内改即可。"
+}

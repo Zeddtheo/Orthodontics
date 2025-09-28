@@ -1,0 +1,15 @@
+{
+  "ckpt": "outputs/segmentation/module1_train/best.pt",
+  "split": "val",
+  "num_classes": 66,
+  "n_cases": 60,
+  "metrics": {
+    "macro_DSC": 0.24129565893641236,
+    "macro_SEN": 0.22071748917936976,
+    "macro_PPV": 0.30437656066584934,
+    "micro_DSC": 0.28631404554140427,
+    "micro_SEN": 0.24647898737459684,
+    "micro_PPV": 0.34150723075541184
+  },
+  "notes": "macro excludes class 0 (background), Hausdorff computed on centroids with subsampling."
+}

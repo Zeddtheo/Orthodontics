@@ -1,0 +1,3287 @@
+{
+    "@schema": "https://raw.githubusercontent.com/slicer/slicer/master/Modules/Loadable/Markups/Resources/Schema/markups-schema-v1.0.3.json#",
+    "markups": [
+        {
+            "type": "Fiducial",
+            "coordinateSystem": "LPS",
+            "coordinateUnits": "mm",
+            "locked": false,
+            "fixedNumberOfControlPoints": false,
+            "labelFormat": "%N-%d",
+            "lastUsedControlPointNumber": 275,
+            "measurements": [],
+            "display": {
+                "visibility": true,
+                "opacity": 1.0,
+                "color": [
+                    0.5000076295109483,
+                    0.5000076295109483,
+                    0.5000076295109483
+                ],
+                "selectedColor": [
+                    1.0,
+                    0.5000076295109483,
+                    0.5000076295109483
+                ],
+                "activeColor": [
+                    0.4,
+                    1.0,
+                    0.0
+                ],
+                "propertiesLabelVisibility": false,
+                "pointLabelsVisibility": true,
+                "textScale": 3.0,
+                "glyphType": "Sphere3D",
+                "glyphScale": 1.0,
+                "glyphSize": 5.0,
+                "useGlyphScale": true,
+                "sliceProjection": false,
+                "sliceProjectionUseFiducialColor": true,
+                "sliceProjectionOutlinedBehindSlicePlane": false,
+                "sliceProjectionColor": [
+                    1.0,
+                    1.0,
+                    1.0
+                ],
+                "sliceProjectionOpacity": 0.6,
+                "lineThickness": 0.2,
+                "lineColorFadingStart": 1.0,
+                "lineColorFadingEnd": 10.0,
+                "lineColorFadingSaturation": 1.0,
+                "lineColorFadingHueOffset": 0.0,
+                "handlesInteractive": false,
+                "translationHandleVisibility": true,
+                "rotationHandleVisibility": true,
+                "scaleHandleVisibility": false,
+                "interactionHandleScale": 3.0,
+                "snapMode": "toVisibleSurface"
+            },
+            "controlPoints": [
+                {
+                    "id": "1",
+                    "label": "17mb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        328.65814208984375,
+                        335.3912658691406,
+                        28.12621307373047
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "2",
+                    "label": "17db",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        328.9873657226563,
+                        339.1211853027344,
+                        30.82904624938965
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "3",
+                    "label": "17ml",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        334.98675537109375,
+                        337.4833068847656,
+                        28.6396484375
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "4",
+                    "label": "17dl",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        333.5003662109375,
+                        340.3976745605469,
+                        32.58537673950195
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "5",
+                    "label": "17m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        331.7958984375,
+                        336.82275390625,
+                        31.158462524414062
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "6",
+                    "label": "16mb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        332.6413269042969,
+                        325.1634521484375,
+                        22.864635467529297
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "7",
+                    "label": "16db",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        331.3202819824219,
+                        329.3006591796875,
+                        24.23604011535645
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "8",
+                    "label": "16ml",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        337.948974609375,
+                        328.6590576171875,
+                        23.08654022216797
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "9",
+                    "label": "16dl",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        336.5972290039063,
+                        332.7006530761719,
+                        25.47567367553711
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "10",
+                    "label": "16m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        335.05078125,
+                        327.9131469726563,
+                        25.552200317382816
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "11",
+                    "label": "15b",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        335.3566589355469,
+                        319.7854309082031,
+                        18.82381248474121
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "12",
+                    "label": "15l",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        340.8629150390625,
+                        320.9117736816406,
+                        20.52591323852539
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "13",
+                    "label": "15m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        337.96893310546875,
+                        320.2988891601563,
+                        21.765771865844727
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "14",
+                    "label": "14b",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        337.1055297851563,
+                        313.1145935058594,
+                        16.816495895385746
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "15",
+                    "label": "14l",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        343.7070617675781,
+                        313.5994567871094,
+                        18.443340301513672
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "16",
+                    "label": "14m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        340.2605895996094,
+                        313.02581787109375,
+                        19.942398071289062
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "17",
+                    "label": "13m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        340.44232177734375,
+                        303.3688659667969,
+                        15.324578285217283
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "18",
+                    "label": "12m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        345.8830871582031,
+                        298.9966125488281,
+                        15.889883995056152
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "19",
+                    "label": "11m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        353.1004943847656,
+                        296.36712646484375,
+                        12.3746976852417
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "20",
+                    "label": "21m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        362.56011962890625,
+                        295.3311462402344,
+                        12.346285820007324
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "21",
+                    "label": "22m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        370.3954772949219,
+                        300.6415100097656,
+                        12.379517555236816
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "22",
+                    "label": "23m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        377.9457702636719,
+                        304.8269348144531,
+                        13.270978927612305
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "23",
+                    "label": "24b",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        381.02545166015625,
+                        312.8660583496094,
+                        14.096969604492188
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "24",
+                    "label": "24l",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        374.6942138671875,
+                        315.3093872070313,
+                        14.848262786865236
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "25",
+                    "label": "24m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        377.5379943847656,
+                        314.1468200683594,
+                        17.374290466308597
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "26",
+                    "label": "25b",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        382.68609619140625,
+                        320.3844909667969,
+                        15.22975254058838
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "27",
+                    "label": "25l",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        377.0207214355469,
+                        323.3214111328125,
+                        16.5682373046875
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "28",
+                    "label": "25m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        380.0717468261719,
+                        322.0148010253906,
+                        18.2871208190918
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "29",
+                    "label": "26mb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        386.4142761230469,
+                        326.4006042480469,
+                        18.7773494720459
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "30",
+                    "label": "26db",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        387.859375,
+                        329.8181457519531,
+                        19.77256202697754
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "31",
+                    "label": "26ml",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        380.8728637695313,
+                        329.8994140625,
+                        18.9484806060791
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "32",
+                    "label": "26dl",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        383.2235412597656,
+                        334.1136779785156,
+                        21.39349174499512
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "33",
+                    "label": "26m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        384.3480529785156,
+                        328.9850769042969,
+                        21.677370071411136
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "34",
+                    "label": "27mb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        390.5147705078125,
+                        335.9221496582031,
+                        22.3986873626709
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "35",
+                    "label": "27db",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        391.1578674316406,
+                        341.2781982421875,
+                        25.49723052978516
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "36",
+                    "label": "27ml",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        384.2430725097656,
+                        339.164794921875,
+                        23.581581115722656
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "37",
+                    "label": "27dl",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        386.1977844238281,
+                        342.12353515625,
+                        26.79597663879395
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "38",
+                    "label": "27m",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        388.24609375,
+                        337.8620300292969,
+                        26.13909912109375
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "109",
+                    "label": "17mr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        333.1204833984375,
+                        333.3023376464844,
+                        28.890798568725582
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "110",
+                    "label": "17dr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        332.30877685546875,
+                        340.103271484375,
+                        32.815914154052734
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "111",
+                    "label": "17dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        332.21923828125,
+                        340.68707275390625,
+                        33.560401916503906
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "112",
+                    "label": "17mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        333.41632080078125,
+                        332.8679504394531,
+                        28.89957046508789
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "113",
+                    "label": "17lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        337.81658935546875,
+                        336.7516784667969,
+                        31.36013984680176
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "114",
+                    "label": "17bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        326.431396484375,
+                        333.6040344238281,
+                        33.75032043457031
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "115",
+                    "label": "17bg",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        329.0556335449219,
+                        336.84649658203125,
+                        29.873510360717773
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "116",
+                    "label": "16bg",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        331.9052429199219,
+                        327.49859619140625,
+                        24.340211868286133
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "117",
+                    "label": "16lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        340.5104064941406,
+                        330.023193359375,
+                        28.954421997070312
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "118",
+                    "label": "16bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        329.9997863769531,
+                        325.6844177246094,
+                        28.954008102416992
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "119",
+                    "label": "16mr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        336.8431701660156,
+                        324.2290954589844,
+                        23.715456008911133
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "120",
+                    "label": "16mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        337.20635986328125,
+                        323.6138610839844,
+                        24.22358131408691
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "121",
+                    "label": "16dr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        333.4206848144531,
+                        332.21185302734375,
+                        27.27366828918457
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "122",
+                    "label": "16dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        333.44580078125,
+                        332.5460205078125,
+                        28.431943893432617
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "123",
+                    "label": "15mr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        339.179443359375,
+                        317.91162109375,
+                        20.933494567871097
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "124",
+                    "label": "15dr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        337.666748046875,
+                        322.5619812011719,
+                        22.07438850402832
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "125",
+                    "label": "15dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        337.661376953125,
+                        323.3879699707031,
+                        23.446081161499023
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "126",
+                    "label": "15mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        339.545654296875,
+                        317.2890930175781,
+                        21.942235946655273
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "127",
+                    "label": "15lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        341.8219909667969,
+                        321.78533935546875,
+                        25.623950958251953
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "128",
+                    "label": "15bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        332.9956359863281,
+                        318.19140625,
+                        25.35581398010254
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "129",
+                    "label": "14lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        344.3965759277344,
+                        314.3915710449219,
+                        23.390859603881836
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "130",
+                    "label": "14mr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        341.45684814453125,
+                        310.4057312011719,
+                        20.00642967224121
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "131",
+                    "label": "14dr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        340.1559143066406,
+                        315.76123046875,
+                        19.78191375732422
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "132",
+                    "label": "14mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        341.7361145019531,
+                        310.06005859375,
+                        20.51949882507324
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "133",
+                    "label": "14dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        340.19854736328125,
+                        316.6117858886719,
+                        20.830585479736328
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "134",
+                    "label": "14bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        335.0418395996094,
+                        311.05548095703125,
+                        25.625640869140625
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "135",
+                    "label": "13lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        345.4085998535156,
+                        308.6980285644531,
+                        22.120691299438477
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "136",
+                    "label": "13bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        339.5761413574219,
+                        304.1067199707031,
+                        25.194746017456055
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "137",
+                    "label": "13dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        340.0430908203125,
+                        308.0109558105469,
+                        18.614482879638672
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "138",
+                    "label": "13mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        343.48779296875,
+                        301.229736328125,
+                        19.652355194091797
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "139",
+                    "label": "12bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        349.05181884765625,
+                        299.2633361816406,
+                        22.06606674194336
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "140",
+                    "label": "12ma",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        348.2778015136719,
+                        300.89111328125,
+                        15.418618202209473
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "141",
+                    "label": "12da",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        344.4687805175781,
+                        298.3430480957031,
+                        18.42650032043457
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "142",
+                    "label": "12bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        346.4734191894531,
+                        303.722412109375,
+                        21.720699310302734
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "143",
+                    "label": "12dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        344.24810791015625,
+                        298.6997985839844,
+                        20.64584732055664
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "144",
+                    "label": "12mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        350.1780090332031,
+                        302.91619873046875,
+                        17.58926773071289
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "145",
+                    "label": "11da",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        349.734619140625,
+                        297.5807800292969,
+                        12.990241050720217
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "146",
+                    "label": "11ma",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        356.91845703125,
+                        295.6148681640625,
+                        12.577040672302246
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "147",
+                    "label": "11lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        355.1529846191406,
+                        303.0185546875,
+                        20.31707763671875
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "148",
+                    "label": "11bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        353.62725830078125,
+                        296.7596740722656,
+                        23.034543991088867
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "149",
+                    "label": "11dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        349.00994873046875,
+                        299.2164611816406,
+                        16.293533325195312
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "150",
+                    "label": "11mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        357.745849609375,
+                        295.81622314453125,
+                        13.82408618927002
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "151",
+                    "label": "21bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        363.3132019042969,
+                        296.84063720703125,
+                        22.78137588500977
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "152",
+                    "label": "21da",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        365.9704895019531,
+                        296.496826171875,
+                        12.544913291931152
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "153",
+                    "label": "21ma",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        358.92718505859375,
+                        295.02667236328125,
+                        12.942745208740234
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "154",
+                    "label": "21lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        361.875,
+                        303.1112365722656,
+                        20.27731704711914
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "155",
+                    "label": "21dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        367.1913757324219,
+                        298.1107482910156,
+                        15.205028533935549
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "156",
+                    "label": "21mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        358.1742248535156,
+                        295.3500061035156,
+                        14.330655097961426
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "157",
+                    "label": "22da",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        372.4050598144531,
+                        302.806640625,
+                        13.77246379852295
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "158",
+                    "label": "22ma",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        367.91162109375,
+                        299.13763427734375,
+                        13.600521087646484
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "159",
+                    "label": "22lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        370.60986328125,
+                        300.2405700683594,
+                        22.066783905029297
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "160",
+                    "label": "22lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        366.9840698242187,
+                        305.5921936035156,
+                        19.924715042114254
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "161",
+                    "label": "22mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        367.2576904296875,
+                        298.9104919433594,
+                        14.639222145080566
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "162",
+                    "label": "22dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        372.8624877929687,
+                        303.9757080078125,
+                        15.45241928100586
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "163",
+                    "label": "23lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        377.62457275390625,
+                        304.314697265625,
+                        24.072677612304688
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "164",
+                    "label": "23lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        372.365234375,
+                        309.45416259765625,
+                        19.636051177978516
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "165",
+                    "label": "23dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        377.6779174804687,
+                        309.076416015625,
+                        16.423982620239258
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "166",
+                    "label": "23mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        375.20208740234375,
+                        302.03656005859375,
+                        17.61529541015625
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "167",
+                    "label": "24mr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        376.3074035644531,
+                        311.895751953125,
+                        16.781126022338867
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "168",
+                    "label": "24dr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        378.7554016113281,
+                        316.7713317871094,
+                        16.85878562927246
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "169",
+                    "label": "24dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        379.226318359375,
+                        317.533935546875,
+                        17.29631805419922
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "170",
+                    "label": "24mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        375.9200744628906,
+                        311.2264709472656,
+                        17.448945999145508
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "171",
+                    "label": "24bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        382.2819213867187,
+                        312.2674865722656,
+                        22.375022888183594
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "172",
+                    "label": "24lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        373.0446472167969,
+                        315.8822021484375,
+                        20.81548309326172
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "173",
+                    "label": "25mr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        378.4143676757813,
+                        319.4209899902344,
+                        17.474090576171875
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "174",
+                    "label": "25dr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        380.8817443847656,
+                        323.6734619140625,
+                        18.542709350585938
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "175",
+                    "label": "25dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        381.5123596191406,
+                        324.7106018066406,
+                        19.394994735717773
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "176",
+                    "label": "25mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        378.1041564941406,
+                        318.7007141113281,
+                        18.110971450805664
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "177",
+                    "label": "25bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        384.29632568359375,
+                        318.8750915527344,
+                        21.758888244628903
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "178",
+                    "label": "25lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        376.2122802734375,
+                        324.3598327636719,
+                        22.459245681762695
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "179",
+                    "label": "26bg",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        387.0939025878906,
+                        328.36822509765625,
+                        20.417469024658203
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "180",
+                    "label": "26bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        388.9915771484375,
+                        325.2923278808594,
+                        25.2371768951416
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "181",
+                    "label": "26lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        379.1116943359375,
+                        331.90228271484375,
+                        25.503005981445312
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "182",
+                    "label": "26mr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        382.6370239257813,
+                        325.185546875,
+                        19.43992042541504
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "183",
+                    "label": "26mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        382.4440002441406,
+                        324.6629333496094,
+                        19.422286987304688
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "184",
+                    "label": "26dr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        386.2734680175781,
+                        333.04217529296875,
+                        22.649024963378903
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "185",
+                    "label": "26dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        386.4940490722656,
+                        333.45068359375,
+                        23.634963989257812
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "186",
+                    "label": "27bg",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        390.6846008300781,
+                        338.41619873046875,
+                        25.10762405395508
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "187",
+                    "label": "27lgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        381.8943176269531,
+                        338.94677734375,
+                        28.130416870117188
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "188",
+                    "label": "27bgb",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        393.2170715332031,
+                        336.28570556640625,
+                        28.827438354492188
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "189",
+                    "label": "27dr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        388.02392578125,
+                        341.72283935546875,
+                        27.223024368286133
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "190",
+                    "label": "27dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        388.5452880859375,
+                        342.1658020019531,
+                        28.351152420043945
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "191",
+                    "label": "27mr",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        386.4592895507813,
+                        334.7774963378906,
+                        24.05353355407715
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "192",
+                    "label": "27mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        386.2255859375,
+                        333.8252258300781,
+                        24.147207260131836
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "226",
+                    "label": "12dc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        368.61627197265625,
+                        307.0911560058594,
+                        14.839255332946776
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                },
+                {
+                    "id": "227",
+                    "label": "12mc",
+                    "description": "",
+                    "associatedNodeID": "",
+                    "position": [
+                        364.1635437011719,
+                        301.8646545410156,
+                        14.507667541503906
+                    ],
+                    "orientation": [
+                        -1.0,
+                        -0.0,
+                        -0.0,
+                        -0.0,
+                        -1.0,
+                        -0.0,
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "selected": true,
+                    "locked": false,
+                    "visibility": true,
+                    "positionStatus": "defined"
+                }
+            ]
+        }
+    ]
+}
