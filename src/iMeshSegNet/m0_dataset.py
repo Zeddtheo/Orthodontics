@@ -294,11 +294,20 @@ def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple
 
 
 def load_split_lists(split_path: Path) -> Tuple[List[str], List[str]]:
+    """Load data splits, ensuring paths are relative to the project root."""
     with open(split_path, "r", encoding="utf-8") as f:
         split = json.load(f)
 
-    train_files = [str(Path(p)) for p in split.get("train", [])]
-    val_files = [str(Path(p)) for p in split.get("val", [])]
+    project_root = Path(__file__).parent.parent.parent 
+    dataset_root = project_root / "datasets" / "segmentation_dataset"
+
+    def _resolve_path(p: str) -> str:
+        # Extract filename and reconstruct path relative to the current project structure
+        filename = Path(p).name
+        return str(dataset_root / filename)
+
+    train_files = [_resolve_path(p) for p in split.get("train", [])]
+    val_files = [_resolve_path(p) for p in split.get("val", [])]
     return train_files, val_files
 
 
