@@ -10,24 +10,22 @@ import torch.nn.functional as F
 # Small utils
 # ------------------------------------------------------------
 def knn_graph(pos: torch.Tensor, k: int) -> torch.Tensor:
-    """Build k-NN graph indices for each sample in a batch.
+    """Build k-NN graph with explicit self-loop for each center.
     Args:
         pos: (B, 3, N) positions in *the unified arch coordinate frame*.
-        k:   number of neighbors.
+        k:   number of neighbors (including self).
     Returns:
         idx: (B, N, k) neighbor indices for each center i.
     """
     B, C, N = pos.shape
     assert C == 3, "pos must be (B,3,N)"
-    # pairwise distance: (B, N, N)
-    # NOTE: for large N you may replace with faiss/approx or batched chunking
+    if k <= 0:
+        raise ValueError("k must be positive for knn_graph")
     dists = torch.cdist(pos.transpose(1, 2), pos.transpose(1, 2), p=2)  # (B,N,N)
-    # exclude self by taking topk on negative distance or mask diag
-    # take smallest k+1 then drop self
-    knn_d, knn_i = torch.topk(dists, k=k + 1, dim=-1, largest=False, sorted=False)
-    # drop the self index (distance 0)
-    idx = knn_i[..., 1:]
-    return idx  # (B,N,k)
+    knn_i = torch.topk(dists, k=k, dim=-1, largest=False, sorted=False).indices  # (B,N,k)
+    self_idx = torch.arange(N, device=pos.device).view(1, N, 1)
+    knn_i[..., 0:1] = self_idx  # ensure self-loop present
+    return knn_i
 
 
 def index_points(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
@@ -205,18 +203,20 @@ class GLMSAP(nn.Module):
 class iMeshSegNet(nn.Module):
     def __init__(
         self,
-        num_classes: int = 66,        # dataset-specific label count (0-65)
+        num_classes: int = 15,        # 背景 + 14 颗上颌牙
         glm_impl: str = "edgeconv",   # 'edgeconv' | 'sap'
         k_short: int = 6,
         k_long: int = 12,
-        with_dropout: bool = True,
-        dropout_p: float = 0.5,
+        with_dropout: bool = False,
+        dropout_p: float = 0.1,
+        use_feature_stn: bool = False,
     ):
         super().__init__()
         self.num_classes = num_classes
         self.glm_impl = glm_impl
         self.with_dropout = with_dropout
         self.dropout_p = dropout_p
+        self.use_feature_stn = use_feature_stn
 
         # MLP-1 (feature lifting to 64)
         self.mlp1_conv1 = nn.Conv1d(15, 64, 1)
@@ -225,7 +225,7 @@ class iMeshSegNet(nn.Module):
         self.mlp1_bn2 = nn.BatchNorm1d(64)
 
         # Feature transform (STNkd on 64-d)
-        self.fstn = STNkd(k=64)
+        self.fstn = STNkd(k=64) if self.use_feature_stn else None
 
         # GLM-1
         if glm_impl == "edgeconv":
@@ -255,15 +255,20 @@ class iMeshSegNet(nn.Module):
         )
 
         # MLP-3 (point-wise classifier)
+        def _make_dropout() -> nn.Module:
+            if self.with_dropout and self.dropout_p > 0:
+                return nn.Dropout(self.dropout_p)
+            return nn.Identity()
+
         self.classifier = nn.Sequential(
             nn.Conv1d(128 + 128, 256, 1),  # concat(globals, last local=glm2)
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout_p) if with_dropout else nn.Identity(),
+            _make_dropout(),
             nn.Conv1d(256, 128, 1),
             nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout_p) if with_dropout else nn.Identity(),
+            _make_dropout(),
             nn.Conv1d(128, num_classes, 1),
         )
 
@@ -289,10 +294,10 @@ class iMeshSegNet(nn.Module):
         x = F.relu(self.mlp1_bn2(self.mlp1_conv2(x)))   # (B,64,N)
 
         # ----- Feature Transform -----
-        x_t = x.transpose(2, 1)                         # (B,N,64)
-        trans = self.fstn(x)                            # (B,64,64)
-        x_t = torch.bmm(x_t, trans)                     # (B,N,64)
-        x = x_t.transpose(2, 1)                         # (B,64,N)
+        if self.fstn is not None:
+            x_t = x.transpose(2, 1)                     # (B,N,64)
+            trans = self.fstn(x)                        # (B,64,64)
+            x = torch.bmm(x_t, trans).transpose(2, 1)   # (B,64,N)
         g1 = torch.max(x, dim=-1)[0]                    # (B,64)
 
         # ----- GLM-1 -----

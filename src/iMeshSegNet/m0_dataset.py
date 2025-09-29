@@ -31,10 +31,8 @@ UNIT_SCALE_FACTOR = 1000.0   # convert m -> mm
 
 # 恒牙 FDI 编码顺序（背景沿用 0）
 FDI_LABELS: Tuple[int, ...] = (
-    11, 12, 13, 14, 15, 16, 17, 18,
-    21, 22, 23, 24, 25, 26, 27, 28,
-    31, 32, 33, 34, 35, 36, 37, 38,
-    41, 42, 43, 44, 45, 46, 47, 48,
+    11, 12, 13, 14, 15, 16, 17,
+    21, 22, 23, 24, 25, 26, 27,
 )
 
 LABEL_REMAP: Dict[int, int] = {0: 0}
@@ -44,7 +42,7 @@ for idx, tooth in enumerate(FDI_LABELS, start=1):
 # 乳牙或未定义标签：默认为背景（或后续可按需改成 ignore_index）
 LABEL_REMAP[65] = 0
 
-# 供各模块共享的类别数
+# 供各模块共享的类别数 (背景 + 14 类牙)
 SEG_NUM_CLASSES = 1 + len(FDI_LABELS)
 
 
@@ -85,6 +83,56 @@ def normalize_mesh_units(mesh: pv.PolyData) -> Tuple[pv.PolyData, float, float, 
         diag_after = diag_before
     return mesh, scale, diag_before, diag_after
 
+
+
+def _rotation_matrix_from_euler(angles: np.ndarray) -> np.ndarray:
+    """Return rotation matrix for ZYX Euler angles."""
+    ax, ay, az = angles.astype(np.float64)
+    sx, cx = np.sin(ax), np.cos(ax)
+    sy, cy = np.sin(ay), np.cos(ay)
+    sz, cz = np.sin(az), np.cos(az)
+
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]], dtype=np.float64)
+    ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=np.float64)
+    rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    rot = rz @ ry @ rx
+    return rot.astype(np.float32)
+
+
+def apply_stage1_augmentation(points: np.ndarray, *, mirror: bool, translate_limit_mm: float = 10.0,
+                               scale_range: Tuple[float, float] = (0.8, 1.2)) -> np.ndarray:
+    """Apply paper-aligned augmentation: optional mirror + random rotation/scale/translation."""
+    out = np.asarray(points, dtype=np.float32).copy()
+    if mirror:
+        out[:, 0] *= -1.0
+
+    angles = np.random.uniform(-np.pi, np.pi, size=3)
+    rot = _rotation_matrix_from_euler(angles)
+    scale = float(np.random.uniform(scale_range[0], scale_range[1]))
+    translation = np.random.uniform(-translate_limit_mm, translate_limit_mm, size=3).astype(np.float32)
+
+    out = (out @ rot.T) * scale
+    out += translation
+    return out.astype(np.float32, copy=False)
+
+
+def filter_upper_jaw(files: Sequence[str]) -> List[str]:
+    """Keep only upper jaw cases (suffix `_U`)."""
+    filtered: List[str] = []
+    for path_str in files:
+        stem = Path(path_str).stem.upper()
+        if stem.endswith('_U'):
+            filtered.append(str(Path(path_str)))
+    return filtered
+
+
+def compute_diag_from_points(points: np.ndarray) -> float:
+    if points.size == 0:
+        return 1.0
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    diag = float(np.linalg.norm(maxs - mins))
+    return max(diag, 1e-6)
 # =============================================================================
 # Part 0: 通用工具
 # =============================================================================
@@ -215,29 +263,33 @@ def load_arch_frames(path: Optional[Path]) -> Dict[str, torch.Tensor]:
     return frames
 
 
-def segmentation_collate(batch: List[Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]]):
+def segmentation_collate(batch: List[Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]]):
     batch_data, ys = zip(*batch)
-    xs, poss = zip(*batch_data)
+    xs, pos_norms, pos_mms, pos_scales = zip(*batch_data)
     x = torch.stack(xs, dim=0)
-    pos = torch.stack(poss, dim=0)
+    pos_norm = torch.stack(pos_norms, dim=0)
+    pos_mm = torch.stack(pos_mms, dim=0)
+    pos_scale = torch.stack(pos_scales, dim=0)
     y = torch.stack(ys, dim=0)
-    return (x, pos), y
+    return (x, pos_norm, pos_mm, pos_scale), y
 
 
 @dataclass
 class DataConfig:
-    split_path: Path = SEG_ROOT / "module0" / "dataset_split.json"
+    split_path: Path = SEG_ROOT / "module0" / "dataset_split_fixed.json"
     stats_path: Path = SEG_ROOT / "module0" / "stats.npz"
     arch_frames_path: Optional[Path] = None
     batch_size: int = 2
     num_workers: int = 0
     persistent_workers: bool = True
-    target_cells: int = 25000
-    sample_cells: int = 8192
+    target_cells: int = 10000
+    sample_cells: int = 9000
     augment: bool = True
     pin_memory: bool = True
     drop_last: bool = False
     shuffle: bool = True
+    augment_original_copies: int = 20
+    augment_flipped_copies: int = 20
 
 
 # =============================================================================
@@ -306,8 +358,8 @@ def load_split_lists(split_path: Path) -> Tuple[List[str], List[str]]:
         filename = Path(p).name
         return str(dataset_root / filename)
 
-    train_files = [_resolve_path(p) for p in split.get("train", [])]
-    val_files = [_resolve_path(p) for p in split.get("val", [])]
+    train_files = filter_upper_jaw([_resolve_path(p) for p in split.get("train", [])])
+    val_files = filter_upper_jaw([_resolve_path(p) for p in split.get("val", [])])
     return train_files, val_files
 
 
@@ -345,14 +397,23 @@ def prepare_module0(
     root_dir = root_dir.resolve()
     print(f"[Module0] 数据根目录: {root_dir}")
 
-    train_files, val_files = validate_and_split_by_subject(
+    train_files_all, val_files_all = validate_and_split_by_subject(
         root_dir,
         config.split_path,
         test_size,
         random_state,
         force=force,
     )
-    print(f"[Module0] 训练文件数量: {len(train_files)} | 验证文件数量: {len(val_files)}")
+
+    train_files = filter_upper_jaw(train_files_all)
+    val_files = filter_upper_jaw(val_files_all)
+
+    if not train_files:
+        raise ValueError('No upper jaw training files available after filtering. Check dataset split.')
+
+    print(
+        f"[Module0] 训练文件数量(上颌): {len(train_files)} | 验证文件数量(上颌): {len(val_files)}"
+    )
     print(f"[Module0] 划分保存至: {config.split_path.resolve()}")
 
     if skip_stats:
@@ -388,35 +449,56 @@ class SegmentationDataset(Dataset):
         target_cells: int,
         sample_cells: int,
         augment: bool,
+        augment_original_copies: int,
+        augment_flipped_copies: int,
     ):
-        self.file_paths = file_paths
-        self.mean = torch.from_numpy(mean).float()
-        self.std = torch.from_numpy(std).float()
+        upper_files = filter_upper_jaw(file_paths)
+        if not upper_files:
+            raise ValueError("No upper jaw files available for SegmentationDataset.")
+        self.file_paths = upper_files
+        self.base_len = len(self.file_paths)
+        self.mean_np = mean.astype(np.float32)
+        self.std_np = np.clip(std.astype(np.float32), 1e-6, None)
+        self.mean = torch.from_numpy(self.mean_np)
+        self.std = torch.from_numpy(self.std_np)
         self.arch_frames = arch_frames
         self.target_cells = target_cells
         self.sample_cells = sample_cells
         self.augment = augment
+
+        if self.augment:
+            self.repeat_original = max(int(augment_original_copies), 1)
+            self.repeat_flipped = max(int(augment_flipped_copies), 0)
+            self.repeat_factor = self.repeat_original + self.repeat_flipped
+        else:
+            self.repeat_original = 1
+            self.repeat_flipped = 0
+            self.repeat_factor = 1
+
+        if self.repeat_factor <= 0:
+            self.repeat_factor = 1
+
         self._unit_warned = False
 
     def __len__(self) -> int:
-        return len(self.file_paths)
+        return len(self.file_paths) * self.repeat_factor
 
-    def _lookup_arch_frame(self, stem: str) -> Optional[torch.Tensor]:
-        if stem in self.arch_frames:
-            return self.arch_frames[stem]
-        base = stem.split("_")[0]
-        return self.arch_frames.get(base)
+    def _resolve_index(self, idx: int) -> Tuple[int, int]:
+        base = idx // self.repeat_factor
+        variant = idx % self.repeat_factor
+        return base, variant
 
-    def __getitem__(self, idx: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
-        file_path = Path(self.file_paths[idx])
+    def __getitem__(self, idx: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
+        base_idx, variant_idx = self._resolve_index(idx)
+        file_path = Path(self.file_paths[base_idx])
         mesh = pv.read(str(file_path))
-        
+
         if not isinstance(mesh, pv.PolyData):
-            if hasattr(mesh, 'cast_to_polydata'):
+            if hasattr(mesh, "cast_to_polydata"):
                 mesh = mesh.cast_to_polydata()
             else:
                 raise RuntimeError(f"File {file_path} is not a valid PolyData mesh.")
-                
+
         mesh.points -= mesh.center
 
         result = find_label_array(mesh)
@@ -436,13 +518,13 @@ class SegmentationDataset(Dataset):
 
         mesh = mesh.triangulate()
 
+        apply_mirror = False
         if self.augment:
-            if random.random() > 0.5:
-                points = np.array(mesh.points)
-                points[:, 0] *= -1
-                mesh.points = points
+            apply_mirror = variant_idx >= self.repeat_original and self.repeat_flipped > 0
+            augmented = apply_stage1_augmentation(np.asarray(mesh.points), mirror=apply_mirror)
+            mesh.points = augmented
+            if apply_mirror:
                 mesh = mesh.flip_faces()
-            mesh.points = random_transform(np.array(mesh.points))
 
         if mesh.n_cells > self.target_cells:
             reduction = 1.0 - (self.target_cells / mesh.n_cells)
@@ -452,35 +534,37 @@ class SegmentationDataset(Dataset):
                 mesh = decimated
                 labels = labels[original_ids]
 
+        if mesh.n_cells == 0:
+            raise RuntimeError(f"File {file_path} has no cells after preprocessing.")
+
         features = extract_features(mesh).astype(np.float32)
+        pos_mm_all = mesh.cell_centers().points.astype(np.float32)
 
-        pos_raw = mesh.cell_centers().points.astype(np.float32)
-        scale_pos = diag_after if diag_after > 1e-6 else 1.0
-        pos_raw = pos_raw / scale_pos
+        diag_mm = compute_diag_from_points(pos_mm_all)
+        if diag_mm < 1e-6:
+            diag_mm = 1.0
 
-        if features.shape[0] > self.sample_cells:
-            indices = np.random.permutation(features.shape[0])[: self.sample_cells]
-            features = features[indices]
-            pos_raw = pos_raw[indices]
-            labels = labels[indices]
+        total_cells = features.shape[0]
+        target_n = self.sample_cells
+        if total_cells <= 0:
+            raise RuntimeError(f"File {file_path} produced empty feature set.")
+        indices = np.random.choice(total_cells, size=target_n, replace=total_cells < target_n)
 
-        features_tensor = torch.from_numpy(features)
-        features_tensor = (features_tensor - self.mean) / self.std
-        # 修复: 转置为 (15, N) 格式以匹配训练脚本期望
-        features_tensor = features_tensor.transpose(0, 1).contiguous()  # (15, N)
-        
-        pos_tensor = torch.from_numpy(pos_raw)
-        frame = self._lookup_arch_frame(file_path.stem)
-        if frame is not None:
-            pos_tensor = (frame @ pos_tensor.T).T
-        # 修复: 转置为 (3, N) 格式以匹配训练脚本期望
-        pos_tensor = pos_tensor.transpose(0, 1).contiguous()  # (3, N)
+        features = features[indices]
+        pos_mm = pos_mm_all[indices]
+        labels = labels[indices]
 
+        pos_norm = pos_mm / diag_mm
+
+        features = (features - self.mean_np) / self.std_np
+
+        features_tensor = torch.from_numpy(features).transpose(0, 1).contiguous()
+        pos_tensor = torch.from_numpy(pos_norm).transpose(0, 1).contiguous()
+        pos_mm_tensor = torch.from_numpy(pos_mm).contiguous()
+        pos_scale_tensor = torch.tensor([diag_mm], dtype=torch.float32)
         labels_tensor = torch.from_numpy(labels.astype(np.int64))
 
-        # 修复: 返回训练脚本期望的格式 (x, pos), y
-        return (features_tensor, pos_tensor), labels_tensor
-
+        return (features_tensor, pos_tensor, pos_mm_tensor, pos_scale_tensor), labels_tensor
 
 def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
     train_files, val_files = load_split_lists(config.split_path)
@@ -496,6 +580,8 @@ def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         target_cells=config.target_cells,
         sample_cells=config.sample_cells,
         augment=config.augment,
+        augment_original_copies=config.augment_original_copies,
+        augment_flipped_copies=config.augment_flipped_copies,
     )
 
     val_dataset = SegmentationDataset(
@@ -506,6 +592,8 @@ def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         target_cells=config.target_cells,
         sample_cells=config.sample_cells,
         augment=False,
+        augment_original_copies=1,
+        augment_flipped_copies=0,
     )
 
     train_loader = DataLoader(
