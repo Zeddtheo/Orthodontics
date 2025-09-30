@@ -498,8 +498,9 @@ def main() -> None:
     model = iMeshSegNet(
         num_classes=config.num_classes,
         glm_impl="edgeconv",
-        k_short=6,
-        k_long=12,
+        k_short=6,              # 论文：短距离邻域
+        k_long=12,              # 论文：长距离邻域
+        use_feature_stn=True,   # 论文要求：启用 64×64 特征变换
     ).to(device)
 
     optimizer = Adam(

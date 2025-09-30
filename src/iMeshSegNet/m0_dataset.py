@@ -101,14 +101,26 @@ def _rotation_matrix_from_euler(angles: np.ndarray) -> np.ndarray:
 
 def apply_stage1_augmentation(points: np.ndarray, *, mirror: bool, translate_limit_mm: float = 10.0,
                                scale_range: Tuple[float, float] = (0.8, 1.2)) -> np.ndarray:
-    """Apply paper-aligned augmentation: optional mirror + random rotation/scale/translation."""
+    """Apply paper-aligned augmentation: optional mirror + random rotation/scale/translation.
+    
+    论文要求：
+    - 平移范围：±10 mm
+    - 旋转范围：[-π, π] 每个轴
+    - 缩放范围：0.8–1.2
+    不再使用额外的 jitter，以完全匹配论文设置
+    """
     out = np.asarray(points, dtype=np.float32).copy()
     if mirror:
         out[:, 0] *= -1.0
 
+    # 论文要求：每个轴独立随机旋转 [-π, π]
     angles = np.random.uniform(-np.pi, np.pi, size=3)
     rot = _rotation_matrix_from_euler(angles)
+    
+    # 论文要求：随机缩放 [0.8, 1.2]
     scale = float(np.random.uniform(scale_range[0], scale_range[1]))
+    
+    # 论文要求：随机平移 ±10 mm
     translation = np.random.uniform(-translate_limit_mm, translate_limit_mm, size=3).astype(np.float32)
 
     out = (out @ rot.T) * scale
@@ -282,14 +294,14 @@ class DataConfig:
     batch_size: int = 2
     num_workers: int = 0
     persistent_workers: bool = True
-    target_cells: int = 10000
-    sample_cells: int = 9000
+    target_cells: int = 10000  # 论文要求：下采样至 ~10k 单元
+    sample_cells: int = 9000   # 论文要求：训练时随机采样 9k 单元
     augment: bool = True
     pin_memory: bool = True
     drop_last: bool = False
     shuffle: bool = True
-    augment_original_copies: int = 20
-    augment_flipped_copies: int = 20
+    augment_original_copies: int = 20    # 论文：原始样本生成 20 个增强副本
+    augment_flipped_copies: int = 20     # 论文：镜像样本生成 20 个增强副本
 
 
 # =============================================================================

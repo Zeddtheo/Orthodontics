@@ -205,11 +205,11 @@ class iMeshSegNet(nn.Module):
         self,
         num_classes: int = 15,        # 背景 + 14 颗上颌牙
         glm_impl: str = "edgeconv",   # 'edgeconv' | 'sap'
-        k_short: int = 6,
-        k_long: int = 12,
+        k_short: int = 6,             # 论文：短距离邻域 k=6
+        k_long: int = 12,             # 论文：长距离邻域 k=12
         with_dropout: bool = False,
         dropout_p: float = 0.1,
-        use_feature_stn: bool = False,
+        use_feature_stn: bool = True,  # 论文要求：启用 64×64 特征变换
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -233,35 +233,41 @@ class iMeshSegNet(nn.Module):
         else:
             self.glm1 = GLMSAP(64, 128)
 
-        # MLP-2
-        self.mlp2_conv1 = nn.Conv1d(128, 128, 1)
-        self.mlp2_bn1 = nn.BatchNorm1d(128)
-        self.mlp2_conv2 = nn.Conv1d(128, 128, 1)
+        # MLP-2 (论文要求：64→128→512 三层)
+        self.mlp2_conv1 = nn.Conv1d(128, 64, 1)
+        self.mlp2_bn1 = nn.BatchNorm1d(64)
+        self.mlp2_conv2 = nn.Conv1d(64, 128, 1)
         self.mlp2_bn2 = nn.BatchNorm1d(128)
+        self.mlp2_conv3 = nn.Conv1d(128, 512, 1)
+        self.mlp2_bn3 = nn.BatchNorm1d(512)
 
-        # GLM-2
+        # GLM-2 (输入通道从 128 改为 512)
         if glm_impl == "edgeconv":
-            self.glm2 = GLMEdgeConv(128, 128, k_short=k_short, k_long=k_long)  # -> 128
+            self.glm2 = GLMEdgeConv(512, 512, k_short=k_short, k_long=k_long)  # -> 512
         else:
-            self.glm2 = GLMSAP(128, 128)
+            self.glm2 = GLMSAP(512, 512)
 
         # Dense fusion: concat pooled features from stages + per-point feat
-        fusion_in = 64 + 128 + 128 + 128  # g1+g_glm1+g_mlp2+g_glm2
+        # 论文：g1(64) + g_glm1(128) + g_mlp2(512) + g_glm2(512) = 1216
+        fusion_in = 64 + 128 + 512 + 512
         self.fuse_fc = nn.Sequential(
-            nn.Linear(fusion_in, 256),
+            nn.Linear(fusion_in, 512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 256),
             nn.ReLU(inplace=True),
             nn.Linear(256, 128),
             nn.ReLU(inplace=True),
         )
 
         # MLP-3 (point-wise classifier)
+        # 论文：拼接全局特征(128) + 局部特征(glm2=512) = 640
         def _make_dropout() -> nn.Module:
             if self.with_dropout and self.dropout_p > 0:
                 return nn.Dropout(self.dropout_p)
             return nn.Identity()
 
         self.classifier = nn.Sequential(
-            nn.Conv1d(128 + 128, 256, 1),  # concat(globals, last local=glm2)
+            nn.Conv1d(128 + 512, 256, 1),  # concat(globals=128, last local=glm2=512)
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             _make_dropout(),
@@ -308,25 +314,26 @@ class iMeshSegNet(nn.Module):
             y1 = self.glm1(x, a_s, a_l)
         g2 = torch.max(y1, dim=-1)[0]                   # (B,128)
 
-        # ----- MLP-2 -----
-        y2 = F.relu(self.mlp2_bn1(self.mlp2_conv1(y1))) # (B,128,N)
+        # ----- MLP-2 (论文：三层 64→128→512) -----
+        y2 = F.relu(self.mlp2_bn1(self.mlp2_conv1(y1))) # (B,64,N)
         y2 = F.relu(self.mlp2_bn2(self.mlp2_conv2(y2))) # (B,128,N)
-        g3 = torch.max(y2, dim=-1)[0]                   # (B,128)
+        y2 = F.relu(self.mlp2_bn3(self.mlp2_conv3(y2))) # (B,512,N)
+        g3 = torch.max(y2, dim=-1)[0]                   # (B,512)
 
         # ----- GLM-2 -----
         if self.glm_impl == "edgeconv":
-            y3 = self.glm2(y2, pos)                     # (B,128,N)
+            y3 = self.glm2(y2, pos)                     # (B,512,N)
         else:
             y3 = self.glm2(y2, a_s, a_l)
-        g4 = torch.max(y3, dim=-1)[0]                   # (B,128)
+        g4 = torch.max(y3, dim=-1)[0]                   # (B,512)
 
         # ----- Dense Fusion (global) -----
-        g = torch.cat([g1, g2, g3, g4], dim=1)          # (B,448)
+        g = torch.cat([g1, g2, g3, g4], dim=1)          # (B,1216)
         g = self.fuse_fc(g)                              # (B,128)
         g = g.unsqueeze(-1).repeat(1, 1, N)             # (B,128,N)
 
         # ----- Classifier (point-wise) -----
-        feat = torch.cat([y3, g], dim=1)                # (B,128+128,N)
+        feat = torch.cat([y3, g], dim=1)                # (B,512+128,N)
         logits = self.classifier(feat)                  # (B,num_classes,N)
         return logits
 
