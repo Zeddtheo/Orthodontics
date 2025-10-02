@@ -20,6 +20,13 @@ from torch.utils.data import DataLoader, Dataset
 
 SEG_ROOT = Path("outputs/segmentation")
 
+DECIM_CACHE = SEG_ROOT / "module0" / "cache_decimated"
+DECIM_CACHE.mkdir(parents=True, exist_ok=True)
+
+
+def _decim_cache_path(src: Path, target_cells: int) -> Path:
+    return DECIM_CACHE / f"{src.stem}.c{target_cells}.vtp"
+
 # 自动单位归一控制：当包围盒对角线小于 1（推测单位为米）时放大到毫米
 UNIT_SCALE_THRESHOLD = 1.0  # if bounding-box diag < 1 (likely metres), rescale to mm
 UNIT_SCALE_FACTOR = 1000.0   # convert m -> mm
@@ -72,15 +79,10 @@ def _estimate_diag(mesh: pv.PolyData) -> float:
 
 
 def normalize_mesh_units(mesh: pv.PolyData) -> Tuple[pv.PolyData, float, float, float]:
-    """Ensure mesh coordinates are approximately in millimetres."""
+    """Pass-through function, as unit normalization is now handled externally or assumed correct."""
     diag_before = _estimate_diag(mesh)
     scale = 1.0
-    if 0.0 < diag_before < UNIT_SCALE_THRESHOLD:
-        mesh.points *= UNIT_SCALE_FACTOR
-        scale = UNIT_SCALE_FACTOR
-        diag_after = diag_before * UNIT_SCALE_FACTOR
-    else:
-        diag_after = diag_before
+    diag_after = diag_before
     return mesh, scale, diag_before, diag_after
 
 
@@ -309,6 +311,7 @@ class DataConfig:
 # =============================================================================
 
 
+
 def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple[np.ndarray, np.ndarray]:
     if not file_paths:
         raise ValueError("Training file list is empty; cannot compute statistics.")
@@ -319,24 +322,49 @@ def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple
 
     for idx, path_str in enumerate(file_paths, 1):
         file_path = Path(path_str)
+        cache_path = _decim_cache_path(file_path, target_cells)
+        cache_exists = cache_path.exists()
+        source_path = cache_path if cache_exists else file_path
         try:
-            mesh = pv.read(str(file_path))
+            mesh = pv.read(str(source_path))
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Failed to read mesh: {file_path}") from exc
+            raise RuntimeError(f"Failed to read mesh: {source_path}") from exc
 
         if not isinstance(mesh, pv.PolyData):
             if hasattr(mesh, 'cast_to_polydata'):
                 mesh = mesh.cast_to_polydata()
             else:
                 continue  # Skip non-PolyData files
-                
+
         mesh.points -= mesh.center
         mesh, _, _, _ = normalize_mesh_units(mesh)
         mesh = mesh.triangulate()
 
-        if mesh.n_cells > target_cells:
+        labels: Optional[np.ndarray] = None
+        if not cache_exists:
+            result = find_label_array(mesh)
+            if result is not None:
+                _, raw_labels = result
+                labels = remap_segmentation_labels(np.asarray(raw_labels))
+
+        if (not cache_exists) and mesh.n_cells > target_cells:
             reduction = 1.0 - (target_cells / float(mesh.n_cells))
-            mesh = mesh.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
+            decimated = mesh.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
+            original_ids = decimated.cell_data.get("vtkOriginalCellIds")
+            if original_ids is not None and len(original_ids) == decimated.n_cells:
+                mesh = decimated
+                if labels is not None:
+                    labels = labels[original_ids]
+            else:
+                mesh = decimated
+                labels = None
+
+        if not cache_exists and labels is not None:
+            mesh.cell_data["Label"] = labels.astype(np.int64, copy=False)
+            try:
+                mesh.save(cache_path, binary=True)
+            except Exception:
+                pass
 
         features = extract_features(mesh).astype(np.float64)
 
@@ -355,8 +383,6 @@ def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple
     std = np.sqrt(variance)
 
     return mean.astype(np.float32), std.astype(np.float32)
-
-
 def load_split_lists(split_path: Path) -> Tuple[List[str], List[str]]:
     """Load data splits, ensuring paths are relative to the project root."""
     with open(split_path, "r", encoding="utf-8") as f:
@@ -444,6 +470,14 @@ def prepare_module0(
     config.stats_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(config.stats_path, mean=mean, std=std)
     print(f"[Module0] 统计文件已写入: {config.stats_path.resolve()}")
+    meta = {
+        "target_cells": int(config.target_cells),
+        "feature_dim": 15,
+        "unit_scaling": False,
+    }
+    meta_path = config.stats_path.with_suffix(".meta.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
 
 
 # =============================================================================
@@ -503,21 +537,30 @@ class SegmentationDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
         base_idx, variant_idx = self._resolve_index(idx)
         file_path = Path(self.file_paths[base_idx])
-        mesh = pv.read(str(file_path))
+
+        cache_path = _decim_cache_path(file_path, self.target_cells)
+        cache_exists = cache_path.exists()
+        source_path = cache_path if cache_exists else file_path
+        mesh = pv.read(str(source_path))
 
         if not isinstance(mesh, pv.PolyData):
             if hasattr(mesh, "cast_to_polydata"):
                 mesh = mesh.cast_to_polydata()
             else:
-                raise RuntimeError(f"File {file_path} is not a valid PolyData mesh.")
+                raise RuntimeError(f"File {source_path} is not a valid PolyData mesh.")
 
         mesh.points -= mesh.center
 
         result = find_label_array(mesh)
         if result is None:
+            if cache_exists:
+                raise RuntimeError(f"Cached file missing Label: {cache_path}")
             raise RuntimeError(f"File {file_path} is missing a label array.")
-        _, raw_labels = result
-        labels = remap_segmentation_labels(np.asarray(raw_labels))
+        _, label_values = result
+        if cache_exists:
+            labels = np.asarray(label_values, dtype=np.int64)
+        else:
+            labels = remap_segmentation_labels(np.asarray(label_values))
 
         mesh, scale_factor, diag_before, diag_after = normalize_mesh_units(mesh)
         if scale_factor != 1.0 and not self._unit_warned:
@@ -533,18 +576,26 @@ class SegmentationDataset(Dataset):
         apply_mirror = False
         if self.augment:
             apply_mirror = variant_idx >= self.repeat_original and self.repeat_flipped > 0
-            augmented = apply_stage1_augmentation(np.asarray(mesh.points), mirror=apply_mirror)
-            mesh.points = augmented
-            if apply_mirror:
-                mesh = mesh.flip_faces()
 
-        if mesh.n_cells > self.target_cells:
+        if (not cache_exists) and mesh.n_cells > self.target_cells:
             reduction = 1.0 - (self.target_cells / mesh.n_cells)
             decimated = mesh.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
             original_ids = decimated.cell_data.get("vtkOriginalCellIds")
             if original_ids is not None and len(original_ids) == decimated.n_cells:
                 mesh = decimated
                 labels = labels[original_ids]
+
+        if not cache_exists:
+            mesh.cell_data["Label"] = labels.astype(np.int64, copy=False)
+            try:
+                mesh.save(cache_path, binary=True)
+            except Exception:
+                pass
+
+        if self.augment:
+            augmented = apply_stage1_augmentation(np.asarray(mesh.points), mirror=apply_mirror)
+            mesh.points = augmented
+            # 不再 flip_faces；法向会在 extract_features() 中重算
 
         if mesh.n_cells == 0:
             raise RuntimeError(f"File {file_path} has no cells after preprocessing.")
@@ -578,9 +629,29 @@ class SegmentationDataset(Dataset):
 
         return (features_tensor, pos_tensor, pos_mm_tensor, pos_scale_tensor), labels_tensor
 
+def _verify_stats_meta(stats_path: Path, target_cells: int) -> None:
+    meta_path = stats_path.with_suffix(".meta.json")
+    if not meta_path.exists():
+        print(f"[Warn] stats meta not found: {meta_path.name}. Skipping check.")
+        return
+    try:
+        meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
+        if int(meta.get("target_cells", -1)) != int(target_cells):
+            raise RuntimeError(
+                f"stats target_cells={meta.get('target_cells')} mismatch training target_cells={target_cells}."
+            )
+        if int(meta.get("feature_dim", -1)) != 15:
+            raise RuntimeError("stats feature_dim mismatch (expect 15).")
+        if bool(meta.get("unit_scaling", True)) is True:
+            raise RuntimeError("stats built with unit_scaling=True, but we expect False.")
+    except Exception as e:
+        print(f"[Warn] stats meta validation failed: {e}")
+
+
 def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
     train_files, val_files = load_split_lists(config.split_path)
 
+    _verify_stats_meta(config.stats_path, config.target_cells)
     mean, std = load_stats(config.stats_path)
     arch_frames = load_arch_frames(config.arch_frames_path)
 

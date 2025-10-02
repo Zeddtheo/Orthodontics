@@ -139,6 +139,11 @@ def compute_case_metrics(
 
 
 def graphcut_refine(prob_np: np.ndarray, pos_mm_np: np.ndarray, beta: float = 30.0, k: int = 6, iterations: int = 1) -> np.ndarray:
+    """
+    NOTE: This is an iterative probability smoothing, an approximation of graph-cut's smoothness effect, 
+    not a true energy-minimizing graph-cut. This function performs k-NN based probability smoothing 
+    to mimic the spatial consistency constraint of graph-cut algorithms.
+    """
     if prob_np.size == 0:
         return prob_np
     N, C = prob_np.shape
@@ -167,6 +172,14 @@ def graphcut_refine(prob_np: np.ndarray, pos_mm_np: np.ndarray, beta: float = 30
 
 
 def svm_refine(pos_mm_np: np.ndarray, labels_np: np.ndarray) -> np.ndarray:
+    """
+    WARNING: This function performs SVM refinement on the SAME low-resolution mesh (N_low ≈ 9000),
+    NOT on the original high-resolution mesh (N_high ≈ 100k) as described in the paper.
+    To properly implement the paper's approach, this function should:
+    1. Train SVM on low-res predictions (N_low)
+    2. Predict on high-res original mesh (N_high) - CURRENTLY NOT IMPLEMENTED
+    Therefore, post-processing metrics computed using this function are INVALID for paper comparison.
+    """
     unique = np.unique(labels_np)
     if unique.size <= 1:
         return labels_np
@@ -414,13 +427,17 @@ class Trainer:
             post_hd_str = _fmt(post_hd, 3)
             post_hd_std_str = _fmt(post_hd_std, 3)
 
+            # NOTE: Post-processed metrics (post_dsc, post_hd, etc.) are INVALID in current implementation
+            # because svm_refine does not perform true upsampling to original resolution.
+            # Focus on raw_ metrics for model evaluation.
             print(
                 f"Epoch {epoch}/{self.config.epochs} | "
                 f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
                 f"Raw DSC: {raw_dsc_str}±{raw_dsc_std_str} | Raw SEN: {raw_sen_str}±{raw_sen_std_str} | "
                 f"Raw PPV: {raw_ppv_str}±{raw_ppv_std_str} | Raw HD: {raw_hd_str}±{raw_hd_std_str} mm | "
-                f"Post DSC: {post_dsc_str}±{post_dsc_std_str} | Post SEN: {post_sen_str}±{post_sen_std_str} | "
-                f"Post PPV: {post_ppv_str}±{post_ppv_std_str} | Post HD: {post_hd_str}±{post_hd_std_str} mm | "
+                # Post-processing metrics commented out as they are invalid without proper upsampling:
+                # f"Post DSC: {post_dsc_str}±{post_dsc_std_str} | Post SEN: {post_sen_str}±{post_sen_std_str} | "
+                # f"Post PPV: {post_ppv_str}±{post_ppv_std_str} | Post HD: {post_hd_str}±{post_hd_std_str} mm | "
                 f"Time: {epoch_time:.1f}s | Sec/scan: {sec_per_scan:.2f}s | PeakMem: {train_peak_mem:.1f}MB | LR: {current_lr:.6f}"
             )
 

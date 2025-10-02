@@ -150,26 +150,54 @@ class EdgeConv(nn.Module):
         return out
 
 
-class GLMEdgeConv(nn.Module):
-    """Graph-constrained Learning Module (EdgeConv flavor).
-    It computes two EdgeConv streams with different neighborhoods (short/long),
-    then concatenates them.
-    """
-    def __init__(self, in_ch: int, out_ch: int, k_short: int = 6, k_long: int = 12):
+class GLM1(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int, k: int = 6):
         super().__init__()
+        self.k = k
+        self.ec = EdgeConv(in_ch, out_ch)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        pos: torch.Tensor,
+        idx_k: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if idx_k is None:
+            idx_k = knn_graph(pos, self.k)
+        return self.ec(x, idx_k)
+
+
+class GLMEdgeConv(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int = 512, k_short: int = 6, k_long: int = 12):
+        super().__init__()
+        if out_ch % 2 != 0:
+            raise ValueError("out_ch must be even for GLMEdgeConv")
         self.k_short = k_short
         self.k_long = k_long
-        self.ec_short = EdgeConv(in_ch, out_ch // 2)
-        self.ec_long = EdgeConv(in_ch, out_ch // 2)
+        mid = out_ch // 2
+        self.ec_short = EdgeConv(in_ch, mid)
+        self.ec_long = EdgeConv(in_ch, mid)
+        self.fusion_conv = nn.Sequential(
+            nn.Conv1d(out_ch, out_ch, 1),
+            nn.BatchNorm1d(out_ch),
+            nn.ReLU(inplace=True),
+        )
 
-    def forward(self, x: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
-        # pos: (B,3,N) for kNN graph construction
-        idx_s = knn_graph(pos, self.k_short)  # (B,N,ks)
-        idx_l = knn_graph(pos, self.k_long)   # (B,N,kl)
-        xs = self.ec_short(x, idx_s)          # (B,out/2,N)
-        xl = self.ec_long(x, idx_l)           # (B,out/2,N)
-        return torch.cat([xs, xl], dim=1)     # (B,out,N)
-
+    def forward(
+        self,
+        x: torch.Tensor,
+        pos: torch.Tensor,
+        idx_s: Optional[torch.Tensor] = None,
+        idx_l: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if idx_s is None:
+            idx_s = knn_graph(pos, self.k_short)
+        if idx_l is None:
+            idx_l = knn_graph(pos, self.k_long)
+        xs = self.ec_short(x, idx_s)
+        xl = self.ec_long(x, idx_l)
+        feat = torch.cat([xs, xl], dim=1)
+        return self.fusion_conv(feat)
 
 # ------------------------------------------------------------
 # (Optional) Legacy SAP-based GLM for ablation/backward-compat
@@ -204,12 +232,12 @@ class iMeshSegNet(nn.Module):
     def __init__(
         self,
         num_classes: int = 15,        # 背景 + 14 颗上颌牙
-        glm_impl: str = "edgeconv",   # 'edgeconv' | 'sap'
-        k_short: int = 6,             # 论文：短距离邻域 k=6
-        k_long: int = 12,             # 论文：长距离邻域 k=12
+        glm_impl: str = "edgeconv",   # "edgeconv" | "sap"
+        k_short: int = 6,             # 默认短邻域 k=6
+        k_long: int = 12,            # 默认长邻域 k=12
         with_dropout: bool = False,
         dropout_p: float = 0.1,
-        use_feature_stn: bool = True,  # 论文要求：启用 64×64 特征变换
+        use_feature_stn: bool = True,  # 启用 64×64 特征变换
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -217,38 +245,55 @@ class iMeshSegNet(nn.Module):
         self.with_dropout = with_dropout
         self.dropout_p = dropout_p
         self.use_feature_stn = use_feature_stn
+        self.k_short = k_short
+        self.k_long = k_long
 
-        # MLP-1 (feature lifting to 64)
-        self.mlp1_conv1 = nn.Conv1d(15, 64, 1)
-        self.mlp1_bn1 = nn.BatchNorm1d(64)
-        self.mlp1_conv2 = nn.Conv1d(64, 64, 1)
-        self.mlp1_bn2 = nn.BatchNorm1d(64)
+        # Feature transformation module (FTM) -> 64 channels
+        self.ftm = nn.Sequential(
+            nn.Conv1d(15, 64, 1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(64, 64, 1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+        )
 
-        # Feature transform (STNkd on 64-d)
         self.fstn = STNkd(k=64) if self.use_feature_stn else None
 
-        # GLM-1
         if glm_impl == "edgeconv":
-            self.glm1 = GLMEdgeConv(64, 128, k_short=k_short, k_long=k_long)  # -> 128
+            self.glm1 = GLM1(64, 128, k=k_short)
+            
+            # MLP-2: 论文描述的中间特征提取模块（GLM-1 到 GLM-2 之间）
+            self.mlp2 = nn.Sequential(
+                nn.Conv1d(128, 128, 1),
+                nn.BatchNorm1d(128),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(128, 512, 1),
+                nn.BatchNorm1d(512),
+                nn.ReLU(inplace=True)
+            )
+            
+            # GLM-2 输入维度调整为 512（接收 MLP-2 的输出）
+            self.glm2 = GLMEdgeConv(512, out_ch=512, k_short=k_short, k_long=k_long)
         else:
             self.glm1 = GLMSAP(64, 128)
-
-        # MLP-2 (论文要求：64→128→512 三层)
-        self.mlp2_conv1 = nn.Conv1d(128, 64, 1)
-        self.mlp2_bn1 = nn.BatchNorm1d(64)
-        self.mlp2_conv2 = nn.Conv1d(64, 128, 1)
-        self.mlp2_bn2 = nn.BatchNorm1d(128)
-        self.mlp2_conv3 = nn.Conv1d(128, 512, 1)
-        self.mlp2_bn3 = nn.BatchNorm1d(512)
-
-        # GLM-2 (输入通道从 128 改为 512)
-        if glm_impl == "edgeconv":
-            self.glm2 = GLMEdgeConv(512, 512, k_short=k_short, k_long=k_long)  # -> 512
-        else:
+            self.mlp2 = nn.Sequential(
+                nn.Conv1d(128, 128, 1),
+                nn.BatchNorm1d(128),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(128, 512, 1),
+                nn.BatchNorm1d(512),
+                nn.ReLU(inplace=True)
+            )
             self.glm2 = GLMSAP(512, 512)
 
-        # Dense fusion: concat pooled features from stages + per-point feat
-        # 论文：g1(64) + g_glm1(128) + g_mlp2(512) + g_glm2(512) = 1216
+        self.gmp1 = nn.AdaptiveMaxPool1d(1)
+        self.gmp2 = nn.AdaptiveMaxPool1d(1)
+        self.gmp3 = nn.AdaptiveMaxPool1d(1)
+        self.gmp4 = nn.AdaptiveMaxPool1d(1)
+        self.gap5 = nn.AdaptiveAvgPool1d(1)
+
+        # 密集融合：FTM(64) + GLM-1(128) + MLP-2(512) + GLM-2(512)
         fusion_in = 64 + 128 + 512 + 512
         self.fuse_fc = nn.Sequential(
             nn.Linear(fusion_in, 512),
@@ -259,15 +304,15 @@ class iMeshSegNet(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # MLP-3 (point-wise classifier)
-        # 论文：拼接全局特征(128) + 局部特征(glm2=512) = 640
         def _make_dropout() -> nn.Module:
             if self.with_dropout and self.dropout_p > 0:
                 return nn.Dropout(self.dropout_p)
             return nn.Identity()
 
+        # 分类器输入：FTM(64) + GLM-1(128) + MLP-2(512) + GLM-2(512) + Globals(128)
+        classifier_in_ch = 64 + 128 + 512 + 512 + 128
         self.classifier = nn.Sequential(
-            nn.Conv1d(128 + 512, 256, 1),  # concat(globals=128, last local=glm2=512)
+            nn.Conv1d(classifier_in_ch, 256, 1),
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             _make_dropout(),
@@ -284,66 +329,72 @@ class iMeshSegNet(nn.Module):
         pos: torch.Tensor,
         a_s: Optional[torch.Tensor] = None,
         a_l: Optional[torch.Tensor] = None,
+        idx_k6: Optional[torch.Tensor] = None,
+        idx_k12: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Forward
-        Args:
-            x:   (B, 15, N) input features (z-score normalized)
-            pos: (B, 3,  N) cell centroids in unified arch frame (for kNN)
-            a_s/a_l: optional (B,N,N) adjacencies for legacy SAP mode
-        Returns:
-            logits: (B, num_classes, N)
-        """
         B, C, N = x.shape
         assert C == 15, "Input feature must be 15-D"
-        # ----- MLP-1 -----
-        x = F.relu(self.mlp1_bn1(self.mlp1_conv1(x)))   # (B,64,N)
-        x = F.relu(self.mlp1_bn2(self.mlp1_conv2(x)))   # (B,64,N)
 
-        # ----- Feature Transform -----
+        x = self.ftm(x)
         if self.fstn is not None:
-            x_t = x.transpose(2, 1)                     # (B,N,64)
-            trans = self.fstn(x)                        # (B,64,64)
-            x = torch.bmm(x_t, trans).transpose(2, 1)   # (B,64,N)
-        g1 = torch.max(x, dim=-1)[0]                    # (B,64)
+            trans = self.fstn(x)
+            x = torch.bmm(x.transpose(2, 1), trans).transpose(2, 1)
 
-        # ----- GLM-1 -----
         if self.glm_impl == "edgeconv":
-            y1 = self.glm1(x, pos)                      # (B,128,N)
+            if idx_k6 is None:
+                idx_k6 = knn_graph(pos, self.k_short)
+            if idx_k12 is None:
+                idx_k12 = knn_graph(pos, self.k_long)
+            y1 = self.glm1(x, pos, idx_k=idx_k6)
+            
+            # MLP-2: 中间特征变换
+            y2 = self.mlp2(y1)
+            
+            # GLM-2: 输入从 y1 改为 y2
+            y3 = self.glm2(y2, pos, idx_s=idx_k6, idx_l=idx_k12)
         else:
-            assert a_s is not None and a_l is not None, "SAP mode requires a_s/a_l"
+            if a_s is None or a_l is None:
+                raise ValueError("SAP mode requires adjacency matrices a_s and a_l")
             y1 = self.glm1(x, a_s, a_l)
-        g2 = torch.max(y1, dim=-1)[0]                   # (B,128)
-
-        # ----- MLP-2 (论文：三层 64→128→512) -----
-        y2 = F.relu(self.mlp2_bn1(self.mlp2_conv1(y1))) # (B,64,N)
-        y2 = F.relu(self.mlp2_bn2(self.mlp2_conv2(y2))) # (B,128,N)
-        y2 = F.relu(self.mlp2_bn3(self.mlp2_conv3(y2))) # (B,512,N)
-        g3 = torch.max(y2, dim=-1)[0]                   # (B,512)
-
-        # ----- GLM-2 -----
-        if self.glm_impl == "edgeconv":
-            y3 = self.glm2(y2, pos)                     # (B,512,N)
-        else:
+            
+            # MLP-2: 中间特征变换
+            y2 = self.mlp2(y1)
+            
+            # GLM-2: 输入从 y1 改为 y2
             y3 = self.glm2(y2, a_s, a_l)
-        g4 = torch.max(y3, dim=-1)[0]                   # (B,512)
 
-        # ----- Dense Fusion (global) -----
-        g = torch.cat([g1, g2, g3, g4], dim=1)          # (B,1216)
-        g = self.fuse_fc(g)                              # (B,128)
-        g = g.unsqueeze(-1).repeat(1, 1, N)             # (B,128,N)
+        assert x.shape[1] == 64, f"Expected FTM output 64 channels, got {x.shape[1]}"
+        assert y1.shape[1] == 128, f"Expected GLM-1 output 128 channels, got {y1.shape[1]}"
+        assert y2.shape[1] == 512, f"Expected MLP-2 output 512 channels, got {y2.shape[1]}"
+        assert y3.shape[1] == 512, f"Expected GLM-2 output 512 channels, got {y3.shape[1]}"
 
-        # ----- Classifier (point-wise) -----
-        feat = torch.cat([y3, g], dim=1)                # (B,512+128,N)
-        logits = self.classifier(feat)                  # (B,num_classes,N)
+        # 密集融合：从各阶段提取全局特征
+        g1 = self.gmp1(x).squeeze(-1)       # FTM: 64
+        g2 = self.gmp2(y1).squeeze(-1)      # GLM-1: 128
+        g3 = self.gmp3(y2).squeeze(-1)      # MLP-2: 512
+        g4 = self.gmp4(y3).squeeze(-1)      # GLM-2 (max): 512
+        g5 = self.gap5(y3).squeeze(-1)      # GLM-2 (avg): 512 (可选，论文未明确)
+        # 论文使用 g1+g2+g3+g4，总计 64+128+512+512=1216
+        globals_feat = torch.cat([g1, g2, g3, g4], dim=1)
+        globals_feat = self.fuse_fc(globals_feat)  # 1216 -> 128
+        globals_feat = globals_feat.unsqueeze(-1).repeat(1, 1, N)
+
+        # 密集连接：FTM + GLM-1 + MLP-2 + GLM-2 + Globals
+        # 64 + 128 + 512 + 512 + 128 = 1344
+        feat = torch.cat([x, y1, y2, y3, globals_feat], dim=1)
+        assert feat.shape[1] == 1344, f"Expected fused feature dim 1344 (64+128+512+512+128), got {feat.shape[1]}"
+
+        logits = self.classifier(feat)
         return logits
-
 
 if __name__ == "__main__":
     # quick shape sanity test
     B, N = 2, 4096
     x = torch.randn(B, 15, N)
     pos = torch.randn(B, 3, N)
-    net = iMeshSegNet(num_classes=66, glm_impl="edgeconv", k_short=6, k_long=12)
+    net = iMeshSegNet(num_classes=15, glm_impl="edgeconv", k_short=6, k_long=12)
     with torch.cuda.amp.autocast(enabled=False):
         out = net(x, pos)
     print("logits:", out.shape)  # (B,15,N)
+
+
