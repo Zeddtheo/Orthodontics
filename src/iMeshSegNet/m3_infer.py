@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 import argparse
+import random
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 
@@ -54,25 +55,49 @@ LABEL_COLORS = {
     14: [255, 140, 0],    # 牙齿14 - 暗橙色
 }
 
+
+def fps_indices(xyz: np.ndarray, m: int) -> np.ndarray:
+    """Farthest point sampling on CPU (numpy)."""
+    n = int(xyz.shape[0])
+    if m >= n:
+        return np.arange(n, dtype=np.int64)
+    if m <= 0:
+        return np.empty(0, dtype=np.int64)
+    sel = np.zeros(m, dtype=np.int64)
+    dists = np.full(n, np.inf, dtype=np.float32)
+    farthest = 0
+    for i in range(m):
+        sel[i] = farthest
+        diff = xyz - xyz[farthest]
+        dist = np.linalg.norm(diff, axis=1)
+        dists = np.minimum(dists, dist)
+        farthest = int(np.argmax(dists))
+    return sel
+
+
 def apply_color_to_mesh(mesh: pv.PolyData, labels: np.ndarray) -> pv.PolyData:
     """根据预测标签为网格着色（cell 和 point 级别）"""
-    # 1. 为每个 cell 生成颜色
+    labels = labels.astype(np.int32, copy=False)
     cell_colors = np.zeros((len(labels), 3), dtype=np.uint8)
-    for label_id, color in LABEL_COLORS.items():
-        mask = labels == label_id
-        cell_colors[mask] = color
-    
-    # 2. 将颜色添加到 cell_data
+    unique_labels = np.unique(labels)
+    for label_id in unique_labels:
+        color = LABEL_COLORS.get(int(label_id))
+        if color is None:
+            # 依据类别 id 生成可重复的颜色
+            label_id_int = int(label_id)
+            color = [
+                (37 * label_id_int) % 256,
+                (17 * label_id_int + 113) % 256,
+                (97 * label_id_int + 53) % 256,
+            ]
+        cell_colors[labels == label_id] = np.asarray(color, dtype=np.uint8)
+
     mesh.cell_data["RGB"] = cell_colors
     mesh.cell_data["PredLabel"] = labels
-    
-    # 3. 快速将 cell 数据转换为 point 数据（使用 PyVista 内置方法）
+
     mesh_with_point_data = mesh.cell_data_to_point_data()
-    
-    # 4. 复制转换后的 point 数据到原网格
     mesh.point_data["RGB"] = mesh_with_point_data.point_data["RGB"]
     mesh.point_data["PredLabel"] = mesh_with_point_data.point_data["PredLabel"]
-    
     return mesh
 
 
@@ -242,9 +267,7 @@ def _load_model(ckpt: Path, num_classes: int, device: torch.device) -> iMeshSegN
 
 def _subset_cells(mesh: pv.PolyData, cell_ids: np.ndarray) -> pv.PolyData:
     # 从 decimated 网格中抽取若干 cell 组成一个低分辨率的粗糙网格
-    sub = mesh.extract_cells(cell_ids.astype(np.int32))
-    sub = sub.clean()  # 去掉悬挂拓扑等
-    return sub
+    return mesh.extract_cells(cell_ids.astype(np.int32))
 
 def _infer_single_mesh(
     mesh_path: Path,
@@ -253,6 +276,7 @@ def _infer_single_mesh(
     arch_frames: Dict[str, torch.Tensor],
     device: torch.device,
     num_classes: int,
+    stats_path: Optional[Path],
 ) -> Tuple[pv.PolyData, np.ndarray]:
     """
     应用 pipeline 契约进行推理
@@ -264,6 +288,7 @@ def _infer_single_mesh(
         arch_frames: 可选的 arch frame 字典（如果 pipeline_meta["use_frame"]=True 则使用）
         device: 推理设备
         num_classes: 类别数量
+        stats_path: 可选 stats.npz 路径（当 pipeline 未携带 mean/std 时使用）
     
     Returns:
         sample_mesh:  采样后的粗糙网格（用于落盘展示）
@@ -277,6 +302,22 @@ def _infer_single_mesh(
     sampler = pipeline_meta["sampler"]
     use_frame = pipeline_meta["use_frame"]
     rotate_blocks = pipeline_meta["rotate_blocks"]
+    seed = pipeline_meta.get("seed", 42)
+    
+    # 设置随机种子以确保采样的确定性
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        random.seed(seed)
+    rotate_pairs: List[Tuple[int, int]] = []
+    if rotate_blocks:
+        first_block = rotate_blocks[0]
+        if isinstance(first_block, (list, tuple)) and len(first_block) == 2:
+            rotate_pairs = [(int(a), int(b)) for a, b in rotate_blocks]
+        elif isinstance(first_block, bool):
+            for idx, should_rotate in enumerate(rotate_blocks):
+                if should_rotate:
+                    rotate_pairs.append((idx * 3, (idx + 1) * 3))
     
     mesh = pv.read(str(mesh_path))
     
@@ -311,46 +352,60 @@ def _infer_single_mesh(
     # 4) 采样到 sample_cells（根据 pipeline 契约选择采样策略）
     if Nd > sample_cells:
         if sampler == "random":
-            # 随机采样
             ids = np.random.permutation(Nd)[:sample_cells]
         elif sampler == "fps":
-            # FPS 采样（需要实现或跳过）
-            print(f"  [Warning] FPS sampler not implemented, falling back to random")
-            ids = np.random.permutation(Nd)[:sample_cells]
+            ids = fps_indices(pos_raw, sample_cells)
         else:
             raise ValueError(f"Unknown sampler: {sampler}")
-            
+
         feats = feats[ids]
         pos_raw = pos_raw[ids]
         sample_mesh = _subset_cells(mesh, ids)
-        # 转换为 PolyData 以便保存为 VTP
-        sample_mesh = sample_mesh.cast_to_unstructured_grid().extract_surface()
     else:
-        sample_mesh = mesh
+        sample_mesh = mesh.copy(deep=True)
 
     # 5) z-score（与训练 stats 一致）
-    feats_t = torch.from_numpy(feats)  # (Ns,15)
-    feats_t = (feats_t - torch.from_numpy(mean)) / torch.from_numpy(std)
+    feats_t = torch.from_numpy(feats).float()  # (Ns,15)
+    mean_arr = mean
+    std_arr = std
+    if pipeline_meta.get("zscore_apply", True):
+        if (mean_arr is None or std_arr is None) and stats_path is not None:
+            with np.load(str(stats_path)) as stats_npz:
+                mean_arr = stats_npz.get("mean")
+                std_arr = stats_npz.get("std")
+        if mean_arr is None or std_arr is None:
+            print("[Warn] no mean/std available; skip z-score")
+        else:
+            mean_np = np.asarray(mean_arr, dtype=np.float32)
+            std_np = np.asarray(std_arr, dtype=np.float32)
+            mean_t = torch.from_numpy(mean_np).to(feats_t.dtype)
+            std_t = torch.from_numpy(std_np).to(feats_t.dtype)
+            feats_t = (feats_t - mean_t) / std_t
+    else:
+        pass
     
     # 6) 应用 arch frame（如果 pipeline 契约要求）
-    pos_t = torch.from_numpy(pos_raw)  # (Ns,3)
+    pos_t = torch.from_numpy(pos_raw).float()  # (Ns,3)
     if use_frame:
         frame = _lookup_arch_frame(mesh_path.stem, arch_frames)
         if frame is not None:
-            # frame: (3,3), pos: (Ns,3)
-            pos_t = (frame @ pos_t.T).T
-            
-            # 根据 rotate_blocks 旋转特征向量
-            if rotate_blocks:
-                # rotate_blocks = [True, True, True, True, False] 表示前 4 个 block 需要旋转
-                # block0: v0(0:3), block1: v1(3:6), block2: v2(6:9), block3: normal(9:12), block4: cent_rel(12:15)
-                for i, should_rotate in enumerate(rotate_blocks):
-                    if should_rotate and i < 5:
-                        start_idx = i * 3
-                        end_idx = start_idx + 3
-                        vec_block = feats_t[:, start_idx:end_idx]  # (Ns, 3)
-                        vec_block = (frame @ vec_block.T).T
-                        feats_t[:, start_idx:end_idx] = vec_block
+            frame_tensor = torch.as_tensor(frame, dtype=pos_t.dtype).to(pos_t)
+            R = frame_tensor[:3, :3]
+            pos_t = (R @ pos_t.T).T
+
+            rotate_pairs_to_apply = rotate_pairs
+            if rotate_pairs_to_apply:
+                for start_idx, end_idx in rotate_pairs_to_apply:
+                    start_idx = max(0, int(start_idx))
+                    end_idx = int(end_idx)
+                    if start_idx >= feats_t.shape[1]:
+                        continue
+                    end_idx = min(end_idx, feats_t.shape[1])
+                    if end_idx - start_idx != 3:
+                        continue
+                    block = feats_t[:, start_idx:end_idx]
+                    block = (R @ block.T).T
+                    feats_t[:, start_idx:end_idx] = block
     
     # 转换为模型输入格式
     feats_t = feats_t.transpose(0, 1).contiguous().unsqueeze(0)  # (1,15,Ns)
@@ -365,8 +420,17 @@ def _infer_single_mesh(
     pred_np = pred.squeeze(0).cpu().numpy().astype(np.int32)
 
     # 8) 应用颜色映射到网格
-    sample_mesh = apply_color_to_mesh(sample_mesh, pred_np)
-    return sample_mesh, pred_np
+    colored_mesh = apply_color_to_mesh(sample_mesh, pred_np)
+    surf = colored_mesh.extract_surface().triangulate()
+    if "RGB" in colored_mesh.point_data and colored_mesh.point_data["RGB"].shape[0] == surf.n_points:
+        surf.point_data["RGB"] = colored_mesh.point_data["RGB"]
+    if "PredLabel" in colored_mesh.point_data and colored_mesh.point_data["PredLabel"].shape[0] == surf.n_points:
+        surf.point_data["PredLabel"] = colored_mesh.point_data["PredLabel"]
+    if "RGB" in colored_mesh.cell_data and colored_mesh.cell_data["RGB"].shape[0] == surf.n_cells:
+        surf.cell_data["RGB"] = colored_mesh.cell_data["RGB"]
+    if "PredLabel" in colored_mesh.cell_data and colored_mesh.cell_data["PredLabel"].shape[0] == surf.n_cells:
+        surf.cell_data["PredLabel"] = colored_mesh.cell_data["PredLabel"]
+    return surf, pred_np
 
 def _gather_inputs(input_path: Path, exts: List[str]) -> List[Path]:
     if input_path.is_file():
@@ -385,6 +449,7 @@ def main():
     ap.add_argument("--out", type=str, default="outputs/segmentation/module3_infer", help="output directory")
     ap.add_argument("--arch-frames", type=str, default=None, help="optional JSON of arch frames (3x3 or 4x4)")
     ap.add_argument("--device", type=str, default="cuda:0")
+    ap.add_argument("--stats", type=str, default=None, help="optional stats npz when checkpoint lacks mean/std")
     
     # Override options (optional, defaults to checkpoint metadata)
     ap.add_argument("--num-classes", type=int, default=None, help="Override num_classes from checkpoint")
@@ -400,10 +465,28 @@ def main():
     
     # 使用新的契约加载器（从 checkpoint 读取 pipeline 配置）
     model, pipeline_meta = _load_model_with_contract(Path(args.ckpt), device, args)
-    
+
+    seed = int(pipeline_meta.get('seed', 42))
+    stats_path = Path(args.stats) if args.stats else None
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if pipeline_meta.get("zscore_apply", True) and (pipeline_meta.get("mean") is None or pipeline_meta.get("std") is None) and stats_path is not None:
+        with np.load(str(stats_path)) as stats_npz:
+            if pipeline_meta.get("mean") is None and "mean" in stats_npz:
+                pipeline_meta["mean"] = stats_npz["mean"]
+            if pipeline_meta.get("std") is None and "std" in stats_npz:
+                pipeline_meta["std"] = stats_npz["std"]
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
     # 打印 pipeline 配置信息
     print(f"[Pipeline Contract]")
-    print(f"  zscore: mean shape={pipeline_meta['mean'].shape}, std shape={pipeline_meta['std'].shape}")
+    mean_shape = None if pipeline_meta['mean'] is None else pipeline_meta['mean'].shape
+    std_shape = None if pipeline_meta['std'] is None else pipeline_meta['std'].shape
+    print(f"  zscore: apply={pipeline_meta['zscore_apply']} mean_shape={mean_shape} std_shape={std_shape}")
     print(f"  sampler: {pipeline_meta['sampler']}")
     print(f"  sample_cells: {pipeline_meta['sample_cells']}")
     print(f"  target_cells: {pipeline_meta['target_cells']}")
@@ -437,6 +520,7 @@ def main():
                 arch_frames=arch_frames,
                 device=device,
                 num_classes=num_classes,
+                stats_path=stats_path,
             )
             # 导出：带颜色的 VTP（含 RGB 和 PredLabel）与预测标签 NPY
             stem = f.stem

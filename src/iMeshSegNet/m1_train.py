@@ -16,12 +16,41 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.neighbors import NearestNeighbors
 from sklearn.svm import SVC
-from torch.cuda.amp import GradScaler, autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+# 兼容性导入：支持不同 PyTorch 版本和设备
+try:
+    # PyTorch >= 1.10: 推荐使用通用 autocast
+    from torch.amp import autocast, GradScaler
+    HAS_AMP = True
+except ImportError:
+    try:
+        # PyTorch < 1.10: 使用 torch.cuda.amp
+        from torch.cuda.amp import autocast, GradScaler
+        HAS_AMP = True
+    except ImportError:
+        # CPU-only 环境可能没有 amp 模块
+        HAS_AMP = False
+        # 提供 fallback
+        class GradScaler:
+            def __init__(self, enabled=False):
+                self.enabled = enabled
+            def scale(self, loss):
+                return loss
+            def step(self, optimizer):
+                optimizer.step()
+            def update(self):
+                pass
+            def unscale_(self, optimizer):
+                pass
+        
+        # Dummy autocast context manager
+        from contextlib import nullcontext
+        autocast = nullcontext
 
 from m0_dataset import (
     DataConfig,
@@ -264,8 +293,21 @@ class Trainer:
         self.device = device
         self.log_path = self.config.output_dir / "train_log.csv"
         self.best_val_dsc = -1.0
-        self.amp_enabled = device.type == "cuda"
-        self.scaler = GradScaler(enabled=self.amp_enabled)
+        self.amp_enabled = device.type == "cuda" and HAS_AMP
+        self.device_type = "cuda" if device.type == "cuda" else "cpu"
+        
+        # 创建 GradScaler（兼容不同 PyTorch 版本）
+        if HAS_AMP:
+            try:
+                # PyTorch >= 2.0: torch.amp.GradScaler 支持 device 参数
+                self.scaler = GradScaler(device=self.device_type, enabled=self.amp_enabled)
+            except TypeError:
+                # PyTorch < 2.0: torch.cuda.amp.GradScaler 不支持 device 参数
+                self.scaler = GradScaler(enabled=self.amp_enabled)
+        else:
+            # Fallback: 使用自定义的 dummy GradScaler
+            self.scaler = GradScaler(enabled=False)
+        
         self._checked_shapes = False
 
         self.dice_loss = GeneralizedDiceLoss().to(self.device)
@@ -299,7 +341,18 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
 
             with context_manager:
-                with autocast(enabled=self.amp_enabled):
+                # 兼容不同 PyTorch 版本的 autocast
+                if self.amp_enabled and HAS_AMP:
+                    # 尝试使用新版 API (PyTorch >= 1.10)
+                    try:
+                        autocast_ctx = autocast(device_type=self.device_type, enabled=True)
+                    except TypeError:
+                        # 回退到旧版 API (PyTorch < 1.10)
+                        autocast_ctx = autocast(enabled=True)
+                else:
+                    autocast_ctx = nullcontext()
+                
+                with autocast_ctx:
                     logits = self.model(x, pos_norm)
                     loss = self.dice_loss(logits, y)
             probs_detached = torch.softmax(logits.detach(), dim=1)
