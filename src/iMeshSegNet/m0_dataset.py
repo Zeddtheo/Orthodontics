@@ -294,16 +294,19 @@ class DataConfig:
     stats_path: Path = SEG_ROOT / "module0" / "stats.npz"
     arch_frames_path: Optional[Path] = None
     batch_size: int = 2
-    num_workers: int = 0
-    persistent_workers: bool = True
+    # ⭐ 并行数据加载：使用多线程后台加载数据
+    # Windows/WSL: 2-4 推荐；Linux: 4-8 推荐
+    num_workers: int = 4  # 从 0 → 4 (开启并行加载)
+    persistent_workers: bool = True  # 保持 worker 进程常驻（减少启动开销）
     target_cells: int = 10000  # 论文要求：下采样至 ~10k 单元
     sample_cells: int = 9000   # 论文要求：训练时随机采样 9k 单元
     augment: bool = True
-    pin_memory: bool = True
+    pin_memory: bool = True  # CUDA 下自动开启：加速 CPU→GPU 数据传输
     drop_last: bool = False
     shuffle: bool = True
-    augment_original_copies: int = 20    # 论文：原始样本生成 20 个增强副本
-    augment_flipped_copies: int = 20     # 论文：镜像样本生成 20 个增强副本
+    # ⭐ 在线增强：以下参数仅供参考，实际使用在线随机增强 (不扩表)
+    augment_original_copies: int = 20    # (已废弃) 改用在线随机增强
+    augment_flipped_copies: int = 20     # (已废弃) 改用在线随机增强
 
 
 # =============================================================================
@@ -512,10 +515,18 @@ class SegmentationDataset(Dataset):
         self.sample_cells = sample_cells
         self.augment = augment
 
+        # ⭐ 在线随机增强：不扩表，每次 __getitem__ 随机决定是否增强
+        # 优点：1) 数据集大小回到 base_len (训练速度提升 ~40x)
+        #       2) 每个 epoch 看到不同的增强 (泛化能力不受影响)
+        #       3) 不占用额外内存
         if self.augment:
-            self.repeat_original = max(int(augment_original_copies), 1)
-            self.repeat_flipped = max(int(augment_flipped_copies), 0)
-            self.repeat_factor = self.repeat_original + self.repeat_flipped
+            # 使用在线增强：repeat_factor=1 表示不扩表
+            self.repeat_original = 1
+            self.repeat_flipped = 0
+            self.repeat_factor = 1
+            # 原始参数保留供日后参考（实际上已不使用）
+            self._augment_original_copies = max(int(augment_original_copies), 1)
+            self._augment_flipped_copies = max(int(augment_flipped_copies), 0)
         else:
             self.repeat_original = 1
             self.repeat_flipped = 0
@@ -573,9 +584,10 @@ class SegmentationDataset(Dataset):
 
         mesh = mesh.triangulate()
 
+        # ⭐ 在线随机增强：每次随机决定是否镜像（50% 概率）
         apply_mirror = False
         if self.augment:
-            apply_mirror = variant_idx >= self.repeat_original and self.repeat_flipped > 0
+            apply_mirror = np.random.rand() < 0.5  # 50% 概率镜像
 
         if (not cache_exists) and mesh.n_cells > self.target_cells:
             reduction = 1.0 - (self.target_cells / mesh.n_cells)
