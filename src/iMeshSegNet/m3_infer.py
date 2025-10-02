@@ -202,6 +202,10 @@ def _load_model_with_contract(ckpt_path: Path, device: torch.device, args=None) 
     print(f"   模型输出维度与 num_classes 一致: {num_classes}")
     print(f"   特征输入维度: {in_channels}")
     
+    # 添加 num_classes 和 in_channels 到 meta
+    meta["num_classes"] = num_classes
+    meta["in_channels"] = in_channels
+    
     return model, meta
 
 
@@ -245,27 +249,51 @@ def _subset_cells(mesh: pv.PolyData, cell_ids: np.ndarray) -> pv.PolyData:
 def _infer_single_mesh(
     mesh_path: Path,
     model: iMeshSegNet,
-    mean: np.ndarray,
-    std: np.ndarray,
+    pipeline_meta: dict,
     arch_frames: Dict[str, torch.Tensor],
     device: torch.device,
-    target_cells: int,
-    sample_cells: int,
     num_classes: int,
 ) -> Tuple[pv.PolyData, np.ndarray]:
     """
+    应用 pipeline 契约进行推理
+    
+    Args:
+        mesh_path: 输入网格路径
+        model: 加载的模型
+        pipeline_meta: 从 checkpoint 读取的 pipeline 配置（包含 mean/std/sampler/sample_cells/target_cells/use_frame/rotate_blocks 等）
+        arch_frames: 可选的 arch frame 字典（如果 pipeline_meta["use_frame"]=True 则使用）
+        device: 推理设备
+        num_classes: 类别数量
+    
     Returns:
         sample_mesh:  采样后的粗糙网格（用于落盘展示）
         pred_labels:  (Ns,) 逐 cell 预测
     """
+    # 从 pipeline_meta 提取参数
+    mean = pipeline_meta["mean"]
+    std = pipeline_meta["std"]
+    target_cells = pipeline_meta["target_cells"]
+    sample_cells = pipeline_meta["sample_cells"]
+    sampler = pipeline_meta["sampler"]
+    use_frame = pipeline_meta["use_frame"]
+    rotate_blocks = pipeline_meta["rotate_blocks"]
+    
     mesh = pv.read(str(mesh_path))
-    mesh.points -= mesh.center
-    mesh, scale_factor, diag_before, diag_after = normalize_mesh_units(mesh)
-    if scale_factor != 1.0:
-        print(
-            f"  -> scaled {mesh_path.name} from diag={diag_before:.4f} to {diag_after:.2f} (mm)",
-            flush=True,
-        )
+    
+    # 1) 几何预处理（与训练契约一致）
+    if pipeline_meta["centered"]:
+        mesh.points -= mesh.center
+        
+    if pipeline_meta["div_by_diag"]:
+        mesh, scale_factor, diag_before, diag_after = normalize_mesh_units(mesh)
+        if scale_factor != 1.0:
+            print(
+                f"  -> scaled {mesh_path.name} from diag={diag_before:.4f} to {diag_after:.2f} (mm)",
+                flush=True,
+            )
+    else:
+        diag_after = 1.0
+        
     mesh = mesh.triangulate()
 
     # 2) 网格抽取（把 cell 数量压到 target_cells 附近）
@@ -280,9 +308,18 @@ def _infer_single_mesh(
     pos_raw = pos_raw / scale_pos
     Nd = feats.shape[0]
 
-    # 4) 随机采样到 sample_cells（得到粗糙低分辨率网格）
+    # 4) 采样到 sample_cells（根据 pipeline 契约选择采样策略）
     if Nd > sample_cells:
-        ids = np.random.permutation(Nd)[:sample_cells]
+        if sampler == "random":
+            # 随机采样
+            ids = np.random.permutation(Nd)[:sample_cells]
+        elif sampler == "fps":
+            # FPS 采样（需要实现或跳过）
+            print(f"  [Warning] FPS sampler not implemented, falling back to random")
+            ids = np.random.permutation(Nd)[:sample_cells]
+        else:
+            raise ValueError(f"Unknown sampler: {sampler}")
+            
         feats = feats[ids]
         pos_raw = pos_raw[ids]
         sample_mesh = _subset_cells(mesh, ids)
@@ -291,27 +328,43 @@ def _infer_single_mesh(
     else:
         sample_mesh = mesh
 
-    # 5) z-score（与训练 stats 一致），以及 arch frame（若可用）
+    # 5) z-score（与训练 stats 一致）
     feats_t = torch.from_numpy(feats)  # (Ns,15)
     feats_t = (feats_t - torch.from_numpy(mean)) / torch.from_numpy(std)
-    feats_t = feats_t.transpose(0, 1).contiguous().unsqueeze(0)  # (1,15,Ns)
-
+    
+    # 6) 应用 arch frame（如果 pipeline 契约要求）
     pos_t = torch.from_numpy(pos_raw)  # (Ns,3)
-    frame = _lookup_arch_frame(mesh_path.stem, arch_frames)
-    if frame is not None:
-        # frame: (3,3), pos: (Ns,3)
-        pos_t = (frame @ pos_t.T).T
+    if use_frame:
+        frame = _lookup_arch_frame(mesh_path.stem, arch_frames)
+        if frame is not None:
+            # frame: (3,3), pos: (Ns,3)
+            pos_t = (frame @ pos_t.T).T
+            
+            # 根据 rotate_blocks 旋转特征向量
+            if rotate_blocks:
+                # rotate_blocks = [True, True, True, True, False] 表示前 4 个 block 需要旋转
+                # block0: v0(0:3), block1: v1(3:6), block2: v2(6:9), block3: normal(9:12), block4: cent_rel(12:15)
+                for i, should_rotate in enumerate(rotate_blocks):
+                    if should_rotate and i < 5:
+                        start_idx = i * 3
+                        end_idx = start_idx + 3
+                        vec_block = feats_t[:, start_idx:end_idx]  # (Ns, 3)
+                        vec_block = (frame @ vec_block.T).T
+                        feats_t[:, start_idx:end_idx] = vec_block
+    
+    # 转换为模型输入格式
+    feats_t = feats_t.transpose(0, 1).contiguous().unsqueeze(0)  # (1,15,Ns)
     pos_t = pos_t.transpose(0, 1).contiguous().unsqueeze(0)      # (1,3,Ns)
 
     feats_t = feats_t.to(device, non_blocking=True).float()
     pos_t = pos_t.to(device, non_blocking=True).float()
 
-    # 6) 推理（一次前向）
+    # 7) 推理（一次前向）
     logits = model(feats_t, pos_t)         # (1,C,Ns)
     pred = torch.argmax(logits, dim=1)     # (1,Ns)
     pred_np = pred.squeeze(0).cpu().numpy().astype(np.int32)
 
-    # 7) 应用颜色映射到网格
+    # 8) 应用颜色映射到网格
     sample_mesh = apply_color_to_mesh(sample_mesh, pred_np)
     return sample_mesh, pred_np
 
@@ -326,16 +379,17 @@ def _gather_inputs(input_path: Path, exts: List[str]) -> List[Path]:
 
 # ---------------- Main ----------------
 def main():
-    ap = argparse.ArgumentParser("Module-3 Inference (coarse/low-res)")
-    ap.add_argument("--ckpt", type=str, required=True, help="path to best.pt")
+    ap = argparse.ArgumentParser("Module-3 Inference (coarse/low-res) with Pipeline Contract")
+    ap.add_argument("--ckpt", type=str, required=True, help="path to best.pt (contains pipeline metadata)")
     ap.add_argument("--input", type=str, required=True, help="file or directory of new scans (.vtp/.stl)")
-    ap.add_argument("--stats", type=str, required=True, help="stats.npz for z-score (same as training)")
     ap.add_argument("--out", type=str, default="outputs/segmentation/module3_infer", help="output directory")
     ap.add_argument("--arch-frames", type=str, default=None, help="optional JSON of arch frames (3x3 or 4x4)")
     ap.add_argument("--device", type=str, default="cuda:0")
-    ap.add_argument("--num-classes", type=int, default=SEG_NUM_CLASSES)
-    ap.add_argument("--target-cells", type=int, default=10000, help="Target cells after decimation (same as training)")
-    ap.add_argument("--sample-cells", type=int, default=9000, help="Sample cells for inference (same as training)")
+    
+    # Override options (optional, defaults to checkpoint metadata)
+    ap.add_argument("--num-classes", type=int, default=None, help="Override num_classes from checkpoint")
+    ap.add_argument("--target-cells", type=int, default=None, help="Override target_cells from checkpoint")
+    ap.add_argument("--sample-cells", type=int, default=None, help="Override sample_cells from checkpoint")
     ap.add_argument("--ext", nargs="*", default=[".vtp", ".stl"], help="valid extensions when input is a folder")
     args = ap.parse_args()
 
@@ -343,29 +397,46 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device(args.device if (torch.cuda.is_available() or "cpu" in args.device) else "cpu")
-    model = _load_model(Path(args.ckpt), num_classes=args.num_classes, device=device)
-
-    mean, std = load_stats(Path(args.stats))
-    arch_frames = load_arch_frames(Path(args.arch_frames)) if args.arch_frames else {}
+    
+    # 使用新的契约加载器（从 checkpoint 读取 pipeline 配置）
+    model, pipeline_meta = _load_model_with_contract(Path(args.ckpt), device, args)
+    
+    # 打印 pipeline 配置信息
+    print(f"[Pipeline Contract]")
+    print(f"  zscore: mean shape={pipeline_meta['mean'].shape}, std shape={pipeline_meta['std'].shape}")
+    print(f"  sampler: {pipeline_meta['sampler']}")
+    print(f"  sample_cells: {pipeline_meta['sample_cells']}")
+    print(f"  target_cells: {pipeline_meta['target_cells']}")
+    print(f"  use_frame: {pipeline_meta['use_frame']}")
+    print(f"  rotate_blocks: {pipeline_meta['rotate_blocks']}")
+    print(f"  centered: {pipeline_meta['centered']}")
+    print(f"  div_by_diag: {pipeline_meta['div_by_diag']}")
+    
+    num_classes = pipeline_meta["num_classes"]
+    
+    # 加载 arch frames（如果 pipeline 契约需要）
+    arch_frames = {}
+    if pipeline_meta["use_frame"]:
+        if args.arch_frames:
+            arch_frames = load_arch_frames(Path(args.arch_frames))
+        else:
+            print(f"[Warning] Pipeline契约要求 use_frame=True，但未提供 --arch-frames 参数")
 
     inputs = _gather_inputs(Path(args.input), [e.lower() for e in args.ext])
     if not inputs:
         raise FileNotFoundError(f"No input files found under: {args.input}")
 
-    print(f"[Infer] files={len(inputs)}  device={device}  target_cells={args.target_cells}  sample_cells={args.sample_cells}")
+    print(f"\n[Infer] files={len(inputs)}  device={device}")
 
     for f in inputs:
         try:
             sample_mesh, pred = _infer_single_mesh(
                 mesh_path=f,
                 model=model,
-                mean=mean,
-                std=std,
+                pipeline_meta=pipeline_meta,
                 arch_frames=arch_frames,
                 device=device,
-                target_cells=args.target_cells,
-                sample_cells=args.sample_cells,
-                num_classes=args.num_classes,
+                num_classes=num_classes,
             )
             # 导出：带颜色的 VTP（含 RGB 和 PredLabel）与预测标签 NPY
             stem = f.stem
