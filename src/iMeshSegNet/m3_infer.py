@@ -1,14 +1,21 @@
-# module3_infer.py
-# Minimal, single-file inference for iMeshSegNet (Module-3, coarse/low-res output)
-# Usage examples:
-#   python module3_infer.py --ckpt outputs/segmentation_model/best.pt \
-#       --input datasets/new_arch/001_L.vtp --stats outputs/segmentation/stats.npz \
-#       --out runs/infer_coarse
+# m3_infer.py
+# 推理脚本：读取原始 STL/VTP，使用训练好的模型预测，输出带颜色的 VTP
+# 
+# 使用示例：
+#   1. Overfit 模型推理：
+#      python m3_infer.py --ckpt outputs/overfit/overfit_model.pt \
+#          --input datasets/landmarks_dataset/raw/1/1_L.stl \
+#          --stats outputs/segmentation/stats.npz --out outputs/overfit/infer
 #
-#   # 批量目录
-#   python module3_infer.py --ckpt outputs/segmentation_model/best.pt \
-#       --input datasets/new_arch/ --stats outputs/segmentation/stats.npz \
-#       --out runs/infer_coarse --ext .vtp .stl
+#   2. 正常训练模型推理：
+#      python m3_infer.py --ckpt outputs/segmentation/model/best.pt \
+#          --input datasets/landmarks_dataset/raw/1/1_L.stl \
+#          --stats outputs/segmentation/stats.npz --out outputs/segmentation/infer
+#
+#   3. 批量推理：
+#      python m3_infer.py --ckpt outputs/segmentation/model/best.pt \
+#          --input datasets/landmarks_dataset/raw/ --stats outputs/segmentation/stats.npz \
+#          --out outputs/segmentation/infer --ext .stl
 
 from __future__ import annotations
 import argparse
@@ -28,6 +35,46 @@ from m0_dataset import (
     normalize_mesh_units,
 )
 
+# 定义颜色映射（15个类别）
+LABEL_COLORS = {
+    0:  [128, 128, 128],  # 背景/牙龈 - 灰色
+    1:  [255, 0, 0],      # 牙齿1 - 红色
+    2:  [255, 127, 0],    # 牙齿2 - 橙色
+    3:  [255, 255, 0],    # 牙齿3 - 黄色
+    4:  [0, 255, 0],      # 牙齿4 - 绿色
+    5:  [0, 255, 255],    # 牙齿5 - 青色
+    6:  [0, 0, 255],      # 牙齿6 - 蓝色
+    7:  [127, 0, 255],    # 牙齿7 - 紫色
+    8:  [255, 0, 255],    # 牙齿8 - 品红
+    9:  [255, 192, 203],  # 牙齿9 - 粉色
+    10: [165, 42, 42],    # 牙齿10 - 棕色
+    11: [255, 215, 0],    # 牙齿11 - 金色
+    12: [0, 128, 128],    # 牙齿12 - 暗青色
+    13: [128, 0, 128],    # 牙齿13 - 暗紫色
+    14: [255, 140, 0],    # 牙齿14 - 暗橙色
+}
+
+def apply_color_to_mesh(mesh: pv.PolyData, labels: np.ndarray) -> pv.PolyData:
+    """根据预测标签为网格着色（cell 和 point 级别）"""
+    # 1. 为每个 cell 生成颜色
+    cell_colors = np.zeros((len(labels), 3), dtype=np.uint8)
+    for label_id, color in LABEL_COLORS.items():
+        mask = labels == label_id
+        cell_colors[mask] = color
+    
+    # 2. 将颜色添加到 cell_data
+    mesh.cell_data["RGB"] = cell_colors
+    mesh.cell_data["PredLabel"] = labels
+    
+    # 3. 快速将 cell 数据转换为 point 数据（使用 PyVista 内置方法）
+    mesh_with_point_data = mesh.cell_data_to_point_data()
+    
+    # 4. 复制转换后的 point 数据到原网格
+    mesh.point_data["RGB"] = mesh_with_point_data.point_data["RGB"]
+    mesh.point_data["PredLabel"] = mesh_with_point_data.point_data["PredLabel"]
+    
+    return mesh
+
 
 # ---------------- Utils ----------------
 def _lookup_arch_frame(stem: str, frames: Dict[str, torch.Tensor]) -> Optional[torch.Tensor]:
@@ -38,6 +85,126 @@ def _lookup_arch_frame(stem: str, frames: Dict[str, torch.Tensor]) -> Optional[t
     base = stem.split("_")[0]
     return frames.get(base)
 
+
+def load_pipeline_meta(ckpt_path: Path, args=None):
+    """
+    加载 checkpoint 中的 pipeline 元数据契约
+    
+    优先级：CLI 参数 > checkpoint 中的 pipeline > 默认值
+    
+    Returns:
+        (checkpoint, pipeline_meta): checkpoint 字典和解析后的 pipeline 元数据
+    """
+    # 加载 checkpoint
+    try:
+        ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
+    except:
+        ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    
+    # 提取 pipeline 配置
+    P = ckpt.get("pipeline", {}) if isinstance(ckpt, dict) else {}
+    
+    # 辅助函数：按优先级获取参数
+    def get(key, default=None):
+        # CLI 参数优先
+        if args and hasattr(args, key) and getattr(args, key) is not None:
+            return getattr(args, key)
+        # checkpoint 中的配置
+        if key in P:
+            return P[key]
+        # 默认值
+        return default
+    
+    # 构建 pipeline 元数据
+    zscore_cfg = P.get("zscore", {}) if isinstance(P.get("zscore"), dict) else {}
+    feature_layout = P.get("feature_layout", {}) if isinstance(P.get("feature_layout"), dict) else {}
+    
+    meta = {
+        # Z-score 标准化
+        "zscore_apply": zscore_cfg.get("apply", True),
+        "mean": np.array(zscore_cfg.get("mean")) if zscore_cfg.get("mean") else None,
+        "std": np.array(zscore_cfg.get("std")) if zscore_cfg.get("std") else None,
+        
+        # 几何预处理
+        "centered": get("centered", True),
+        "div_by_diag": get("div_by_diag", False),
+        "use_frame": get("use_frame", False),
+        
+        # 采样策略
+        "sampler": get("sampler", "random"),
+        "sample_cells": get("sample_cells", 6000),
+        "target_cells": get("target_cells", 10000),
+        
+        # 特征布局（用于旋转对齐）
+        "rotate_blocks": feature_layout.get("rotate_blocks", []),
+        
+        # 随机种子
+        "seed": get("seed", 42),
+        
+        # 训练信息
+        "train_sample_ids_path": ckpt.get("train_sample_ids_path", None),
+    }
+    
+    # 打印加载的配置
+    print(f"\n📋 Pipeline 契约:")
+    print(f"   Z-score: {'✓' if meta['zscore_apply'] else '✗'} (mean shape: {meta['mean'].shape if meta['mean'] is not None else 'N/A'})")
+    print(f"   Centered: {meta['centered']}, Div by diag: {meta['div_by_diag']}")
+    print(f"   Use frame: {meta['use_frame']}, Sampler: {meta['sampler']}")
+    print(f"   Target cells: {meta['target_cells']}, Sample cells: {meta['sample_cells']}")
+    
+    return ckpt, meta
+
+
+@torch.no_grad()
+def _load_model_with_contract(ckpt_path: Path, device: torch.device, args=None) -> Tuple[iMeshSegNet, dict]:
+    """
+    加载模型并验证 pipeline 契约
+    
+    Returns:
+        (model, pipeline_meta): 加载的模型和 pipeline 元数据
+    """
+    ckpt, meta = load_pipeline_meta(ckpt_path, args)
+    
+    # 获取模型配置
+    num_classes = ckpt.get("num_classes", SEG_NUM_CLASSES)
+    in_channels = ckpt.get("in_channels", 15)
+    
+    print(f"\n🏗️  模型配置:")
+    print(f"   Num classes: {num_classes}")
+    print(f"   In channels: {in_channels}")
+    
+    # 创建模型
+    model = iMeshSegNet(
+        num_classes=num_classes,
+        glm_impl="edgeconv",
+        k_short=6,
+        k_long=12,
+        with_dropout=False,
+    )
+    
+    # 加载权重
+    if isinstance(ckpt, dict):
+        if "state_dict" in ckpt:
+            model.load_state_dict(ckpt["state_dict"])
+        elif "model_state_dict" in ckpt:
+            model.load_state_dict(ckpt["model_state_dict"])
+        elif "model" in ckpt:
+            model.load_state_dict(ckpt["model"])
+        else:
+            model.load_state_dict(ckpt)
+    else:
+        model.load_state_dict(ckpt)
+    
+    model.to(device).eval()
+    
+    # 验证契约
+    print(f"\n✅ 契约验证:")
+    print(f"   模型输出维度与 num_classes 一致: {num_classes}")
+    print(f"   特征输入维度: {in_channels}")
+    
+    return model, meta
+
+
 @torch.no_grad()
 def _load_model(ckpt: Path, num_classes: int, device: torch.device) -> iMeshSegNet:
     model = iMeshSegNet(
@@ -47,13 +214,25 @@ def _load_model(ckpt: Path, num_classes: int, device: torch.device) -> iMeshSegN
         k_long=12,
         with_dropout=False,
     )
-    state = torch.load(str(ckpt), map_location="cpu")
-    key = "model" if isinstance(state, dict) and "model" in state else \
-          "state_dict" if isinstance(state, dict) and "state_dict" in state else None
-    if key is None:
-        model.load_state_dict(state)
+    # 兼容不同的 PyTorch 版本
+    try:
+        state = torch.load(str(ckpt), map_location="cpu", weights_only=True)
+    except:
+        state = torch.load(str(ckpt), map_location="cpu", weights_only=False)
+    
+    # 处理不同的 checkpoint 格式
+    if isinstance(state, dict):
+        if "model_state_dict" in state:
+            model.load_state_dict(state["model_state_dict"])
+        elif "model" in state:
+            model.load_state_dict(state["model"])
+        elif "state_dict" in state:
+            model.load_state_dict(state["state_dict"])
+        else:
+            model.load_state_dict(state)
     else:
-        model.load_state_dict(state[key])
+        model.load_state_dict(state)
+    
     model.to(device).eval()
     return model
 
@@ -107,6 +286,8 @@ def _infer_single_mesh(
         feats = feats[ids]
         pos_raw = pos_raw[ids]
         sample_mesh = _subset_cells(mesh, ids)
+        # 转换为 PolyData 以便保存为 VTP
+        sample_mesh = sample_mesh.cast_to_unstructured_grid().extract_surface()
     else:
         sample_mesh = mesh
 
@@ -130,8 +311,8 @@ def _infer_single_mesh(
     pred = torch.argmax(logits, dim=1)     # (1,Ns)
     pred_np = pred.squeeze(0).cpu().numpy().astype(np.int32)
 
-    # 7) 写入到采样网格的 cell_data 以便直接可视化
-    sample_mesh.cell_data["PredLabel"] = pred_np
+    # 7) 应用颜色映射到网格
+    sample_mesh = apply_color_to_mesh(sample_mesh, pred_np)
     return sample_mesh, pred_np
 
 def _gather_inputs(input_path: Path, exts: List[str]) -> List[Path]:
@@ -153,8 +334,8 @@ def main():
     ap.add_argument("--arch-frames", type=str, default=None, help="optional JSON of arch frames (3x3 or 4x4)")
     ap.add_argument("--device", type=str, default="cuda:0")
     ap.add_argument("--num-classes", type=int, default=SEG_NUM_CLASSES)
-    ap.add_argument("--target-cells", type=int, default=25000)
-    ap.add_argument("--sample-cells", type=int, default=8192)
+    ap.add_argument("--target-cells", type=int, default=10000, help="Target cells after decimation (same as training)")
+    ap.add_argument("--sample-cells", type=int, default=9000, help="Sample cells for inference (same as training)")
     ap.add_argument("--ext", nargs="*", default=[".vtp", ".stl"], help="valid extensions when input is a folder")
     args = ap.parse_args()
 
@@ -186,16 +367,18 @@ def main():
                 sample_cells=args.sample_cells,
                 num_classes=args.num_classes,
             )
-            # 导出：低分辨率VTP（含 PredLabel）与 NPY
+            # 导出：带颜色的 VTP（含 RGB 和 PredLabel）与预测标签 NPY
             stem = f.stem
             out_npy = out_dir / f"{stem}_pred.npy"
-            # UnstructuredGrid needs .vtu whereas PolyData can use .vtp
-            mesh_ext = ".vtp" if isinstance(sample_mesh, pv.PolyData) else ".vtu"
-            out_mesh = out_dir / f"{stem}_coarse{mesh_ext}"
+            out_mesh = out_dir / f"{stem}_colored.vtp"
 
             sample_mesh.save(str(out_mesh), binary=True)
             np.save(str(out_npy), pred)
-            print(f"  ✓ {stem} -> {out_mesh.name} (cells={sample_mesh.n_cells})")
+            
+            # 统计预测的类别分布
+            unique_labels, counts = np.unique(pred, return_counts=True)
+            label_dist = ", ".join([f"L{lbl}:{cnt}" for lbl, cnt in zip(unique_labels, counts)])
+            print(f"  ✓ {stem} -> {out_mesh.name} (cells={sample_mesh.n_cells}, labels=[{label_dist}])")
         except Exception as e:
             print(f"  ✗ {f.name} failed: {e}")
 

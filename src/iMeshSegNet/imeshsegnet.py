@@ -10,7 +10,7 @@ import torch.nn.functional as F
 # Small utils
 # ------------------------------------------------------------
 def knn_graph(pos: torch.Tensor, k: int) -> torch.Tensor:
-    """Build k-NN graph with explicit self-loop for each center.
+    """Build k-NN graph with explicit (deduplicated) self-loop for each center.
     Args:
         pos: (B, 3, N) positions in *the unified arch coordinate frame*.
         k:   number of neighbors (including self).
@@ -21,11 +21,19 @@ def knn_graph(pos: torch.Tensor, k: int) -> torch.Tensor:
     assert C == 3, "pos must be (B,3,N)"
     if k <= 0:
         raise ValueError("k must be positive for knn_graph")
-    dists = torch.cdist(pos.transpose(1, 2), pos.transpose(1, 2), p=2)  # (B,N,N)
-    knn_i = torch.topk(dists, k=k, dim=-1, largest=False, sorted=False).indices  # (B,N,k)
-    self_idx = torch.arange(N, device=pos.device).view(1, N, 1)
-    knn_i[..., 0:1] = self_idx  # ensure self-loop present
-    return knn_i
+
+    with torch.no_grad():
+        pts = pos.transpose(1, 2)  # (B,N,3)
+        dists = torch.cdist(pts, pts, p=2)  # (B,N,N)
+        eye = torch.eye(N, device=pos.device, dtype=torch.bool).unsqueeze(0)
+        dists = dists.masked_fill(eye, float("inf"))
+
+        if k == 1:
+            return torch.arange(N, device=pos.device).view(1, N, 1).expand(B, -1, -1)
+
+        nn_idx = torch.topk(dists, k=k - 1, dim=-1, largest=False, sorted=False).indices  # (B,N,k-1)
+        self_idx = torch.arange(N, device=pos.device).view(1, N, 1).expand(B, -1, -1)
+        return torch.cat([self_idx, nn_idx], dim=-1)
 
 
 def index_points(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
@@ -265,25 +273,30 @@ class iMeshSegNet(nn.Module):
             
             # MLP-2: 论文描述的中间特征提取模块（GLM-1 到 GLM-2 之间）
             self.mlp2 = nn.Sequential(
-                nn.Conv1d(128, 128, 1),
-                nn.BatchNorm1d(128),
+                nn.Conv1d(128, 256, 1),
+                nn.BatchNorm1d(256),
                 nn.ReLU(inplace=True),
-                nn.Conv1d(128, 512, 1),
+                nn.Conv1d(256, 512, 1),
                 nn.BatchNorm1d(512),
-                nn.ReLU(inplace=True)
+                nn.ReLU(inplace=True),
+                nn.Conv1d(512, 512, 1),
+                nn.BatchNorm1d(512),
+                nn.ReLU(inplace=True),
             )
-            
-            # GLM-2 输入维度调整为 512（接收 MLP-2 的输出）
+
             self.glm2 = GLMEdgeConv(512, out_ch=512, k_short=k_short, k_long=k_long)
         else:
             self.glm1 = GLMSAP(64, 128)
             self.mlp2 = nn.Sequential(
-                nn.Conv1d(128, 128, 1),
-                nn.BatchNorm1d(128),
+                nn.Conv1d(128, 256, 1),
+                nn.BatchNorm1d(256),
                 nn.ReLU(inplace=True),
-                nn.Conv1d(128, 512, 1),
+                nn.Conv1d(256, 512, 1),
                 nn.BatchNorm1d(512),
-                nn.ReLU(inplace=True)
+                nn.ReLU(inplace=True),
+                nn.Conv1d(512, 512, 1),
+                nn.BatchNorm1d(512),
+                nn.ReLU(inplace=True),
             )
             self.glm2 = GLMSAP(512, 512)
 
@@ -291,7 +304,6 @@ class iMeshSegNet(nn.Module):
         self.gmp2 = nn.AdaptiveMaxPool1d(1)
         self.gmp3 = nn.AdaptiveMaxPool1d(1)
         self.gmp4 = nn.AdaptiveMaxPool1d(1)
-        self.gap5 = nn.AdaptiveAvgPool1d(1)
 
         # 密集融合：FTM(64) + GLM-1(128) + MLP-2(512) + GLM-2(512)
         fusion_in = 64 + 128 + 512 + 512
@@ -373,8 +385,6 @@ class iMeshSegNet(nn.Module):
         g2 = self.gmp2(y1).squeeze(-1)      # GLM-1: 128
         g3 = self.gmp3(y2).squeeze(-1)      # MLP-2: 512
         g4 = self.gmp4(y3).squeeze(-1)      # GLM-2 (max): 512
-        g5 = self.gap5(y3).squeeze(-1)      # GLM-2 (avg): 512 (可选，论文未明确)
-        # 论文使用 g1+g2+g3+g4，总计 64+128+512+512=1216
         globals_feat = torch.cat([g1, g2, g3, g4], dim=1)
         globals_feat = self.fuse_fc(globals_feat)  # 1216 -> 128
         globals_feat = globals_feat.unsqueeze(-1).repeat(1, 1, N)

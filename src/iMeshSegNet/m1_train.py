@@ -59,10 +59,8 @@ class GeneralizedDiceLoss(nn.Module):
         intersection = torch.sum(probs * onehot, dim=(0, 2))
         union = torch.sum(probs, dim=(0, 2)) + torch.sum(onehot, dim=(0, 2))
 
-        numerator = 2 * torch.sum(weights * intersection)
+        numerator = 2 * torch.sum(weights * intersection) + self.epsilon
         denominator = torch.sum(weights * union) + self.epsilon
-        if numerator == 0:
-            return logits.new_tensor(0.0)
         dice = numerator / denominator
         return 1 - dice
 
@@ -276,12 +274,14 @@ class Trainer:
         self,
         loader: DataLoader,
         is_train: bool,
-    ) -> Tuple[float, Optional[Dict[str, Dict[str, float]]], Optional[Dict[str, Dict[str, float]]]]:
+    ) -> Tuple[float, Dict[str, float], Optional[Dict[str, Dict[str, float]]], Optional[Dict[str, Dict[str, float]]]]:
         self.model.train(mode=is_train)
         total_loss = 0.0
         desc = "Training" if is_train else "Validation"
         context_manager = nullcontext() if is_train else torch.no_grad()
         case_records: List[Dict[str, np.ndarray]] = []
+        bg_ratios: List[float] = []
+        entropy_values: List[float] = []
 
         for (x, pos_norm, pos_mm, pos_scale), y in tqdm(loader, desc=desc):
             x = x.to(self.device, non_blocking=True)
@@ -302,6 +302,12 @@ class Trainer:
                 with autocast(enabled=self.amp_enabled):
                     logits = self.model(x, pos_norm)
                     loss = self.dice_loss(logits, y)
+            probs_detached = torch.softmax(logits.detach(), dim=1)
+            preds_detached = torch.argmax(logits.detach(), dim=1)
+            bg_ratio = (preds_detached == 0).float().mean().item()
+            entropy = -(probs_detached * torch.log(probs_detached.clamp(min=1e-8))).sum(dim=1).mean().item()
+            bg_ratios.append(bg_ratio)
+            entropy_values.append(entropy)
 
             if is_train:
                 if self.amp_enabled:
@@ -318,8 +324,8 @@ class Trainer:
             total_loss += loss.item()
 
             if not is_train:
-                probs = torch.softmax(logits.detach(), dim=1).cpu()  # (B,C,N)
-                preds = torch.argmax(logits.detach(), dim=1).cpu()    # (B,N)
+                probs = probs_detached.cpu()  # (B,C,N)
+                preds = preds_detached.cpu()    # (B,N)
                 targets_cpu = y.cpu()
                 pos_mm_cpu = pos_mm.cpu()
                 pos_scale_cpu = pos_scale.cpu()
@@ -335,10 +341,15 @@ class Trainer:
                     )
 
         avg_loss = total_loss / max(len(loader), 1)
+        diag_stats = {
+            "p_bg": float(np.mean(bg_ratios)) if bg_ratios else 0.0,
+            "entropy": float(np.mean(entropy_values)) if entropy_values else 0.0,
+            "dice": float(avg_loss),
+        }
         if not is_train:
             raw_metrics, post_metrics = evaluate_cases(case_records, self.config.num_classes)
-            return avg_loss, raw_metrics, post_metrics
-        return avg_loss, None, None
+            return avg_loss, diag_stats, raw_metrics, post_metrics
+        return avg_loss, diag_stats, None, None
 
     def train(self) -> None:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -349,6 +360,10 @@ class Trainer:
                     "epoch",
                     "train_loss",
                     "val_loss",
+                    "train_p_bg",
+                    "train_entropy",
+                    "val_p_bg",
+                    "val_entropy",
                     "raw_dsc",
                     "raw_dsc_std",
                     "raw_sen",
@@ -378,7 +393,7 @@ class Trainer:
                 torch.cuda.reset_peak_memory_stats(self.device)
 
             epoch_start = time.time()
-            train_loss, _, _ = self._run_epoch(self.train_loader, is_train=True)
+            train_loss, train_diag, _, _ = self._run_epoch(self.train_loader, is_train=True)
             epoch_time = time.time() - epoch_start
 
             train_base = getattr(self.train_loader.dataset, "base_len", len(self.train_loader.dataset))
@@ -389,7 +404,7 @@ class Trainer:
                 else 0.0
             )
 
-            val_loss, val_raw, val_post = self._run_epoch(self.val_loader, is_train=False)
+            val_loss, val_diag, val_raw, val_post = self._run_epoch(self.val_loader, is_train=False)
             current_lr = self.optimizer.param_groups[0]["lr"]
 
             raw_dsc = val_raw["dsc"]["mean"]
@@ -432,7 +447,12 @@ class Trainer:
             # Focus on raw_ metrics for model evaluation.
             print(
                 f"Epoch {epoch}/{self.config.epochs} | "
-                f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Train BG0: {train_diag['p_bg']:.3f} | "
+                f"Train Ent: {train_diag['entropy']:.3f} | "
+                f"Val Loss: {val_loss:.4f} | "
+                f"Val BG0: {val_diag['p_bg']:.3f} | "
+                f"Val Ent: {val_diag['entropy']:.3f} | "
                 f"Raw DSC: {raw_dsc_str}±{raw_dsc_std_str} | Raw SEN: {raw_sen_str}±{raw_sen_std_str} | "
                 f"Raw PPV: {raw_ppv_str}±{raw_ppv_std_str} | Raw HD: {raw_hd_str}±{raw_hd_std_str} mm | "
                 # Post-processing metrics commented out as they are invalid without proper upsampling:
@@ -448,6 +468,10 @@ class Trainer:
                         epoch,
                         f"{train_loss:.6f}",
                         f"{val_loss:.6f}",
+                        f"{train_diag.get('p_bg', 0.0):.6f}",
+                        f"{train_diag.get('entropy', 0.0):.6f}",
+                        f"{val_diag.get('p_bg', 0.0):.6f}",
+                        f"{val_diag.get('entropy', 0.0):.6f}",
                         raw_dsc_str,
                         raw_dsc_std_str,
                         raw_sen_str,
