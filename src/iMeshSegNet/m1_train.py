@@ -1,4 +1,4 @@
-# module1_train.py
+﻿# module1_train.py
 # Stage-1 训练流程：仅使用 Generalized Dice Loss，记录论文口径的 DSC/SEN/PPV/HD（含后处理）。
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ from m0_dataset import (
     DataConfig,
     SEG_NUM_CLASSES,
     get_dataloaders,
-    set_seed,
+    load_stats,
 )
 from imeshsegnet import iMeshSegNet
 
@@ -295,6 +295,11 @@ class Trainer:
         self.best_val_dsc = -1.0
         self.amp_enabled = device.type == "cuda" and HAS_AMP
         self.device_type = "cuda" if device.type == "cuda" else "cpu"
+        self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        self.stats_mean, self.stats_std = load_stats(self.config.data_config.stats_path)
+        self.stats_mean = self.stats_mean.astype(np.float32, copy=False)
+        self.stats_std = np.clip(self.stats_std.astype(np.float32, copy=False), 1e-6, None)
+
         
         # 创建 GradScaler（兼容不同 PyTorch 版本）
         if HAS_AMP:
@@ -311,6 +316,69 @@ class Trainer:
         self._checked_shapes = False
 
         self.dice_loss = GeneralizedDiceLoss().to(self.device)
+
+    def _build_checkpoint(self, epoch: int, current_lr: float, raw_dsc: float) -> Dict[str, object]:
+        arch_config = {
+            "glm_impl": getattr(self.model, "glm_impl", "edgeconv"),
+            "use_feature_stn": bool(getattr(self.model, "use_feature_stn", True)),
+            "k_short": int(getattr(self.model, "k_short", 6)),
+            "k_long": int(getattr(self.model, "k_long", 12)),
+            "with_dropout": bool(getattr(self.model, "with_dropout", False)),
+            "dropout_p": float(getattr(self.model, "dropout_p", 0.0)),
+        }
+
+        mean_list = self.stats_mean.tolist()
+        std_list = self.stats_std.tolist()
+
+        pipeline = {
+            "zscore": {
+                "mean": mean_list,
+                "std": std_list,
+                "apply": True,
+            },
+            "centered": False,
+            "div_by_diag": True,
+            "diag_mode": "cells",
+            "use_frame": False,
+            "sampler": "random",
+            "sample_cells": int(self.config.data_config.sample_cells),
+            "target_cells": int(self.config.data_config.target_cells),
+            "feature_layout": {
+                "rotate_blocks": [
+                    [0, 3],
+                    [3, 6],
+                    [6, 9],
+                    [9, 12],
+                    [12, 15],
+                ]
+            },
+            "seed": int(getattr(self.config.data_config, "seed", 42)),
+            "zscore_mean": mean_list,
+            "zscore_std": std_list,
+            "knn_k": {
+                "glm1": int(getattr(self.model, "k_short", 6)),
+                "glm2": [int(getattr(self.model, "k_short", 6)), int(getattr(self.model, "k_long", 12))],
+            },
+        }
+
+        training_meta = {
+            "epoch": int(epoch),
+            "optimizer": self.optimizer.__class__.__name__,
+            "lr": float(current_lr),
+            "weight_decay": float(getattr(self.config, "weight_decay", 0.0)),
+            "best_raw_dsc": float(self.best_val_dsc),
+            "current_raw_dsc": float(raw_dsc),
+        }
+
+        return {
+            "state_dict": self.model.state_dict(),
+            "num_classes": self.config.num_classes,
+            "in_channels": 15,
+            "arch": arch_config,
+            "pipeline": pipeline,
+            "training": training_meta,
+        }
+
 
     def _run_epoch(
         self,
@@ -546,11 +614,15 @@ class Trainer:
                     ]
                 )
 
-            torch.save(self.model.state_dict(), self.config.output_dir / "last.pt")
-            if np.isfinite(raw_dsc) and raw_dsc > self.best_val_dsc:
+            is_best = np.isfinite(raw_dsc) and raw_dsc > self.best_val_dsc
+            if is_best:
                 self.best_val_dsc = raw_dsc
                 print(f"✨ New best model found! Raw DSC: {raw_dsc:.4f}. Saving to best.pt")
-                torch.save(self.model.state_dict(), self.config.output_dir / "best.pt")
+
+            checkpoint = self._build_checkpoint(epoch, current_lr, raw_dsc)
+            torch.save(checkpoint, self.config.output_dir / "last.pt")
+            if is_best:
+                torch.save(checkpoint, self.config.output_dir / "best.pt")
 
             self.scheduler.step()
 

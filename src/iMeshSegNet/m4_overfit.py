@@ -27,7 +27,14 @@ import matplotlib.pyplot as plt
 sys.path.append(str(Path(__file__).parent))
 sys.path.append(str(Path(__file__).parent.parent))
 
-from m0_dataset import SegmentationDataset, load_split_lists
+from m0_dataset import (
+    DECIM_CACHE,
+    SegmentationDataset,
+    _load_or_build_decimated_mm,
+    extract_features,
+    load_split_lists,
+    normalize_mesh_units,
+)
 from m1_train import GeneralizedDiceLoss
 from imeshsegnet import iMeshSegNet
 
@@ -125,17 +132,27 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     if not sample_file.exists():
         raise FileNotFoundError(f"样本文件不存在: {sample_file}")
     
-    # 加载统计信息
-    stats_path = Path("outputs/segmentation/module0/stats.npz")
-    if not stats_path.exists():
-        raise FileNotFoundError(f"统计文件不存在: {stats_path}\n请先运行 m0_dataset.py 生成统计信息")
-    
-    stats = np.load(stats_path)
-    mean = stats['mean']
-    std = stats['std']
-    
-    print(f"✅ 加载统计信息: 均值={mean[:3]}..., 标准差={std[:3]}...")
-    
+    # 加载统计信息（优先复用缓存，缺失则就地计算）
+    stats_path = Path("outputs/overfit/_stats_sample.npz")
+    if stats_path.exists():
+        with np.load(stats_path) as stats:
+            mean = stats["mean"].astype(np.float32, copy=False)
+            std = stats["std"].astype(np.float32, copy=False)
+        std = np.clip(std, 1e-6, None)
+        print(f"✅ 使用缓存统计: {stats_path}")
+    else:
+        mesh_mm = _load_or_build_decimated_mm(sample_file, target_cells=10000)
+        mesh = mesh_mm.copy(deep=True)
+        mesh.points -= mesh.center
+        mesh, *_ = normalize_mesh_units(mesh)
+        mesh = mesh.triangulate()
+        feats = extract_features(mesh).astype(np.float32, copy=False)
+        mean = feats.mean(axis=0).astype(np.float32, copy=False)
+        std = np.clip(feats.std(axis=0), 1e-6, None).astype(np.float32, copy=False)
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(stats_path, mean=mean, std=std)
+        print(f"[overfit] built sample stats -> {stats_path}")
+
     # 创建单样本数据集
     single_dataset = SingleSampleDataset(str(sample_file), mean, std)
     
@@ -143,6 +160,21 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     sample_data = single_dataset[0]
     # 数据格式: ((features, pos, pos_mm, pos_scale), labels)
     (features, pos, pos_mm, pos_scale), labels = sample_data
+    
+    # 💾 保存训练侧数组（用于与推理对比）
+    # 注意：features 和 pos 格式是 (C, N)，需要转置为 (N, C) 以便对比
+    train_arrays_path = Path("outputs/overfit/_train_arrays.npz")
+    train_arrays_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(str(train_arrays_path),
+             feats=features.transpose(0, 1).numpy(),  # (15, N) -> (N, 15)
+             pos=pos.transpose(0, 1).numpy())          # (3, N) -> (N, 3)
+    print(f"💾 保存训练侧数组: {train_arrays_path} (shape: feats={features.shape}->{features.transpose(0,1).shape}, pos={pos.shape}->{pos.transpose(0,1).shape})")
+    
+    # 🔬 保存训练时的采样索引（用于推理端复用）
+    if hasattr(single_dataset.base_dataset, 'last_sample_ids') and single_dataset.base_dataset.last_sample_ids is not None:
+        train_ids_path = Path("outputs/overfit/_train_ids.npy")
+        np.save(str(train_ids_path), single_dataset.base_dataset.last_sample_ids.astype(np.int64))
+        print(f"💾 保存训练采样索引: {train_ids_path} (shape: {single_dataset.base_dataset.last_sample_ids.shape})")
     
     unique_labels = torch.unique(labels)
     # 使用标签的最大值+1作为类别数，确保所有标签都在范围内
@@ -337,6 +369,120 @@ class OverfitTrainer:
             'entropy': np.mean(all_entropy)
         }
     
+    def _save_training_evidence(self, save_dir: Path, sample_name: str):
+        """
+        🔬 决策树节点1：保存训练证据（logits, labels, metrics）
+        
+        用于 --replay-train 模式下验证推理是否完全复现训练前向
+        """
+        import json
+        
+        self.model.eval()
+        all_logits = []
+        all_labels = []
+        all_preds = []
+        
+        print("   📊 收集最终 epoch 的 logits 和 labels...")
+        
+        with torch.no_grad():
+            for batch_data in self.dataloader:
+                (features, pos, pos_mm, pos_scale), labels = batch_data
+                features = features.to(self.device, non_blocking=True)
+                pos = pos.to(self.device, non_blocking=True)
+                labels = labels.to(self.device, non_blocking=True)
+                
+                logits = self.model(features, pos)  # (B, C, N)
+                preds = torch.argmax(logits, dim=1)  # (B, N)
+                
+                all_logits.append(logits.cpu().numpy())
+                all_labels.append(labels.cpu().numpy())
+                all_preds.append(preds.cpu().numpy())
+        
+        # 合并所有批次
+        all_logits = np.concatenate(all_logits, axis=0)  # (B, C, N)
+        all_labels = np.concatenate(all_labels, axis=0)  # (B, N)
+        all_preds = np.concatenate(all_preds, axis=0)    # (B, N)
+        
+        # 取第一个样本（单样本训练）
+        train_logits = all_logits[0]  # (C, N)
+        train_labels = all_labels[0]  # (N,)
+        train_preds = all_preds[0]    # (N,)
+        
+        # 保存 logits 和 labels
+        logits_path = save_dir.parent / "_train_logits.npy"
+        labels_path = save_dir.parent / "_train_labels.npy"
+        np.save(str(logits_path), train_logits)
+        np.save(str(labels_path), train_labels)
+        print(f"   💾 _train_logits.npy (shape: {train_logits.shape})")
+        print(f"   💾 _train_labels.npy (shape: {train_labels.shape})")
+        
+        # 计算并保存 metrics
+        dsc, sen, ppv = calculate_metrics(
+            torch.from_numpy(train_preds),
+            torch.from_numpy(train_labels),
+            self.num_classes
+        )
+        
+        # 计算混淆矩阵
+        conf_matrix = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
+        for true_label in range(self.num_classes):
+            for pred_label in range(self.num_classes):
+                conf_matrix[true_label, pred_label] = np.sum(
+                    (train_labels == true_label) & (train_preds == pred_label)
+                )
+        
+        # 计算 margin (置信度)
+        probs = np.exp(train_logits) / np.exp(train_logits).sum(axis=0, keepdims=True)  # Softmax
+        sorted_probs = np.sort(probs, axis=0)
+        margins = sorted_probs[-1, :] - sorted_probs[-2, :]  # p_max - p_second
+        
+        metrics = {
+            "sample_name": sample_name,
+            "num_classes": int(self.num_classes),
+            "num_cells": int(train_labels.shape[0]),
+            "dsc": float(dsc),
+            "sensitivity": float(sen),
+            "ppv": float(ppv),
+            "accuracy": float((train_preds == train_labels).mean()),
+            "confusion_matrix": conf_matrix.tolist(),
+            "per_class_iou": [],
+            "per_class_dsc": [],
+            "margin_stats": {
+                "mean": float(margins.mean()),
+                "std": float(margins.std()),
+                "min": float(margins.min()),
+                "max": float(margins.max()),
+                "q25": float(np.percentile(margins, 25)),
+                "q50": float(np.percentile(margins, 50)),
+                "q75": float(np.percentile(margins, 75))
+            }
+        }
+        
+        # Per-class 指标
+        for cls in range(1, self.num_classes):
+            pred_mask = (train_preds == cls)
+            label_mask = (train_labels == cls)
+            tp = np.sum(pred_mask & label_mask)
+            fp = np.sum(pred_mask & ~label_mask)
+            fn = np.sum(~pred_mask & label_mask)
+            
+            if tp + fp + fn > 0:
+                iou = tp / (tp + fp + fn)
+                dsc_cls = 2 * tp / (2 * tp + fp + fn)
+            else:
+                iou = 0.0
+                dsc_cls = 0.0
+            
+            metrics["per_class_iou"].append(float(iou))
+            metrics["per_class_dsc"].append(float(dsc_cls))
+        
+        metrics_path = save_dir.parent / "_train_metrics.json"
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        print(f"   💾 _train_metrics.json (DSC={dsc:.4f}, Acc={metrics['accuracy']:.4f})")
+        print(f"   📊 Margin: mean={metrics['margin_stats']['mean']:.3f}, std={metrics['margin_stats']['std']:.3f}")
+        print(f"   ✅ 训练证据保存完成！")
+    
     def _save_checkpoint_with_pipeline(self, ckpt_path: Path, sample_name: str, epoch: int, dsc: float):
         """
         保存包含完整 pipeline 元数据契约的 checkpoint
@@ -344,6 +490,36 @@ class OverfitTrainer:
         这确保推理时能完全复现训练时的前处理流程
         """
         # 构建完整的 checkpoint
+        train_ids_path = Path("outputs/overfit/_train_ids.npy")
+        single_dataset = getattr(self.dataloader, "dataset", None)
+        base_seg_dataset = getattr(single_dataset, "base_dataset", None) if single_dataset is not None else None
+        decim_cache_vtp = None
+        if base_seg_dataset is not None and getattr(base_seg_dataset, "file_paths", None):
+            sample_file = Path(base_seg_dataset.file_paths[0])
+            target_cells = getattr(base_seg_dataset, "target_cells", None)
+            if target_cells is not None:
+                decim_cache_vtp = DECIM_CACHE / f"{sample_file.stem}.c{int(target_cells)}.vtp"
+        zscore_mean = self.mean.tolist() if self.mean is not None else None
+        zscore_std = self.std.tolist() if self.std is not None else None
+        knn_info = {
+            "glm1": int(getattr(self.model, "k_short", 6)),
+            "glm2": [int(getattr(self.model, "k_short", 6)), int(getattr(self.model, "k_long", 12))],
+        }
+        if decim_cache_vtp is None or not decim_cache_vtp.exists():
+            raise FileNotFoundError(f"Decimated cache mesh not found for {sample_name}: {decim_cache_vtp}")
+        if not train_ids_path.exists():
+            raise FileNotFoundError(f"Training sample ids missing: {train_ids_path}")
+        decim_cache_vtp_str = str(decim_cache_vtp.resolve())
+        train_ids_path_str = str(train_ids_path.resolve())
+        arch_config = {
+            "glm_impl": getattr(self.model, "glm_impl", "edgeconv"),
+            "use_feature_stn": bool(getattr(self.model, "fstn", None)),
+            "k_short": int(getattr(self.model, "k_short", 6)),
+            "k_long": int(getattr(self.model, "k_long", 12)),
+            "with_dropout": bool(getattr(self.model, "with_dropout", False)),
+            "dropout_p": float(getattr(self.model, "dropout_p", 0.0)),
+        }
+
         checkpoint = {
             # 模型权重
             "state_dict": self.model.state_dict(),
@@ -351,19 +527,20 @@ class OverfitTrainer:
             # 模型架构信息
             "num_classes": self.num_classes,
             "in_channels": 15,  # 特征维度（9点坐标 + 3法向 + 3相对位置）
-            
+            "arch": arch_config,
+
             # 前处理 pipeline 契约
             "pipeline": {
                 # Z-score 标准化
                 "zscore": {
-                    "mean": self.mean.tolist() if self.mean is not None else None,
-                    "std": self.std.tolist() if self.std is not None else None,
+                    "mean": zscore_mean,
+                    "std": zscore_std,
                     "apply": True
                 },
                 
                 # 几何预处理
-                "centered": True,           # 已减去质心
-                "div_by_diag": False,      # 未除以对角线
+                "centered": True,          # 特征提取前减质心
+                "div_by_diag": True,        # 位置按盒对角线归一
                 "use_frame": False,        # overfit 不使用 arch frame
                 
                 # 采样策略
@@ -404,6 +581,15 @@ class OverfitTrainer:
             }
         }
         
+        checkpoint["pipeline"].update({
+            "decim_cache_vtp": decim_cache_vtp_str,
+            "train_ids_path": train_ids_path_str,
+            "diag_mode": "cells",
+            "zscore_mean": zscore_mean,
+            "zscore_std": zscore_std,
+            "knn_k": knn_info,
+            "train_sample_ids_path": train_ids_path_str,
+        })
         torch.save(checkpoint, ckpt_path)
         print(f"💾 保存 checkpoint (含 pipeline 契约): {ckpt_path.name}")
     
@@ -470,6 +656,10 @@ class OverfitTrainer:
         
         print(f"\n✅ 过拟合训练完成! 最佳DSC: {best_dsc:.4f}")
         
+        # 🔬 决策树节点1：保存最终 epoch 的 logits 和 labels
+        print(f"\n🔬 保存训练证据（决策树节点1）...")
+        self._save_training_evidence(save_dir, sample_name)
+        
         # 保存训练历史
         self.save_training_plots(save_dir, sample_name)
         
@@ -481,40 +671,40 @@ class OverfitTrainer:
         
         plt.figure(figsize=(20, 12))
         
-        # 损失曲线
+        # Loss curves
         plt.subplot(3, 3, 1)
         plt.plot(epochs, self.history['loss'], 'b-', label='Total Loss')
         plt.plot(epochs, self.history['dice_loss'], 'r-', label='Dice Loss')
         plt.plot(epochs, self.history['ce_loss'], 'g-', label='CE Loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
-        plt.title('训练损失')
+        plt.title('Training Loss')
         plt.legend()
         plt.yscale('log')
         
-        # DSC曲线
+        # DSC curve
         plt.subplot(3, 3, 2)
         plt.plot(epochs, self.history['dsc'], 'b-', label='DSC')
         plt.xlabel('Epoch')
         plt.ylabel('DSC')
-        plt.title('Dice相似系数')
+        plt.title('Dice Similarity Coefficient')
         plt.legend()
         
-        # 准确率曲线
+        # Accuracy curve
         plt.subplot(3, 3, 3)
         plt.plot(epochs, self.history['accuracy'], 'g-', label='Accuracy')
         plt.xlabel('Epoch')
         plt.ylabel('Accuracy')
-        plt.title('训练准确率')
+        plt.title('Training Accuracy')
         plt.legend()
         
-        # 🔍 BG0 比例曲线（关键诊断指标）
+        # BG0 ratio curves (key diagnostic)
         plt.subplot(3, 3, 4)
         plt.plot(epochs, self.history['train_bg0'], 'r-', label='Train BG0', linewidth=2)
         plt.plot(epochs, self.history['val_bg0'], 'b-', label='Val BG0', linewidth=2)
         plt.xlabel('Epoch')
         plt.ylabel('BG0 Ratio')
-        plt.title('🔍 背景预测比例 (应快速下降)')
+        plt.title('Background Prediction Ratio (should drop fast)')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
@@ -524,7 +714,7 @@ class OverfitTrainer:
         plt.plot(epochs, self.history['val_entropy'], 'b-', label='Val Entropy', linewidth=2)
         plt.xlabel('Epoch')
         plt.ylabel('Entropy')
-        plt.title('🔍 预测熵 (应快速下降)')
+        plt.title('Prediction Entropy (should drop fast)')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
@@ -535,7 +725,7 @@ class OverfitTrainer:
         plt.ylabel('DSC')
         plt.title('DSC vs Loss')
         
-        # 最后50个epoch的损失
+        # Last 50 epochs loss
         if len(epochs) > 50:
             plt.subplot(3, 3, 7)
             last_50 = epochs[-50:]
@@ -544,30 +734,30 @@ class OverfitTrainer:
             plt.plot(last_50, self.history['ce_loss'][-50:], 'g-', label='CE Loss')
             plt.xlabel('Epoch')
             plt.ylabel('Loss')
-            plt.title('最后50个Epoch损失')
+            plt.title('Last 50 Epochs - Loss')
             plt.legend()
             plt.yscale('log')
         
-        # 最后50个epoch的DSC
+        # Last 50 epochs DSC
         if len(epochs) > 50:
             plt.subplot(3, 3, 8)
             plt.plot(last_50, self.history['dsc'][-50:], 'b-', label='DSC')
             plt.xlabel('Epoch')
             plt.ylabel('DSC')
-            plt.title('最后50个Epoch DSC')
+            plt.title('Last 50 Epochs - DSC')
             plt.legend()
             
-            # 最后50个epoch的BG0 (关键诊断)
+            # Last 50 epochs BG0 (key diagnostic)
             plt.subplot(3, 3, 9)
             plt.plot(last_50, self.history['train_bg0'][-50:], 'r-', label='Train BG0')
             plt.plot(last_50, self.history['val_bg0'][-50:], 'b-', label='Val BG0')
             plt.xlabel('Epoch')
             plt.ylabel('BG0 Ratio')
-            plt.title('🔍 最后50 Epoch BG0')
+            plt.title('Last 50 Epochs - BG0 Ratio')
             plt.legend()
             plt.grid(True, alpha=0.3)
         
-        plt.suptitle(f'单样本过拟合训练曲线 - {sample_name}', fontsize=16)
+        plt.suptitle(f'Single Sample Overfitting - {sample_name}', fontsize=16)
         plt.tight_layout()
         
         plot_file = save_dir / f"overfit_curves_{sample_name}.png"
@@ -576,7 +766,44 @@ class OverfitTrainer:
         
         print(f"📊 训练曲线已保存: {plot_file}")
 
-
+def _save_overfit_checkpoint(model, ckpt_path: Path, *,
+                             num_classes: int,
+                             mean: np.ndarray, std: np.ndarray,
+                             sample_cells: int = 6000,
+                             target_cells: int = 10000,
+                             train_ids_path: Path | None,
+                             decim_cache_vtp: Path | None):
+    payload = {
+        "state_dict": model.state_dict(),
+        "num_classes": int(num_classes),
+        "in_channels": 15,
+        # 兼容字段（老版本会从这些键读取）
+        "train_sample_ids_path": str(train_ids_path) if train_ids_path else None,
+        # 统一契约（推理端优先使用这里的字段）
+        "pipeline": {
+            "zscore": {
+                "apply": True,
+                "mean": mean.astype(np.float32).tolist(),
+                "std":  np.clip(std, 1e-6, None).astype(np.float32).tolist(),
+            },
+            "centered": True,          # 训练时 mesh.points -= center
+            "div_by_diag": True,       # 训练位置 pos_norm / diag
+            "use_frame": False,        # 若后续提供 arch frame 可切 True
+            "sampler": "random",       # 训练 6k 随机采样（推理复用 train_ids）
+            "sample_cells": int(sample_cells),
+            "target_cells": int(target_cells),
+            "train_ids_path": str(train_ids_path) if train_ids_path else None,
+            "decim_cache_vtp": str(decim_cache_vtp) if decim_cache_vtp else None,
+            # 记录 knn k（供后处理兜底）
+            "knn_k": {"to10k": 5, "tofull": 7},
+            "diag_mode": "cells",
+            "seed": 42,
+        },
+    }
+    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, str(ckpt_path))
+    print(f"💾 保存 checkpoint (含 pipeline 契约): {ckpt_path.name}")
+    
 def main():
     parser = argparse.ArgumentParser(description="单样本过拟合训练")
     parser.add_argument("--sample", type=str, required=True, 
@@ -610,7 +837,7 @@ def main():
     
     # 创建模型
     print(f"\n🏗️  创建模型 (类别数: {num_classes})")
-    model = iMeshSegNet(num_classes=num_classes)
+    model = iMeshSegNet(num_classes=num_classes, with_dropout=False, use_feature_stn=False)
     
     # 创建训练器（传入 mean, std 用于保存 pipeline 契约）
     trainer = OverfitTrainer(model, dataloader, num_classes, device, mean, std)
@@ -645,3 +872,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

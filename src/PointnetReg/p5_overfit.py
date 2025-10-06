@@ -62,7 +62,7 @@ def get_single_sample_loader(root: str, tooth_id: str, features: str, sample_idx
     return single_item_loader, single_sample
 
 
-def overfit_one_tooth(args, tooth_id: str, device: torch.device) -> None:
+def overfit_one_tooth(args, tooth_id: str, device: torch.device):
     """Runs the overfit test for a single tooth."""
     try:
         loader, sample = get_single_sample_loader(
@@ -115,6 +115,16 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device) -> None:
             print(f"[{tooth_id}] epoch {epoch:03d}/{args.epochs} train_loss {train_loss:.8f}")
 
     print(f"[{tooth_id}] Overfitting test finished. Final loss: {train_loss:.8f}")
+    
+    # Save the model checkpoint
+    if args.save_model:
+        ckpt_dir = Path(args.out_dir) / tooth_id
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_path = ckpt_dir / "best.pt"
+        torch.save({"model": model.state_dict()}, ckpt_path)
+        print(f"[{tooth_id}] Model saved to {ckpt_path}")
+    
+    return model, sample
 
 
 def parse_args():
@@ -128,6 +138,8 @@ def parse_args():
     parser.add_argument("--sample_idx", type=int, default=0, help="The index of the sample to use for overfitting.")
     parser.add_argument("--seed", type=int, default=2025, help="Random seed.")
     parser.add_argument("--log_every", type=int, default=10, help="Log frequency.")
+    parser.add_argument("--save_model", action="store_true", help="Save the trained model.")
+    parser.add_argument("--out_dir", type=str, default="outputs/overfit", help="Output directory for saving models.")
     
     args = parser.parse_args()
     args.tooth = DEFAULT_TOOTH_IDS if args.tooth.strip().lower() == "all" else [t.strip() for t in args.tooth.split(",") if t.strip()]
