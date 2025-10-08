@@ -22,6 +22,7 @@ from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
+import pyvista as pv
 
 # 添加项目路径
 sys.path.append(str(Path(__file__).parent))
@@ -29,11 +30,13 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from m0_dataset import (
     DECIM_CACHE,
-    SegmentationDataset,
+    SEG_NUM_CLASSES,
+    LABEL_REMAP,
     _load_or_build_decimated_mm,
     extract_features,
-    load_split_lists,
     normalize_mesh_units,
+    find_label_array,
+    remap_segmentation_labels,
 )
 from m1_train import GeneralizedDiceLoss
 from imeshsegnet import iMeshSegNet
@@ -82,35 +85,69 @@ def calculate_metrics(preds: torch.Tensor, labels: torch.Tensor, num_classes: in
 
 
 class SingleSampleDataset(Dataset):
-    """单样本数据集 - 重复返回同一个样本用于过拟合"""
-    
+    """单样本数据集 - 生成一次样本后反复返回"""
+
     def __init__(self, sample_file: str, mean: np.ndarray, std: np.ndarray):
-        """
-        Args:
-            sample_file: 样本文件路径
-            mean: 特征标准化均值
-            std: 特征标准化标准差
-        """
-        self.base_dataset = SegmentationDataset(
-            file_paths=[sample_file],
-            mean=mean,
-            std=std,
-            arch_frames={},
-            target_cells=10000,
-            sample_cells=6000,
-            augment=False,  # 过拟合时不使用数据增强
-            augment_original_copies=1,
-            augment_flipped_copies=0
-        )
-        
-        # 预加载样本避免重复计算
-        self.sample_data = self.base_dataset[0]
-        
-    def __len__(self):
-        return 10  # ⚡ 优化：减少虚拟长度（100→10），加速训练
-    
+        target_cells = 10000
+        sample_cells = 6000
+        sample_path = Path(sample_file)
+
+        mesh10k_mm = _load_or_build_decimated_mm(sample_path, target_cells=target_cells)
+        self.decim_cache_vtp = (DECIM_CACHE / f"{sample_path.stem}.c{target_cells}.vtp").resolve()
+
+        mesh = mesh10k_mm.copy(deep=True)
+        mesh.points -= mesh.center
+
+        label_info = find_label_array(mesh)
+        if label_info is None:
+            raise RuntimeError(f"{sample_file} 缺失 Label 数组")
+        _, raw_labels = label_info
+        labels = np.asarray(raw_labels, dtype=np.int64)
+        known_label_values = np.array(list(LABEL_REMAP.keys()), dtype=np.int64)
+        if labels.size > 0 and np.all(np.isin(labels, known_label_values)):
+            labels = remap_segmentation_labels(labels)
+
+        mesh, _, _, diag_after = normalize_mesh_units(mesh)
+        mesh = mesh.triangulate()
+
+        labels_full_unique = np.unique(labels).astype(np.int64, copy=False)
+        self.labels_full_unique = labels_full_unique
+        if labels_full_unique.size > 0:
+            max_label = int(labels_full_unique.max())
+            self.num_classes_full = max(max_label + 1, int(SEG_NUM_CLASSES))
+        else:
+            self.num_classes_full = int(SEG_NUM_CLASSES)
+
+        feats = extract_features(mesh).astype(np.float32, copy=False)
+        pos_mm = mesh.cell_centers().points.astype(np.float32)
+        pos_scale = diag_after if diag_after > 1e-6 else 1.0
+        pos_norm = pos_mm / pos_scale
+
+        rng = np.random.default_rng(42)
+        if feats.shape[0] > sample_cells:
+            idx = rng.choice(feats.shape[0], size=sample_cells, replace=False)
+            feats = feats[idx]
+            pos_mm = pos_mm[idx]
+            pos_norm = pos_norm[idx]
+            labels = labels[idx]
+        else:
+            idx = np.arange(feats.shape[0], dtype=np.int64)
+
+        self.sample_indices = idx.astype(np.int64)
+
+        feats_norm = (feats - mean.reshape(1, -1)) / np.clip(std.reshape(1, -1), 1e-6, None)
+        features_tensor = torch.from_numpy(feats_norm.astype(np.float32)).transpose(0, 1).contiguous()
+        pos_tensor = torch.from_numpy(pos_norm.astype(np.float32)).transpose(0, 1).contiguous()
+        pos_mm_tensor = torch.from_numpy(pos_mm.astype(np.float32)).transpose(0, 1).contiguous()
+        pos_scale_tensor = torch.tensor([pos_scale], dtype=torch.float32)
+        labels_tensor = torch.from_numpy(labels.astype(np.int64))
+
+        self.sample_data = ((features_tensor, pos_tensor, pos_mm_tensor, pos_scale_tensor), labels_tensor)
+
+    def __len__(self) -> int:
+        return 10
+
     def __getitem__(self, idx):
-        # 每次都返回同一个样本
         return self.sample_data
 
 
@@ -169,16 +206,18 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
              feats=features.transpose(0, 1).numpy(),  # (15, N) -> (N, 15)
              pos=pos.transpose(0, 1).numpy())          # (3, N) -> (N, 3)
     print(f"💾 保存训练侧数组: {train_arrays_path} (shape: feats={features.shape}->{features.transpose(0,1).shape}, pos={pos.shape}->{pos.transpose(0,1).shape})")
+    single_dataset.train_arrays_path = train_arrays_path.resolve()
     
     # 🔬 保存训练时的采样索引（用于推理端复用）
-    if hasattr(single_dataset.base_dataset, 'last_sample_ids') and single_dataset.base_dataset.last_sample_ids is not None:
+    if hasattr(single_dataset, "sample_indices"):
         train_ids_path = Path("outputs/overfit/_train_ids.npy")
-        np.save(str(train_ids_path), single_dataset.base_dataset.last_sample_ids.astype(np.int64))
-        print(f"💾 保存训练采样索引: {train_ids_path} (shape: {single_dataset.base_dataset.last_sample_ids.shape})")
+        np.save(str(train_ids_path), np.asarray(single_dataset.sample_indices, dtype=np.int64))
+        print(f"💾 保存训练采样索引: {train_ids_path} (shape: {np.asarray(single_dataset.sample_indices).shape})")
+        single_dataset.train_ids_path = train_ids_path.resolve()
     
     unique_labels = torch.unique(labels)
-    # 使用标签的最大值+1作为类别数，确保所有标签都在范围内
-    num_classes = int(unique_labels.max().item()) + 1
+    num_classes = int(getattr(single_dataset, "num_classes_full", SEG_NUM_CLASSES))
+    labels_full_unique = getattr(single_dataset, "labels_full_unique", None)
     
     # 创建DataLoader
     # ⚡ 优化：batch_size=2 避免 BatchNorm batch_size=1 问题，同时加速训练
@@ -192,7 +231,9 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     
     print(f"✅ 单样本数据集设置完成")
     print(f"   - 样本形状: features={features.shape}, pos={pos.shape}, labels={labels.shape}")
-    print(f"   - 唯一标签: {unique_labels.tolist()}")
+    if labels_full_unique is not None:
+        print(f"   - 全10k唯一标签: {labels_full_unique.tolist()}")
+    print(f"   - 6k唯一标签: {unique_labels.tolist()}")
     print(f"   - 类别数: {num_classes}")
     
     return dataloader, num_classes, mean, std
@@ -490,15 +531,20 @@ class OverfitTrainer:
         这确保推理时能完全复现训练时的前处理流程
         """
         # 构建完整的 checkpoint
-        train_ids_path = Path("outputs/overfit/_train_ids.npy")
         single_dataset = getattr(self.dataloader, "dataset", None)
-        base_seg_dataset = getattr(single_dataset, "base_dataset", None) if single_dataset is not None else None
-        decim_cache_vtp = None
-        if base_seg_dataset is not None and getattr(base_seg_dataset, "file_paths", None):
-            sample_file = Path(base_seg_dataset.file_paths[0])
-            target_cells = getattr(base_seg_dataset, "target_cells", None)
-            if target_cells is not None:
-                decim_cache_vtp = DECIM_CACHE / f"{sample_file.stem}.c{int(target_cells)}.vtp"
+        train_ids_path_attr = getattr(single_dataset, "train_ids_path", None) if single_dataset is not None else None
+        train_ids_path = Path(train_ids_path_attr) if train_ids_path_attr else Path("outputs/overfit/_train_ids.npy")
+        train_arrays_attr = getattr(single_dataset, "train_arrays_path", None) if single_dataset is not None else None
+        train_arrays_path = Path(train_arrays_attr) if train_arrays_attr else None
+        decim_hint = getattr(single_dataset, "decim_cache_vtp", None) if single_dataset is not None else None
+        decim_cache_vtp = Path(decim_hint) if decim_hint else None
+        if decim_cache_vtp is None:
+            base_seg_dataset = getattr(single_dataset, "base_dataset", None) if single_dataset is not None else None
+            if base_seg_dataset is not None and getattr(base_seg_dataset, "file_paths", None):
+                sample_file = Path(base_seg_dataset.file_paths[0])
+                target_cells = getattr(base_seg_dataset, "target_cells", None)
+                if target_cells is not None:
+                    decim_cache_vtp = DECIM_CACHE / f"{sample_file.stem}.c{int(target_cells)}.vtp"
         zscore_mean = self.mean.tolist() if self.mean is not None else None
         zscore_std = self.std.tolist() if self.std is not None else None
         knn_info = {
@@ -511,9 +557,11 @@ class OverfitTrainer:
             raise FileNotFoundError(f"Training sample ids missing: {train_ids_path}")
         decim_cache_vtp_str = str(decim_cache_vtp.resolve())
         train_ids_path_str = str(train_ids_path.resolve())
+        train_arrays_path_str = str(train_arrays_path.resolve()) if train_arrays_path and train_arrays_path.exists() else None
+        fstn_module = getattr(self.model, "fstn", None)
         arch_config = {
             "glm_impl": getattr(self.model, "glm_impl", "edgeconv"),
-            "use_feature_stn": bool(getattr(self.model, "fstn", None)),
+            "use_feature_stn": bool(fstn_module),
             "k_short": int(getattr(self.model, "k_short", 6)),
             "k_long": int(getattr(self.model, "k_long", 12)),
             "with_dropout": bool(getattr(self.model, "with_dropout", False)),
@@ -528,6 +576,8 @@ class OverfitTrainer:
             "num_classes": self.num_classes,
             "in_channels": 15,  # 特征维度（9点坐标 + 3法向 + 3相对位置）
             "arch": arch_config,
+            "train_sample_ids_path": train_ids_path_str,
+            "train_arrays_path": train_arrays_path_str,
 
             # 前处理 pipeline 契约
             "pipeline": {
@@ -584,11 +634,19 @@ class OverfitTrainer:
         checkpoint["pipeline"].update({
             "decim_cache_vtp": decim_cache_vtp_str,
             "train_ids_path": train_ids_path_str,
+            "train_arrays_path": train_arrays_path_str,
             "diag_mode": "cells",
             "zscore_mean": zscore_mean,
             "zscore_std": zscore_std,
-            "knn_k": knn_info,
+            "knn_k": {"to10k": 5, "tofull": 7}, 
             "train_sample_ids_path": train_ids_path_str,
+            
+        })
+        
+        checkpoint["training"].update({
+            "seed": 42,
+            "numpy_rng": 42,
+            "torch_seed": 42,
         })
         torch.save(checkpoint, ckpt_path)
         print(f"💾 保存 checkpoint (含 pipeline 契约): {ckpt_path.name}")
@@ -772,13 +830,29 @@ def _save_overfit_checkpoint(model, ckpt_path: Path, *,
                              sample_cells: int = 6000,
                              target_cells: int = 10000,
                              train_ids_path: Path | None,
-                             decim_cache_vtp: Path | None):
+                             decim_cache_vtp: Path | None,
+                             train_arrays_path: Path | None = None):
+    fstn_module = getattr(model, "fstn", None)
+    arch_config = {
+        "glm_impl": getattr(model, "glm_impl", "edgeconv"),
+        "use_feature_stn": bool(fstn_module),
+        "k_short": int(getattr(model, "k_short", 6)),
+        "k_long": int(getattr(model, "k_long", 12)),
+        "with_dropout": bool(getattr(model, "with_dropout", False)),
+        "dropout_p": float(getattr(model, "dropout_p", 0.0)),
+    }
+    train_ids_str = str(train_ids_path.resolve()) if train_ids_path else None
+    train_arrays_str = str(train_arrays_path.resolve()) if train_arrays_path else None
+    decim_cache_str = str(decim_cache_vtp.resolve()) if decim_cache_vtp else None
+
     payload = {
         "state_dict": model.state_dict(),
         "num_classes": int(num_classes),
         "in_channels": 15,
+        "arch": arch_config,
         # 兼容字段（老版本会从这些键读取）
-        "train_sample_ids_path": str(train_ids_path) if train_ids_path else None,
+        "train_sample_ids_path": train_ids_str,
+        "train_arrays_path": train_arrays_str,
         # 统一契约（推理端优先使用这里的字段）
         "pipeline": {
             "zscore": {
@@ -792,8 +866,9 @@ def _save_overfit_checkpoint(model, ckpt_path: Path, *,
             "sampler": "random",       # 训练 6k 随机采样（推理复用 train_ids）
             "sample_cells": int(sample_cells),
             "target_cells": int(target_cells),
-            "train_ids_path": str(train_ids_path) if train_ids_path else None,
-            "decim_cache_vtp": str(decim_cache_vtp) if decim_cache_vtp else None,
+            "train_ids_path": train_ids_str,
+            "train_arrays_path": train_arrays_str,
+            "decim_cache_vtp": decim_cache_str,
             # 记录 knn k（供后处理兜底）
             "knn_k": {"to10k": 5, "tofull": 7},
             "diag_mode": "cells",

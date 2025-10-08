@@ -37,7 +37,7 @@ def get_single_sample_loader(root: str, tooth_id: str, features: str, sample_idx
     cfg = DatasetConfig(
         root=root,
         file_patterns=(f"*_{tooth_id}.npz", f"*_{tooth_id.upper()}.npz"),
-        features=features,
+        features=features,   # 建议用 'pn'（pos+nrm+cent_rel）
         select_landmarks="active",
         augment=False,
         ensure_constant_L=False,
@@ -80,10 +80,11 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
         num_landmarks=sample["y"].shape[0],
         use_tnet=True,
         return_logits=False,
+        dropout_p=0.0,    # 过拟合时关闭
     ).to(device)
 
     optim = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True)
-    scaler = GradScaler(enabled=device.type == "cuda")
+    scaler = GradScaler(enabled=False)  # 单样本更稳；若你想更快可再打开
     criterion = torch.nn.MSELoss()
 
     print(f"\n==== Overfitting test for tooth: {tooth_id} | Sample: {args.sample_idx} ====")
@@ -99,7 +100,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
             y = batch["y"].to(device, non_blocking=True)
             
             optim.zero_grad(set_to_none=True)
-            with autocast(enabled=device.type == "cuda"):
+            with autocast(enabled=False):  # 全精度，确保单样本稳定收敛
                 pred = model(x)
                 loss = criterion(pred, y)
             
@@ -134,12 +135,12 @@ def parse_args():
     parser.add_argument("--tooth", type=str, default="t11", help="Comma-separated list of tooth IDs to test, or 'all'.")
     parser.add_argument("--epochs", type=int, default=200, help="Number of epochs to run the test.")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
-    parser.add_argument("--features", type=str, choices=["all", "xyz"], default="all", help="Features to use.")
+    parser.add_argument("--features", type=str, choices=["pn", "xyz"], default="pn", help="Features to use.")
     parser.add_argument("--sample_idx", type=int, default=0, help="The index of the sample to use for overfitting.")
     parser.add_argument("--seed", type=int, default=2025, help="Random seed.")
     parser.add_argument("--log_every", type=int, default=10, help="Log frequency.")
     parser.add_argument("--save_model", action="store_true", help="Save the trained model.")
-    parser.add_argument("--out_dir", type=str, default="outputs/overfit", help="Output directory for saving models.")
+    parser.add_argument("--out_dir", type=str, default="outputs/landmarks/overfit", help="Output directory for saving models.")
     
     args = parser.parse_args()
     args.tooth = DEFAULT_TOOTH_IDS if args.tooth.strip().lower() == "all" else [t.strip() for t in args.tooth.split(",") if t.strip()]

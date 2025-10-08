@@ -55,7 +55,7 @@ class TNet(nn.Module):
         B = x.size(0)
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))           # (B,256,N)
+        x = F.relu(self.bn3(self.conv3(x)))          # (B,256,N)
         g = torch.max(x, dim=2).values               # (B,256)
         g = F.relu(self.bn4(self.fc1(g)))
         g = F.relu(self.bn5(self.fc2(g)))
@@ -131,7 +131,7 @@ class PointNetReg(nn.Module):
         B, C, N = x.shape
         xyz, extras = x[:, :3, :], x[:, 3:, :]
 
-        if self.use_tnet and self.tnet is not None:
+        if self.use_tnet:
             A = self.tnet(xyz)             # (B,3,3)
             xyz = torch.bmm(A, xyz)        # align xyz
 
@@ -158,4 +158,4 @@ class PointNetReg(nn.Module):
 
     @property
     def last_tnet_matrix(self) -> Optional[torch.Tensor]:
-        return None if not self.use_tnet or self.tnet is None else self.tnet.last_A
+        return None if not self.use_tnet else self.tnet.last_A

@@ -1,4 +1,4 @@
-﻿# module0_dataset.py
+# module0_dataset.py
 # 数据集与数据加载器工具，用于 iMeshSegNet 训练阶段。
 
 from __future__ import annotations
@@ -15,73 +15,13 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pyvista as pv
 import torch
+from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import DataLoader, Dataset
 
+
 SEG_ROOT = Path("outputs/segmentation")
-
-def compute_diag_from_points(points: np.ndarray) -> float:
-    if points.size == 0:
-        return 1.0
-    mins = points.min(axis=0)
-    maxs = points.max(axis=0)
-    diag = float(np.linalg.norm(maxs - mins))
-    return max(diag, 1e-6)
-
 DECIM_CACHE = SEG_ROOT / "module0" / "cache_decimated"
 DECIM_CACHE.mkdir(parents=True, exist_ok=True)
-
-
-def _decim_cache_path(src: Path, target_cells: int) -> Path:
-    return DECIM_CACHE / f"{src.stem}.c{target_cells}.vtp"
-
-def _ensure_polydata(mesh: pv.DataSet) -> pv.PolyData:
-    if isinstance(mesh, pv.PolyData):
-        return mesh
-    if hasattr(mesh, 'cast_to_polydata'):
-        return mesh.cast_to_polydata()
-    raise TypeError('Mesh is not convertible to PolyData')
-
-
-def _load_or_build_decimated_mm(raw_path: Path, target_cells: int) -> pv.PolyData:
-    cache_path = _decim_cache_path(raw_path, target_cells)
-    if cache_path.exists():
-        mesh_mm = _ensure_polydata(pv.read(str(cache_path)))
-        return mesh_mm
-
-    mesh_mm = _ensure_polydata(pv.read(str(raw_path)))
-    mesh_mm = mesh_mm.triangulate()
-
-    labels = None
-    result = find_label_array(mesh_mm)
-    if result is not None:
-        _, raw_labels = result
-        labels = remap_segmentation_labels(np.asarray(raw_labels))
-
-    if mesh_mm.n_cells > target_cells:
-        reduction = 1.0 - (target_cells / float(mesh_mm.n_cells))
-        decimated = mesh_mm.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
-        mesh_mm = decimated
-        # 抽取后必须重新映射标签
-        if labels is not None:
-            original_ids = decimated.cell_data.get('vtkOriginalCellIds')
-            if original_ids is not None:
-                original_ids = np.asarray(original_ids, dtype=np.int64)
-                labels = labels[original_ids]
-            else:
-                # 如果没有 original_ids，说明 decimate 没有保留映射，标签无效
-                labels = None
-    
-    if labels is not None:
-        # 确保标签长度与当前 mesh 匹配
-        if labels.shape[0] == mesh_mm.n_cells:
-            mesh_mm.cell_data['Label'] = labels.astype(np.int64, copy=False)
-        else:
-            print(f"[Warn] Label size mismatch after decimation: {labels.shape[0]} vs {mesh_mm.n_cells}, skipping labels")
-    try:
-        mesh_mm.save(cache_path, binary=True)
-    except Exception:
-        pass
-    return mesh_mm.copy(deep=True)
 
 # 自动单位归一控制：当包围盒对角线小于 1（推测单位为米）时放大到毫米
 UNIT_SCALE_THRESHOLD = 1.0  # if bounding-box diag < 1 (likely metres), rescale to mm
@@ -94,8 +34,10 @@ UNIT_SCALE_FACTOR = 1000.0   # convert m -> mm
 
 # 恒牙 FDI 编码顺序（背景沿用 0）
 FDI_LABELS: Tuple[int, ...] = (
-    11, 12, 13, 14, 15, 16, 17,
-    21, 22, 23, 24, 25, 26, 27,
+    11, 12, 13, 14, 15, 16, 17, 18,
+    21, 22, 23, 24, 25, 26, 27, 28,
+    31, 32, 33, 34, 35, 36, 37, 38,
+    41, 42, 43, 44, 45, 46, 47, 48,
 )
 
 LABEL_REMAP: Dict[int, int] = {0: 0}
@@ -105,7 +47,7 @@ for idx, tooth in enumerate(FDI_LABELS, start=1):
 # 乳牙或未定义标签：默认为背景（或后续可按需改成 ignore_index）
 LABEL_REMAP[65] = 0
 
-# 供各模块共享的类别数 (背景 + 14 类牙)
+# 供各模块共享的类别数
 SEG_NUM_CLASSES = 1 + len(FDI_LABELS)
 
 
@@ -123,6 +65,80 @@ def remap_segmentation_labels(arr: np.ndarray) -> np.ndarray:
     return _vectorized_remap(arr)
 
 
+def _decim_cache_path(src: Path, target_cells: int) -> Path:
+    return DECIM_CACHE / f"{src.stem}.c{target_cells}.vtp"
+
+
+def _assign_cache_path(src: Path, target_cells: int) -> Path:
+    return DECIM_CACHE / f"{src.stem}.c{target_cells}.assign.npy"
+
+
+def _ensure_polydata(mesh: pv.DataSet) -> pv.PolyData:
+    if isinstance(mesh, pv.PolyData):
+        return mesh
+    if hasattr(mesh, "cast_to_polydata"):
+        return mesh.cast_to_polydata()
+    raise TypeError("Mesh is not convertible to PolyData")
+
+
+def _load_or_build_decimated_mm(raw_path: Path, target_cells: int) -> pv.PolyData:
+    cache_path = _decim_cache_path(raw_path, target_cells)
+    assign_path = _assign_cache_path(raw_path, target_cells)
+    if cache_path.exists():
+        mesh_mm = _ensure_polydata(pv.read(str(cache_path)))
+        return mesh_mm
+
+    mesh_mm = _ensure_polydata(pv.read(str(raw_path)))
+    mesh_mm = mesh_mm.triangulate()
+
+    label_info = find_label_array(mesh_mm)
+    labels = None
+    if label_info is not None:
+        _, raw_labels = label_info
+        labels = remap_segmentation_labels(np.asarray(raw_labels))
+
+    orig_centers = mesh_mm.cell_centers().points.astype(np.float32)
+    orig_ids = np.arange(mesh_mm.n_cells, dtype=np.int64)
+
+    if mesh_mm.n_cells > target_cells:
+        reduction = 1.0 - (target_cells / float(mesh_mm.n_cells))
+        decimated = mesh_mm.decimate_pro(
+            reduction,
+            feature_angle=45,
+            preserve_topology=True,
+        )
+        mesh_mm = decimated
+        vtk_ids = decimated.cell_data.get("vtkOriginalCellIds")
+        if vtk_ids is not None:
+            orig_ids = np.asarray(vtk_ids, dtype=np.int64)
+        else:
+            dec_centers = decimated.cell_centers().points.astype(np.float32)
+            nn = NearestNeighbors(n_neighbors=1, algorithm="auto")
+            nn.fit(orig_centers)
+            orig_ids = nn.kneighbors(dec_centers, return_distance=False).reshape(-1).astype(np.int64)
+        if labels is not None and orig_ids.max() < labels.shape[0]:
+            labels = labels[orig_ids]
+        else:
+            labels = None
+
+    if labels is not None and labels.shape[0] == mesh_mm.n_cells:
+        mesh_mm.cell_data["Label"] = labels.astype(np.int64, copy=False)
+
+    mesh_mm.cell_data["vtkOriginalCellIds"] = orig_ids.astype(np.int64, copy=False)
+
+    try:
+        mesh_mm.save(cache_path, binary=True)
+        # 生成 full -> decimated 的最近邻映射（用于推理播种扩散）
+        nn = NearestNeighbors(n_neighbors=1, algorithm="auto")
+        nn.fit(mesh_mm.cell_centers().points.astype(np.float32))
+        assign_ids = nn.kneighbors(orig_centers, return_distance=False).reshape(-1).astype(np.int32)
+        np.save(assign_path, assign_ids, allow_pickle=False)
+    except Exception:
+        pass
+
+    return mesh_mm.copy(deep=True)
+
+
 def _estimate_diag(mesh: pv.PolyData) -> float:
     bounds = mesh.bounds  # (xmin,xmax, ymin,ymax, zmin,zmax)
     if bounds is None:
@@ -135,66 +151,16 @@ def _estimate_diag(mesh: pv.PolyData) -> float:
 
 
 def normalize_mesh_units(mesh: pv.PolyData) -> Tuple[pv.PolyData, float, float, float]:
-    """Pass-through function, as unit normalization is now handled externally or assumed correct."""
+    """Ensure mesh coordinates are approximately in millimetres."""
     diag_before = _estimate_diag(mesh)
     scale = 1.0
-    diag_after = diag_before
+    if 0.0 < diag_before < UNIT_SCALE_THRESHOLD:
+        mesh.points *= UNIT_SCALE_FACTOR
+        scale = UNIT_SCALE_FACTOR
+        diag_after = diag_before * UNIT_SCALE_FACTOR
+    else:
+        diag_after = diag_before
     return mesh, scale, diag_before, diag_after
-
-
-
-def _rotation_matrix_from_euler(angles: np.ndarray) -> np.ndarray:
-    """Return rotation matrix for ZYX Euler angles."""
-    ax, ay, az = angles.astype(np.float64)
-    sx, cx = np.sin(ax), np.cos(ax)
-    sy, cy = np.sin(ay), np.cos(ay)
-    sz, cz = np.sin(az), np.cos(az)
-
-    rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]], dtype=np.float64)
-    ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=np.float64)
-    rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
-    rot = rz @ ry @ rx
-    return rot.astype(np.float32)
-
-
-def apply_stage1_augmentation(points: np.ndarray, *, mirror: bool, translate_limit_mm: float = 10.0,
-                               scale_range: Tuple[float, float] = (0.8, 1.2)) -> np.ndarray:
-    """Apply paper-aligned augmentation: optional mirror + random rotation/scale/translation.
-    
-    论文要求：
-    - 平移范围：±10 mm
-    - 旋转范围：[-π, π] 每个轴
-    - 缩放范围：0.8–1.2
-    不再使用额外的 jitter，以完全匹配论文设置
-    """
-    out = np.asarray(points, dtype=np.float32).copy()
-    if mirror:
-        out[:, 0] *= -1.0
-
-    # 论文要求：每个轴独立随机旋转 [-π, π]
-    angles = np.random.uniform(-np.pi, np.pi, size=3)
-    rot = _rotation_matrix_from_euler(angles)
-    
-    # 论文要求：随机缩放 [0.8, 1.2]
-    scale = float(np.random.uniform(scale_range[0], scale_range[1]))
-    
-    # 论文要求：随机平移 ±10 mm
-    translation = np.random.uniform(-translate_limit_mm, translate_limit_mm, size=3).astype(np.float32)
-
-    out = (out @ rot.T) * scale
-    out += translation
-    return out.astype(np.float32, copy=False)
-
-
-def filter_upper_jaw(files: Sequence[str]) -> List[str]:
-    """Keep only upper jaw cases (suffix `_U`)."""
-    filtered: List[str] = []
-    for path_str in files:
-        stem = Path(path_str).stem.upper()
-        if stem.endswith('_U'):
-            filtered.append(str(Path(path_str)))
-    return filtered
-
 
 # =============================================================================
 # Part 0: 通用工具
@@ -299,41 +265,6 @@ def validate_and_split_by_subject(
 # Part 2: 配置与辅助加载函数
 # =============================================================================
 
-@dataclass
-class DataConfig:
-    target_cells: int = 10000
-    sample_cells: int = 6000
-    split_path: Path = SEG_ROOT / "module0" / "dataset_split.json"
-    stats_path: Path = SEG_ROOT / "module0" / "stats.npz"
-    arch_frames_path: Optional[Path] = SEG_ROOT / "module0" / "arch_frames.json"
-    augment: bool = False
-    augment_original_copies: int = 1
-    augment_flipped_copies: int = 0
-    batch_size: int = 2
-    shuffle: bool = True
-    num_workers: int = 0
-    pin_memory: bool = False
-    drop_last: bool = False
-    persistent_workers: bool = False
-    seed: int = 42
-
-    def __post_init__(self) -> None:
-        self.target_cells = int(self.target_cells)
-        self.sample_cells = int(self.sample_cells)
-        self.batch_size = int(self.batch_size)
-        self.num_workers = int(self.num_workers)
-        self.augment_original_copies = int(self.augment_original_copies)
-        self.augment_flipped_copies = int(self.augment_flipped_copies)
-        self.augment = bool(self.augment)
-        self.shuffle = bool(self.shuffle)
-        self.pin_memory = bool(self.pin_memory)
-        self.drop_last = bool(self.drop_last)
-        self.persistent_workers = bool(self.persistent_workers)
-        self.seed = int(self.seed)
-        self.split_path = Path(self.split_path)
-        self.stats_path = Path(self.stats_path)
-        if self.arch_frames_path is not None:
-            self.arch_frames_path = Path(self.arch_frames_path)
 
 def load_stats(stats_path: Path) -> Tuple[np.ndarray, np.ndarray]:
     if not stats_path.exists():
@@ -361,68 +292,57 @@ def load_arch_frames(path: Optional[Path]) -> Dict[str, torch.Tensor]:
     return frames
 
 
-def segmentation_collate(batch: List[Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]]):
-    batch_data, ys = zip(*batch)
-    xs, pos_norms, pos_mms, pos_scales = zip(*batch_data)
+def segmentation_collate(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
+    xs, poss, ys = zip(*batch)
     x = torch.stack(xs, dim=0)
-    pos_norm = torch.stack(pos_norms, dim=0)
-    pos_mm = torch.stack(pos_mms, dim=0)
-    pos_scale = torch.stack(pos_scales, dim=0)
+    pos = torch.stack(poss, dim=0)
+    y = torch.stack(ys, dim=0)
+    return (x, pos), y
+
+
+@dataclass
+class DataConfig:
+    split_path: Path = SEG_ROOT / "module0" / "dataset_split.json"
+    stats_path: Path = SEG_ROOT / "module0" / "stats.npz"
+    arch_frames_path: Optional[Path] = None
+    batch_size: int = 2
+    num_workers: int = 0
+    persistent_workers: bool = True
+    target_cells: int = 10000
+    sample_cells: int = 6000
+    augment: bool = True
+    pin_memory: bool = True
+    drop_last: bool = False
+    shuffle: bool = True
+
+
+# =============================================================================
+# Part 2.5: 数据准备工具
+# =============================================================================
+
+
+def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple[np.ndarray, np.ndarray]:
+    if not file_paths:
+        raise ValueError("Training file list is empty; cannot compute statistics.")
+
+    sum_vec = np.zeros(15, dtype=np.float64)
+    sum_sq_vec = np.zeros(15, dtype=np.float64)
+    total_faces = 0
+
     for idx, path_str in enumerate(file_paths, 1):
         file_path = Path(path_str)
-        mesh_mm = _load_or_build_decimated_mm(file_path, target_cells)
-
-        mesh_feat = mesh_mm.copy(deep=True)
-        mesh_feat.points -= mesh_feat.center
-        mesh_feat, _, _, _ = normalize_mesh_units(mesh_feat)
-        mesh_feat = mesh_feat.triangulate()
-
-        features = extract_features(mesh_feat).astype(np.float64)
-
-        sum_vec += features.sum(axis=0)
-        sum_sq_vec += (features ** 2).sum(axis=0)
-        total_faces += features.shape[0]
-
-        if idx % 20 == 0 or idx == len(file_paths):
-            print(f"    processed {idx}/{len(file_paths)} files", flush=True)
-
-            raise RuntimeError(f"Failed to read mesh: {source_path}") from exc
-
-        if not isinstance(mesh, pv.PolyData):
-            if hasattr(mesh, 'cast_to_polydata'):
-                mesh = mesh.cast_to_polydata()
-            else:
-                continue  # Skip non-PolyData files
+        try:
+            mesh = pv.read(str(file_path))
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Failed to read mesh: {file_path}") from exc
 
         mesh.points -= mesh.center
         mesh, _, _, _ = normalize_mesh_units(mesh)
         mesh = mesh.triangulate()
 
-        labels: Optional[np.ndarray] = None
-        if not cache_exists:
-            result = find_label_array(mesh)
-            if result is not None:
-                _, raw_labels = result
-                labels = remap_segmentation_labels(np.asarray(raw_labels))
-
-        if (not cache_exists) and mesh.n_cells > target_cells:
+        if mesh.n_cells > target_cells:
             reduction = 1.0 - (target_cells / float(mesh.n_cells))
-            decimated = mesh.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
-            original_ids = decimated.cell_data.get("vtkOriginalCellIds")
-            if original_ids is not None and len(original_ids) == decimated.n_cells:
-                mesh = decimated
-                if labels is not None:
-                    labels = labels[original_ids]
-            else:
-                mesh = decimated
-                labels = None
-
-        if not cache_exists and labels is not None:
-            mesh.cell_data["Label"] = labels.astype(np.int64, copy=False)
-            try:
-                mesh.save(cache_path, binary=True)
-            except Exception:
-                pass
+            mesh = mesh.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
 
         features = extract_features(mesh).astype(np.float64)
 
@@ -441,21 +361,14 @@ def segmentation_collate(batch: List[Tuple[Tuple[torch.Tensor, torch.Tensor, tor
     std = np.sqrt(variance)
 
     return mean.astype(np.float32), std.astype(np.float32)
+
+
 def load_split_lists(split_path: Path) -> Tuple[List[str], List[str]]:
-    """Load data splits, ensuring paths are relative to the project root."""
     with open(split_path, "r", encoding="utf-8") as f:
         split = json.load(f)
 
-    project_root = Path(__file__).parent.parent.parent 
-    dataset_root = project_root / "datasets" / "segmentation_dataset"
-
-    def _resolve_path(p: str) -> str:
-        # Extract filename and reconstruct path relative to the current project structure
-        filename = Path(p).name
-        return str(dataset_root / filename)
-
-    train_files = filter_upper_jaw([_resolve_path(p) for p in split.get("train", [])])
-    val_files = filter_upper_jaw([_resolve_path(p) for p in split.get("val", [])])
+    train_files = [str(Path(p)) for p in split.get("train", [])]
+    val_files = [str(Path(p)) for p in split.get("val", [])]
     return train_files, val_files
 
 
@@ -493,23 +406,14 @@ def prepare_module0(
     root_dir = root_dir.resolve()
     print(f"[Module0] 数据根目录: {root_dir}")
 
-    train_files_all, val_files_all = validate_and_split_by_subject(
+    train_files, val_files = validate_and_split_by_subject(
         root_dir,
         config.split_path,
         test_size,
         random_state,
         force=force,
     )
-
-    train_files = filter_upper_jaw(train_files_all)
-    val_files = filter_upper_jaw(val_files_all)
-
-    if not train_files:
-        raise ValueError('No upper jaw training files available after filtering. Check dataset split.')
-
-    print(
-        f"[Module0] 训练文件数量(上颌): {len(train_files)} | 验证文件数量(上颌): {len(val_files)}"
-    )
+    print(f"[Module0] 训练文件数量: {len(train_files)} | 验证文件数量: {len(val_files)}")
     print(f"[Module0] 划分保存至: {config.split_path.resolve()}")
 
     if skip_stats:
@@ -528,14 +432,6 @@ def prepare_module0(
     config.stats_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(config.stats_path, mean=mean, std=std)
     print(f"[Module0] 统计文件已写入: {config.stats_path.resolve()}")
-    meta = {
-        "target_cells": int(config.target_cells),
-        "feature_dim": 15,
-        "unit_scaling": False,
-    }
-    meta_path = config.stats_path.with_suffix(".meta.json")
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
 
 
 # =============================================================================
@@ -553,148 +449,93 @@ class SegmentationDataset(Dataset):
         target_cells: int,
         sample_cells: int,
         augment: bool,
-        augment_original_copies: int,
-        augment_flipped_copies: int,
     ):
-        upper_files = filter_upper_jaw(file_paths)
-        if not upper_files:
-            raise ValueError("No upper jaw files available for SegmentationDataset.")
-        self.file_paths = upper_files
-        self.base_len = len(self.file_paths)
-        self.mean_np = mean.astype(np.float32)
-        self.std_np = np.clip(std.astype(np.float32), 1e-6, None)
-        self.mean = torch.from_numpy(self.mean_np)
-        self.std = torch.from_numpy(self.std_np)
+        self.file_paths = file_paths
+        self.mean = torch.from_numpy(mean).float()
+        self.std = torch.from_numpy(std).float()
         self.arch_frames = arch_frames
         self.target_cells = target_cells
         self.sample_cells = sample_cells
         self.augment = augment
-
-        # ⭐ 在线随机增强：不扩表，每次 __getitem__ 随机决定是否增强
-        # 优点：1) 数据集大小回到 base_len (训练速度提升 ~40x)
-        #       2) 每个 epoch 看到不同的增强 (泛化能力不受影响)
-        #       3) 不占用额外内存
-        if self.augment:
-            # 使用在线增强：repeat_factor=1 表示不扩表
-            self.repeat_original = 1
-            self.repeat_flipped = 0
-            self.repeat_factor = 1
-            # 原始参数保留供日后参考（实际上已不使用）
-            self._augment_original_copies = max(int(augment_original_copies), 1)
-            self._augment_flipped_copies = max(int(augment_flipped_copies), 0)
-        else:
-            self.repeat_original = 1
-            self.repeat_flipped = 0
-            self.repeat_factor = 1
-
-        if self.repeat_factor <= 0:
-            self.repeat_factor = 1
-
         self._unit_warned = False
-        
-        # 🔬 暴露最近一次采样的 cell 索引（用于推理对齐）
-        self.last_sample_ids = None
 
     def __len__(self) -> int:
-        return len(self.file_paths) * self.repeat_factor
+        return len(self.file_paths)
 
-    def _resolve_index(self, idx: int) -> Tuple[int, int]:
-        base = idx // self.repeat_factor
-        variant = idx % self.repeat_factor
-        return base, variant
+    def _lookup_arch_frame(self, stem: str) -> Optional[torch.Tensor]:
+        if stem in self.arch_frames:
+            return self.arch_frames[stem]
+        base = stem.split("_")[0]
+        return self.arch_frames.get(base)
 
-    def __getitem__(self, idx: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
-        base_idx, variant_idx = self._resolve_index(idx)
-        file_path = Path(self.file_paths[base_idx])
-
-        mesh_mm = _load_or_build_decimated_mm(file_path, self.target_cells)
-
-        if "Label" not in mesh_mm.cell_data:
-            raise RuntimeError(f"Decimated cache missing Label: {_decim_cache_path(file_path, self.target_cells)}")
-        labels_all = np.asarray(mesh_mm.cell_data["Label"], dtype=np.int64)
-        centers_mm_all = mesh_mm.cell_centers().points.astype(np.float32)
-
-        mesh = mesh_mm.copy(deep=True)
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        file_path = Path(self.file_paths[idx])
+        mesh = pv.read(str(file_path))
         mesh.points -= mesh.center
+
+        result = find_label_array(mesh)
+        if result is None:
+            raise RuntimeError(f"File {file_path} is missing a label array.")
+        _, raw_labels = result
+        labels = np.asarray(raw_labels, dtype=np.int64)
+        if labels.size > 0 and np.all(np.isin(labels, list(LABEL_REMAP.keys()))):
+            labels = remap_segmentation_labels(labels)
+
         mesh, scale_factor, diag_before, diag_after = normalize_mesh_units(mesh)
         if scale_factor != 1.0 and not self._unit_warned:
             print(
-                f"[SegmentationDataset] Detected small bounding box (diag={diag_before:.4f}); scaling {file_path.name} by {scale_factor:g} to mm units.",
+                f"[SegmentationDataset] Detected small bounding box (diag={diag_before:.4f}); "
+                f"scaling {file_path.name} by {scale_factor:g} to mm units.",
                 flush=True,
             )
             self._unit_warned = True
 
         mesh = mesh.triangulate()
 
-        apply_mirror = False
         if self.augment:
-            apply_mirror = np.random.rand() < 0.5
+            if random.random() > 0.5:
+                mesh.points[:, 0] *= -1
+                mesh = mesh.flip_faces()
+            mesh.points = random_transform(mesh.points)
 
-        if self.augment:
-            augmented = apply_stage1_augmentation(np.asarray(mesh.points), mirror=apply_mirror)
-            mesh.points = augmented
-
-        if mesh.n_cells == 0:
-            raise RuntimeError(f"File {file_path} has no cells after preprocessing.")
+        if mesh.n_cells > self.target_cells:
+            reduction = 1.0 - (self.target_cells / mesh.n_cells)
+            decimated = mesh.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
+            original_ids = decimated.cell_data.get("vtkOriginalCellIds")
+            if original_ids is not None and len(original_ids) == decimated.n_cells:
+                mesh = decimated
+                labels = labels[original_ids]
 
         features = extract_features(mesh).astype(np.float32)
-        pos_mm_all = centers_mm_all
 
-        diag_mm = compute_diag_from_points(pos_mm_all)
-        if diag_mm < 1e-6:
-            diag_mm = 1.0
+        pos_raw = mesh.cell_centers().points.astype(np.float32)
+        scale_pos = diag_after if diag_after > 1e-6 else 1.0
+        pos_raw = pos_raw / scale_pos
 
-        total_cells = features.shape[0]
-        target_n = self.sample_cells
-        if total_cells <= 0:
-            raise RuntimeError(f"File {file_path} produced empty feature set.")
+        if features.shape[0] > self.sample_cells:
+            indices = np.random.permutation(features.shape[0])[: self.sample_cells]
+            features = features[indices]
+            pos_raw = pos_raw[indices]
+            labels = labels[indices]
 
-        if total_cells <= target_n:
-            indices = np.arange(total_cells, dtype=np.int32)
-        else:
-            indices = np.random.choice(total_cells, size=target_n, replace=False)
+        features_tensor = torch.from_numpy(features)
+        features_tensor = (features_tensor - self.mean) / self.std
+        features_tensor = features_tensor.transpose(0, 1).contiguous()  # (15, N)
 
-        self.last_sample_ids = indices.copy()
+        pos_tensor = torch.from_numpy(pos_raw)
+        frame = self._lookup_arch_frame(file_path.stem)
+        if frame is not None:
+            pos_tensor = (frame @ pos_tensor.T).T
+        pos_tensor = pos_tensor.transpose(0, 1).contiguous()  # (3, N)
 
-        features = features[indices]
-        pos_mm = pos_mm_all[indices]
-        labels = labels_all[indices]
-
-        pos_norm = pos_mm / diag_mm
-
-        features = (features - self.mean_np) / self.std_np
-
-        features_tensor = torch.from_numpy(features).transpose(0, 1).contiguous()
-        pos_tensor = torch.from_numpy(pos_norm).transpose(0, 1).contiguous()
-        pos_mm_tensor = torch.from_numpy(pos_mm).contiguous()
-        pos_scale_tensor = torch.tensor([diag_mm], dtype=torch.float32)
         labels_tensor = torch.from_numpy(labels.astype(np.int64))
 
-        return (features_tensor, pos_tensor, pos_mm_tensor, pos_scale_tensor), labels_tensor
-
-def _verify_stats_meta(stats_path: Path, target_cells: int) -> None:
-    meta_path = stats_path.with_suffix(".meta.json")
-    if not meta_path.exists():
-        print(f"[Warn] stats meta not found: {meta_path.name}. Skipping check.")
-        return
-    try:
-        meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
-        if int(meta.get("target_cells", -1)) != int(target_cells):
-            raise RuntimeError(
-                f"stats target_cells={meta.get('target_cells')} mismatch training target_cells={target_cells}."
-            )
-        if int(meta.get("feature_dim", -1)) != 15:
-            raise RuntimeError("stats feature_dim mismatch (expect 15).")
-        if bool(meta.get("unit_scaling", True)) is True:
-            raise RuntimeError("stats built with unit_scaling=True, but we expect False.")
-    except Exception as e:
-        print(f"[Warn] stats meta validation failed: {e}")
+        return features_tensor, pos_tensor, labels_tensor
 
 
 def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
     train_files, val_files = load_split_lists(config.split_path)
 
-    _verify_stats_meta(config.stats_path, config.target_cells)
     mean, std = load_stats(config.stats_path)
     arch_frames = load_arch_frames(config.arch_frames_path)
 
@@ -706,8 +547,6 @@ def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         target_cells=config.target_cells,
         sample_cells=config.sample_cells,
         augment=config.augment,
-        augment_original_copies=config.augment_original_copies,
-        augment_flipped_copies=config.augment_flipped_copies,
     )
 
     val_dataset = SegmentationDataset(
@@ -718,8 +557,6 @@ def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         target_cells=config.target_cells,
         sample_cells=config.sample_cells,
         augment=False,
-        augment_original_copies=1,
-        augment_flipped_copies=0,
     )
 
     train_loader = DataLoader(
@@ -795,12 +632,6 @@ def inspect_sample(root_dir: str, sample_id: str | int, jaw: str = "L") -> None:
     print(f"\n--- 正在检查样本: {file_name} ---")
     try:
         mesh = pv.read(file_path)
-        if not isinstance(mesh, pv.PolyData):
-            if hasattr(mesh, 'cast_to_polydata'):
-                mesh = mesh.cast_to_polydata()
-            else:
-                print(f"警告: 文件 {file_name} 不是有效的PolyData格式")
-                return
         result = find_label_array(mesh)
         if result is None:
             print(f"警告: 未找到标签数组。可用的cell_data键: {list(mesh.cell_data.keys())}")
@@ -866,5 +697,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

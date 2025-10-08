@@ -362,6 +362,12 @@ def aggregate_case(case_id: str, case_data: Dict[str, Any], defs: Dict[str, List
                 bounds,
             )
             tooth_flags["missing_tooth"] = False
+            if tooth_meta:
+                if "arch" in tooth_meta and tooth_meta["arch"]:
+                    tooth_flags.setdefault("arch", tooth_meta["arch"])
+                if "fdi" in tooth_meta:
+                    tooth_flags.setdefault("fdi", tooth_meta["fdi"])
+                tooth_flags.setdefault("meta", tooth_meta)
             landmarks = landmarks_map
 
         total_expected += len(names)
@@ -384,33 +390,105 @@ def aggregate_case(case_id: str, case_data: Dict[str, Any], defs: Dict[str, List
 # ---------------------------------------------------------------------------
 
 
-def export_case_json(case: CaseAggregate, out_dir: Path) -> Path:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "case_id": case.case_id,
-        "units": "mm",
-        "coord_space": "global",
-        "meta": case.meta,
-        "stats": case.stats,
-        "teeth": {},
-    }
+def _group_landmark_control_points(case: CaseAggregate, include_all: bool = True) -> Dict[str, List[Dict[str, Any]]]:
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    if include_all:
+        groups["ALL"] = []
     for tooth_id, tooth in case.teeth.items():
-        payload["teeth"][tooth_id] = {
-            "flags": tooth.flags,
-            "landmarks": {
-                name: {
-                    "coord": landmark.coord.tolist() if landmark.coord is not None else None,
-                    "score": landmark.score,
-                    "margin": landmark.margin,
-                    "flags": landmark.flags,
+        arch_flag = ""
+        if isinstance(tooth.flags, dict):
+            arch_value = tooth.flags.get("arch")
+            if arch_value:
+                arch_flag = str(arch_value).upper()
+        fdi = tooth_id[1:] if tooth_id.lower().startswith("t") and len(tooth_id) > 1 else tooth_id
+        for name, landmark in tooth.landmarks.items():
+            if landmark.coord is None or landmark.flags.get("nan", False):
+                continue
+            point = {
+                "label": f"{fdi}{name}",
+                "position": landmark.coord.tolist(),
+            }
+            if include_all:
+                groups.setdefault("ALL", []).append(point.copy())
+            if arch_flag in {"U", "L"}:
+                groups.setdefault(arch_flag, []).append(point.copy())
+    return groups
+
+
+def export_case_json(case: CaseAggregate, out_dir: Path) -> List[Path]:
+    ORIENTATION = [-1.0, 0.0, 0.0,
+                   0.0, -1.0, 0.0,
+                   0.0, 0.0, 1.0]
+    DISPLAY_BLOCK = {
+        "visibility": True,
+        "opacity": 1.0,
+        "color": [0.4, 1.0, 1.0],
+        "selectedColor": [1.0, 0.5000076295109483, 0.5000076295109483],
+        "activeColor": [0.4, 1.0, 0.0],
+        "propertiesLabelVisibility": False,
+        "pointLabelsVisibility": True,
+        "textScale": 3.0,
+        "glyphType": "Sphere3D",
+        "glyphScale": 1.0,
+        "glyphSize": 5.0,
+        "useGlyphScale": True,
+        "sliceProjection": False,
+        "sliceProjectionUseFiducialColor": True,
+        "sliceProjectionOutlinedBehindSlicePlane": False,
+        "sliceProjectionColor": [1.0, 1.0, 1.0],
+        "sliceProjectionOpacity": 0.6,
+        "lineThickness": 0.2,
+        "lineColorFadingStart": 1.0,
+        "lineColorFadingEnd": 10.0,
+        "lineColorFadingSaturation": 1.0,
+        "lineColorFadingHueOffset": 0.0,
+        "handlesInteractive": False,
+        "translationHandleVisibility": True,
+        "rotationHandleVisibility": True,
+        "scaleHandleVisibility": False,
+        "interactionHandleScale": 3.0,
+        "snapMode": "toVisibleSurface",
+    }
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    grouped = _group_landmark_control_points(case, include_all=True)
+    out_paths: List[Path] = []
+    for key, points in grouped.items():
+        if not points:
+            continue
+        control_points = [
+            {
+                "id": str(idx + 1),
+                "label": entry["label"],
+                "description": "",
+                "associatedNodeID": "",
+                "position": entry["position"],
+                "orientation": ORIENTATION,
+                "selected": True,
+                "locked": False,
+                "visibility": True,
+                "positionStatus": "defined",
+            }
+            for idx, entry in enumerate(points)
+        ]
+        payload = {
+            "@schema": "https://raw.githubusercontent.com/slicer/slicer/master/Modules/Loadable/Markups/Resources/Schema/markups-schema-v1.0.3.json#",
+            "markups": [
+                {
+                    "type": "Fiducial",
+                    "coordinateSystem": "LPS",
+                    "coordinateUnits": "mm",
+                    "controlPoints": control_points,
+                    "display": DISPLAY_BLOCK,
                 }
-                for name, landmark in tooth.landmarks.items()
-            },
+            ],
         }
-    out_path = out_dir / f"{case.case_id}.json"
-    with out_path.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
-    return out_path
+        filename = f"{case.case_id}.json" if key == "ALL" else f"{case.case_id}_{key}.json"
+        out_path = out_dir / filename
+        with out_path.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        out_paths.append(out_path)
+    return out_paths
 
 
 def export_case_csv(case: CaseAggregate, out_dir: Path) -> Path:
@@ -473,39 +551,92 @@ def export_case_ply(case: CaseAggregate, out_dir: Path) -> Optional[Path]:
     return out_path
 
 
-def export_case_mrk(case: CaseAggregate, out_dir: Path) -> Optional[Path]:
-    control_points = []
-    for tooth_id, tooth in case.teeth.items():
-        for name, landmark in tooth.landmarks.items():
-            if landmark.coord is None or landmark.flags.get("nan", False):
-                continue
-            control_points.append({
-                "label": f"{tooth_id}_{name}",
-                "position": landmark.coord.tolist(),
+def export_case_mrk(case: CaseAggregate, out_dir: Path, split_by_arch: bool = True) -> List[Path]:
+    ORIENTATION = [-1.0, 0.0, 0.0,
+                   0.0, -1.0, 0.0,
+                   0.0, 0.0, 1.0]
+    DISPLAY_BLOCK = {
+        "visibility": True,
+        "opacity": 1.0,
+        "color": [0.4, 1.0, 1.0],
+        "selectedColor": [1.0, 0.5000076295109483, 0.5000076295109483],
+        "activeColor": [0.4, 1.0, 0.0],
+        "propertiesLabelVisibility": False,
+        "pointLabelsVisibility": True,
+        "textScale": 3.0,
+        "glyphType": "Sphere3D",
+        "glyphScale": 1.0,
+        "glyphSize": 5.0,
+        "useGlyphScale": True,
+        "sliceProjection": False,
+        "sliceProjectionUseFiducialColor": True,
+        "sliceProjectionOutlinedBehindSlicePlane": False,
+        "sliceProjectionColor": [1.0, 1.0, 1.0],
+        "sliceProjectionOpacity": 0.6,
+        "lineThickness": 0.2,
+        "lineColorFadingStart": 1.0,
+        "lineColorFadingEnd": 10.0,
+        "lineColorFadingSaturation": 1.0,
+        "lineColorFadingHueOffset": 0.0,
+        "handlesInteractive": False,
+        "translationHandleVisibility": True,
+        "rotationHandleVisibility": True,
+        "scaleHandleVisibility": False,
+        "interactionHandleScale": 3.0,
+        "snapMode": "toVisibleSurface",
+    }
+
+    grouped = _group_landmark_control_points(case, include_all=True)
+    if split_by_arch:
+        groups = {k: v for k, v in grouped.items() if k == "ALL" or k in {"U", "L"}}
+    else:
+        groups = {"ALL": grouped.get("ALL", [])}
+
+    out_paths: List[Path] = []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not any(groups.values()):
+        return out_paths
+
+    for key, pts in groups.items():
+        if not pts:
+            continue
+        control_points = [
+            {
+                "id": str(idx + 1),
+                "label": entry["label"],
                 "description": "",
+                "associatedNodeID": "",
+                "position": entry["position"],
+                "orientation": ORIENTATION,
                 "selected": True,
                 "locked": False,
                 "visibility": True,
-            })
-    if not control_points:
-        return None
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{case.case_id}.mrk.json"
-    markup = {
-        "markups": [
-            {
-                "type": "Fiducial",
-                "coordinateSystem": "LPS",
-                "coordinateUnits": "mm",
-                "locked": False,
-                "labelFormat": "%N",
-                "controlPoints": control_points,
+                "positionStatus": "defined",
             }
+            for idx, entry in enumerate(pts)
         ]
-    }
-    with out_path.open("w", encoding="utf-8") as fh:
-        json.dump(markup, fh, ensure_ascii=False, indent=2)
-    return out_path
+        markup = {
+            "@schema": "https://raw.githubusercontent.com/slicer/slicer/master/Modules/Loadable/Markups/Resources/Schema/markups-schema-v1.0.3.json#",
+            "markups": [
+                {
+                    "type": "Fiducial",
+                    "coordinateSystem": "LPS",
+                    "coordinateUnits": "mm",
+                    "controlPoints": control_points,
+                    "display": DISPLAY_BLOCK,
+                }
+            ],
+        }
+        if key == "ALL":
+            filename = f"{case.case_id}.mrk.json"
+        else:
+            filename = f"{case.case_id}_{key}.json"
+        out_path = out_dir / filename
+        with out_path.open("w", encoding="utf-8") as fh:
+            json.dump(markup, fh, ensure_ascii=False, indent=2)
+        out_paths.append(out_path)
+
+    return out_paths
 
 
 # ---------------------------------------------------------------------------

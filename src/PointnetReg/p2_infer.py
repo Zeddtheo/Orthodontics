@@ -22,13 +22,32 @@ def _load_landmark_names(def_path: str | None, tooth_id: str, L: int) -> list[st
     if not def_path:
         return default
     try:
-        spec = json.load(open(def_path, "r", encoding="utf-8"))
+        with open(def_path, "r", encoding="utf-8") as fh:
+            spec = json.load(fh)
     except Exception:
         return default
+
     per_tooth = spec.get("per_tooth", {})
-    entry = per_tooth.get(tooth_id) or per_tooth.get(tooth_id.upper())
-    if isinstance(entry, dict) and isinstance(entry.get("order"), list) and len(entry["order"]) >= L:
-        return entry["order"][:L]
+    templates = spec.get("templates", {})
+    entry = None
+    for key in (tooth_id, tooth_id.upper(), tooth_id.lower()):
+        if key in per_tooth:
+            entry = per_tooth[key]
+            break
+
+    if isinstance(entry, dict):
+        if isinstance(entry.get("order"), list):
+            names = list(entry["order"])
+            return names[:L] if len(names) >= L else names + default[len(names):L]
+        if isinstance(entry.get("template"), str):
+            entry = entry["template"]
+
+    if isinstance(entry, str):
+        tpl_names = templates.get(entry)
+        if isinstance(tpl_names, list) and tpl_names:
+            names = list(tpl_names)
+            return names[:L] if len(names) >= L else names + default[len(names):L]
+
     return default
 
 
@@ -62,6 +81,7 @@ def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, wor
         file_patterns=(f"*_{tooth_id}.npz", f"*_{tooth_id.upper()}.npz"),
         features=features,
         select_landmarks="active",
+        ensure_constant_L=False,
     )
     dataset = P0PointNetRegDataset(cfg)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_p0)
@@ -88,8 +108,14 @@ def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, wor
     with torch.no_grad():
         for batch in loader:
             x = batch["x"].to(device, non_blocking=True)
-            pred = model(x)
-            idx = torch.argmax(pred, dim=-1).cpu().numpy()
+            pred = model(x)  # (B, L, N) in [0,1]
+            topk_vals, topk_idx = torch.topk(pred, k=2, dim=-1)
+            top1_vals = topk_vals[..., 0]
+            top2_vals = topk_vals[..., 1]
+            top1_idx = topk_idx[..., 0]
+            idx = top1_idx.cpu().numpy()
+            scores = top1_vals.cpu().numpy()
+            seconds = top2_vals.cpu().numpy()
             for b, meta in enumerate(batch["meta"]):
                 case_id = _case_id(meta)
                 npz_path = meta.get("path") if isinstance(meta, dict) else None
@@ -110,7 +136,7 @@ def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, wor
 
                 lm_local = pos[idx[b]]
                 offset = _offset(meta)
-                lm_global = lm_local + offset if offset is not None else None
+                lm_global = lm_local + offset if offset is not None else lm_local.copy()
 
                 out_path = out_root / f"{case_id}.json"
                 payload = {}
@@ -122,9 +148,25 @@ def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, wor
                 payload.setdefault("predictions", {})
                 tooth_payload = payload["predictions"].get(tooth_id, {})
                 tooth_payload["landmarks_local"] = {names[i]: lm_local[i].tolist() for i in range(len(names))}
-                if lm_global is not None:
-                    tooth_payload["landmarks_global"] = {names[i]: lm_global[i].tolist() for i in range(len(names))}
+                tooth_payload["landmarks_global"] = {names[i]: lm_global[i].tolist() for i in range(len(names))}
                 tooth_payload["indices"] = {names[i]: int(idx[b, i]) for i in range(len(names))}
+                # 附带峰值强度、第二峰与置信边际，方便后处理过滤
+                score_map = {names[i]: float(scores[b, i]) for i in range(len(names))}
+                second_map = {names[i]: float(seconds[b, i]) for i in range(len(names))}
+                margin_map = {names[i]: float(scores[b, i] - seconds[b, i]) for i in range(len(names))}
+                tooth_payload["scores"] = score_map.copy()
+                tooth_payload.setdefault("top1", score_map.copy())
+                tooth_payload.setdefault("peak_scores", score_map.copy())
+                tooth_payload["top2"] = second_map.copy()
+                tooth_payload.setdefault("second_scores", second_map.copy())
+                tooth_payload["margin"] = margin_map
+                tooth_meta_out = {}
+                if isinstance(meta, dict):
+                    for key in ("case_id", "arch", "fdi", "tooth_id", "sigma_mm", "unit"):
+                        if key in meta:
+                            tooth_meta_out[key] = meta[key]
+                if tooth_meta_out:
+                    tooth_payload["meta"] = tooth_meta_out
                 payload["predictions"][tooth_id] = tooth_payload
                 payload.setdefault("meta", {}).setdefault("root", str(Path(root).resolve()))
                 with open(out_path, "w", encoding="utf-8") as fh:
@@ -135,7 +177,7 @@ def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, wor
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=str, default="datasets/p0_npz")
-    parser.add_argument("--ckpt_root", type=str, default="runs_pointnetreg")
+    parser.add_argument("--ckpt_root", type=str, default="outputs/landmarks/overfit")
     parser.add_argument("--tooth", type=str, default="t31")
     parser.add_argument("--features", type=str, choices=["all", "xyz"], default="all")
     parser.add_argument("--batch_size", type=int, default=8)

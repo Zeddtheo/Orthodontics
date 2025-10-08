@@ -1,62 +1,37 @@
 ﻿# module1_train.py
-# Stage-1 训练流程：仅使用 Generalized Dice Loss，记录论文口径的 DSC/SEN/PPV/HD（含后处理）。
+# 训练 iMeshSegNet（EdgeConv 版本）——显式位置输入、GDL+加权CE、AMP+clip、Cosine LR 与可重复追踪签名。
 
 from __future__ import annotations
 
+import argparse
 import csv
-from contextlib import nullcontext
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.neighbors import NearestNeighbors
-from sklearn.svm import SVC
+from sklearn.metrics import confusion_matrix
+from torch.cuda.amp import GradScaler, autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-
-# 兼容性导入：支持不同 PyTorch 版本和设备
-try:
-    # PyTorch >= 1.10: 推荐使用通用 autocast
-    from torch.amp import autocast, GradScaler
-    HAS_AMP = True
-except ImportError:
-    try:
-        # PyTorch < 1.10: 使用 torch.cuda.amp
-        from torch.cuda.amp import autocast, GradScaler
-        HAS_AMP = True
-    except ImportError:
-        # CPU-only 环境可能没有 amp 模块
-        HAS_AMP = False
-        # 提供 fallback
-        class GradScaler:
-            def __init__(self, enabled=False):
-                self.enabled = enabled
-            def scale(self, loss):
-                return loss
-            def step(self, optimizer):
-                optimizer.step()
-            def update(self):
-                pass
-            def unscale_(self, optimizer):
-                pass
-        
-        # Dummy autocast context manager
-        from contextlib import nullcontext
-        autocast = nullcontext
 
 from m0_dataset import (
     DataConfig,
     SEG_NUM_CLASSES,
+    compute_label_histogram,
     get_dataloaders,
+    load_split_lists,
     load_stats,
+    set_seed,
 )
 from imeshsegnet import iMeshSegNet
 
@@ -70,202 +45,67 @@ class GeneralizedDiceLoss(nn.Module):
     def __init__(self, epsilon: float = 1e-5):
         super().__init__()
         self.epsilon = epsilon
-
     def forward(self, logits, targets):
         probs = F.softmax(logits, dim=1)                            # (B,C,N)
-        onehot = F.one_hot(targets, num_classes=probs.size(1)).permute(0, 2, 1).float()  # (B,C,N)
+        onehot = F.one_hot(targets, num_classes=probs.size(1)).permute(0,2,1)  # (B,C,N)
 
-        support = torch.sum(onehot, dim=(0, 2))                     # (C,)
-        device = logits.device
-        weights = torch.zeros_like(support, dtype=logits.dtype, device=device)
-
-        if support.numel() > 1:
-            fg_mask = torch.ones_like(support, dtype=torch.bool)
-            fg_mask[0] = False
-            valid_fg = fg_mask & (support > 0)
-            weights[valid_fg] = 1.0 / (support[valid_fg] ** 2 + self.epsilon)
-
-        intersection = torch.sum(probs * onehot, dim=(0, 2))
-        union = torch.sum(probs, dim=(0, 2)) + torch.sum(onehot, dim=(0, 2))
-
-        numerator = 2 * torch.sum(weights * intersection) + self.epsilon
-        denominator = torch.sum(weights * union) + self.epsilon
-        dice = numerator / denominator
+        support = torch.sum(onehot, dim=(0,2))                      # (C,)
+        raw_w = 1.0 / (support ** 2 + self.epsilon)
+        weights = torch.where(support > 0, raw_w, torch.zeros_like(raw_w))     # ← 关键
+        intersection = torch.sum(probs * onehot, dim=(0,2))
+        union = torch.sum(probs, dim=(0,2)) + torch.sum(onehot, dim=(0,2))
+        dice = (2 * torch.sum(weights * intersection)) / (torch.sum(weights * union) + self.epsilon)
         return 1 - dice
 
 
-def compute_diag_from_points(points: np.ndarray) -> float:
-    if points.size == 0:
-        return 1.0
-    mins = points.min(axis=0)
-    maxs = points.max(axis=0)
-    diag = float(np.linalg.norm(maxs - mins))
-    return max(diag, 1e-6)
+def build_ce_class_weights(hist: np.ndarray) -> np.ndarray:
+    """Compute inverse-frequency CE weights with clipping & mean normalisation."""
+    freq = hist.astype(np.float64)
+    total = freq.sum()
+    if total <= 0:
+        return np.ones_like(freq, dtype=np.float32)
+
+    freq = freq.copy()
+    mask = freq > 0
+    if not np.any(mask):
+        mask[:] = True
+    min_nonzero = freq[mask].min()
+    freq[~mask] = min_nonzero
+
+    prob = freq / total
+    prob = np.maximum(prob, 1e-6)
+    weights = 1.0 / prob
+    weights = np.clip(weights, 0.1, 10.0)
+    weights /= weights.mean()
+    return weights.astype(np.float32)
 
 
-def hausdorff_distance_mm(pred_points: np.ndarray, gt_points: np.ndarray, fallback: float) -> float:
-    if pred_points.size == 0 or gt_points.size == 0:
-        return float(fallback)
-    pred_tensor = torch.from_numpy(pred_points.astype(np.float32))
-    gt_tensor = torch.from_numpy(gt_points.astype(np.float32))
-    if pred_tensor.numel() == 0 or gt_tensor.numel() == 0:
-        return float(fallback)
-    dists = torch.cdist(pred_tensor.unsqueeze(0), gt_tensor.unsqueeze(0), p=2).squeeze(0)
-    if dists.numel() == 0:
-        return float(fallback)
-    forward = torch.min(dists, dim=1).values.max()
-    backward = torch.min(dists, dim=0).values.max()
-    return float(torch.max(forward, backward).item())
+def calculate_metrics(preds: torch.Tensor, targets: torch.Tensor, num_classes: int) -> Tuple[float, float, float]:
+    preds_flat = preds.cpu().numpy().flatten()
+    targets_flat = targets.cpu().numpy().flatten()
 
+    cm = confusion_matrix(targets_flat, preds_flat, labels=range(num_classes))
+    dsc = np.zeros(num_classes)
+    sen = np.zeros(num_classes)
+    ppv = np.zeros(num_classes)
+    support = np.sum(cm, axis=1)
 
-def compute_case_metrics(
-    pred_labels: np.ndarray,
-    target_labels: np.ndarray,
-    pos_mm: np.ndarray,
-    num_classes: int,
-    fallback_diag: float,
-) -> Dict[str, float]:
-    per_class_stats = []
-    hd_values = []
-    for cls in range(1, num_classes):
-        gt_mask = target_labels == cls
-        if not np.any(gt_mask):
-            continue
-        pred_mask = pred_labels == cls
-        tp = np.sum(np.logical_and(gt_mask, pred_mask))
-        fp = np.sum(np.logical_and(~gt_mask, pred_mask))
-        fn = np.sum(np.logical_and(gt_mask, ~pred_mask))
+    for i in range(num_classes):
+        tp = cm[i, i]
+        fp = np.sum(cm[:, i]) - tp
+        fn = np.sum(cm[i, :]) - tp
+        dsc[i] = (2 * tp) / (2 * tp + fp + fn + 1e-8)
+        sen[i] = tp / (tp + fn + 1e-8)
+        ppv[i] = tp / (tp + fp + 1e-8)
 
-        denom = (2 * tp + fp + fn)
-        dsc = (2 * tp) / denom if denom > 0 else 0.0
-        sen = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        ppv = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        per_class_stats.append((dsc, sen, ppv))
+    foreground_mask = (np.arange(num_classes) != 0) & (support > 0)
+    if not np.any(foreground_mask):
+        foreground_mask = np.arange(num_classes) != 0
 
-        pred_points = pos_mm[pred_mask]
-        gt_points = pos_mm[gt_mask]
-        hd = hausdorff_distance_mm(pred_points, gt_points, fallback_diag)
-        hd_values.append(hd)
-
-    if not per_class_stats:
-        return {
-            "dsc": 0.0,
-            "sen": 0.0,
-            "ppv": 0.0,
-            "hd": float(fallback_diag),
-        }
-
-    stats = np.asarray(per_class_stats, dtype=np.float32)
-    hd_array = np.asarray(hd_values, dtype=np.float32)
-    return {
-        "dsc": float(stats[:, 0].mean()),
-        "sen": float(stats[:, 1].mean()),
-        "ppv": float(stats[:, 2].mean()),
-        "hd": float(hd_array.mean()),
-    }
-
-
-def graphcut_refine(prob_np: np.ndarray, pos_mm_np: np.ndarray, beta: float = 30.0, k: int = 6, iterations: int = 1) -> np.ndarray:
-    """
-    NOTE: This is an iterative probability smoothing, an approximation of graph-cut's smoothness effect, 
-    not a true energy-minimizing graph-cut. This function performs k-NN based probability smoothing 
-    to mimic the spatial consistency constraint of graph-cut algorithms.
-    """
-    if prob_np.size == 0:
-        return prob_np
-    N, C = prob_np.shape
-    k_eff = max(1, min(k, N))
-    nbrs = NearestNeighbors(n_neighbors=k_eff, algorithm="auto")
-    nbrs.fit(pos_mm_np)
-    distances, indices = nbrs.kneighbors(pos_mm_np, return_distance=True)
-    sigma = distances[:, 1:].mean() if distances.shape[1] > 1 else distances.mean()
-    if not np.isfinite(sigma) or sigma <= 1e-6:
-        sigma = 1.0
-    scale = beta / (sigma + 1e-6)
-    weights = np.exp(-scale * distances).astype(np.float32)
-
-    refined = prob_np.astype(np.float32).copy()
-    for _ in range(max(1, iterations)):
-        neighbor_accum = np.zeros_like(refined)
-        weight_sum = np.zeros((N, 1), dtype=np.float32)
-        for j in range(k_eff):
-            nbr_idx = indices[:, j]
-            w = weights[:, j:j + 1]
-            neighbor_accum += w * refined[nbr_idx]
-            weight_sum += w
-        refined = (refined + neighbor_accum) / (1.0 + np.clip(weight_sum, 1e-6, None))
-        refined = refined / np.clip(refined.sum(axis=1, keepdims=True), 1e-6, None)
-    return refined
-
-
-def svm_refine(pos_mm_np: np.ndarray, labels_np: np.ndarray) -> np.ndarray:
-    """
-    WARNING: This function performs SVM refinement on the SAME low-resolution mesh (N_low ≈ 9000),
-    NOT on the original high-resolution mesh (N_high ≈ 100k) as described in the paper.
-    To properly implement the paper's approach, this function should:
-    1. Train SVM on low-res predictions (N_low)
-    2. Predict on high-res original mesh (N_high) - CURRENTLY NOT IMPLEMENTED
-    Therefore, post-processing metrics computed using this function are INVALID for paper comparison.
-    """
-    unique = np.unique(labels_np)
-    if unique.size <= 1:
-        return labels_np
-    try:
-        max_samples = 5000
-        if pos_mm_np.shape[0] > max_samples:
-            indices = np.random.choice(pos_mm_np.shape[0], size=max_samples, replace=False)
-            train_x = pos_mm_np[indices]
-            train_y = labels_np[indices]
-        else:
-            train_x = pos_mm_np
-            train_y = labels_np
-        clf = SVC(kernel="rbf", C=1.0, gamma="scale", decision_function_shape="ovr")
-        clf.fit(train_x.astype(np.float64), train_y)
-        refined = clf.predict(pos_mm_np.astype(np.float64))
-        return refined.astype(labels_np.dtype, copy=False)
-    except Exception:
-        return labels_np
-
-
-def apply_post_processing(prob_np: np.ndarray, pos_mm_np: np.ndarray) -> np.ndarray:
-    refined_prob = graphcut_refine(prob_np, pos_mm_np, beta=30.0, k=6, iterations=1)
-    graphcut_pred = np.argmax(refined_prob, axis=1).astype(np.int64)
-    return svm_refine(pos_mm_np, graphcut_pred)
-
-
-def summarize_metrics(metric_list: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
-    summary: Dict[str, Dict[str, float]] = {}
-    if not metric_list:
-        for key in ("dsc", "sen", "ppv", "hd"):
-            summary[key] = {"mean": 0.0, "std": 0.0}
-        return summary
-    for key in ("dsc", "sen", "ppv", "hd"):
-        values = np.array([m[key] for m in metric_list], dtype=np.float32)
-        finite = np.isfinite(values)
-        if not np.any(finite):
-            mean = float("nan")
-            std = float("nan")
-        else:
-            mean = float(values[finite].mean())
-            std = float(values[finite].std(ddof=0))
-        summary[key] = {"mean": mean, "std": std}
-    return summary
-
-
-def evaluate_cases(cases: List[Dict[str, np.ndarray]], num_classes: int) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
-    raw_metrics: List[Dict[str, float]] = []
-    post_metrics: List[Dict[str, float]] = []
-    for case in cases:
-        diag_mm = case["diag"]
-        raw_metrics.append(
-            compute_case_metrics(case["pred"], case["target"], case["pos_mm"], num_classes, diag_mm)
-        )
-        post_pred = apply_post_processing(case["prob"], case["pos_mm"])
-        post_metrics.append(
-            compute_case_metrics(post_pred, case["target"], case["pos_mm"], num_classes, diag_mm)
-        )
-    return summarize_metrics(raw_metrics), summarize_metrics(post_metrics)
-
+    mean_dsc = float(np.mean(dsc[foreground_mask])) if np.any(foreground_mask) else 0.0
+    mean_sen = float(np.mean(sen[foreground_mask])) if np.any(foreground_mask) else 0.0
+    mean_ppv = float(np.mean(ppv[foreground_mask])) if np.any(foreground_mask) else 0.0
+    return mean_dsc, mean_sen, mean_ppv
 
 
 # =============================================================================
@@ -283,6 +123,8 @@ class Trainer:
         scheduler: CosineAnnealingLR,
         config: "TrainConfig",
         device: torch.device,
+        stats_mean: np.ndarray,
+        stats_std: np.ndarray,
     ) -> None:
         self.model = model
         self.train_loader = train_loader
@@ -291,146 +133,117 @@ class Trainer:
         self.scheduler = scheduler
         self.config = config
         self.device = device
-        self.log_path = self.config.output_dir / "train_log.csv"
+        self.config.log_dir.mkdir(parents=True, exist_ok=True)
+        self.config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.config.tensorboard_dir.mkdir(parents=True, exist_ok=True)
+        self.log_path = self.config.log_dir / "train_log.csv"
         self.best_val_dsc = -1.0
-        self.amp_enabled = device.type == "cuda" and HAS_AMP
-        self.device_type = "cuda" if device.type == "cuda" else "cpu"
-        self.config.output_dir.mkdir(parents=True, exist_ok=True)
-        self.stats_mean, self.stats_std = load_stats(self.config.data_config.stats_path)
-        self.stats_mean = self.stats_mean.astype(np.float32, copy=False)
-        self.stats_std = np.clip(self.stats_std.astype(np.float32, copy=False), 1e-6, None)
-
-        
-        # 创建 GradScaler（兼容不同 PyTorch 版本）
-        if HAS_AMP:
-            try:
-                # PyTorch >= 2.0: torch.amp.GradScaler 支持 device 参数
-                self.scaler = GradScaler(device=self.device_type, enabled=self.amp_enabled)
-            except TypeError:
-                # PyTorch < 2.0: torch.cuda.amp.GradScaler 不支持 device 参数
-                self.scaler = GradScaler(enabled=self.amp_enabled)
-        else:
-            # Fallback: 使用自定义的 dummy GradScaler
-            self.scaler = GradScaler(enabled=False)
-        
+        self.amp_enabled = self.config.enable_amp and device.type == "cuda"
+        self.scaler = GradScaler(enabled=self.amp_enabled)
+        self.writer: Optional[SummaryWriter] = None
+        try:
+            self.writer = SummaryWriter(log_dir=str(self.config.tensorboard_dir))
+        except Exception as exc:
+            print(f"[Warning] TensorBoard writer disabled: {exc}")
         self._checked_shapes = False
+        self.stats_mean = np.asarray(stats_mean, dtype=np.float32)
+        self.stats_std = np.asarray(stats_std, dtype=np.float32)
 
         self.dice_loss = GeneralizedDiceLoss().to(self.device)
+        weight_tensor = None
+        if self.config.ce_class_weights is not None:
+            weight_tensor = torch.tensor(self.config.ce_class_weights, dtype=torch.float32)
+        self.ce_loss = nn.CrossEntropyLoss(weight=weight_tensor).to(self.device)
 
-    def _build_checkpoint(self, epoch: int, current_lr: float, raw_dsc: float) -> Dict[str, object]:
+    def _build_checkpoint_payload(self) -> dict:
+        mean = np.asarray(self.stats_mean, dtype=np.float32)
+        std = np.clip(np.asarray(self.stats_std, dtype=np.float32), 1e-6, None)
+        fstn_module = getattr(self.model, "fstn", None)
         arch_config = {
             "glm_impl": getattr(self.model, "glm_impl", "edgeconv"),
-            "use_feature_stn": bool(getattr(self.model, "use_feature_stn", True)),
+            "use_feature_stn": bool(fstn_module),
             "k_short": int(getattr(self.model, "k_short", 6)),
             "k_long": int(getattr(self.model, "k_long", 12)),
             "with_dropout": bool(getattr(self.model, "with_dropout", False)),
             "dropout_p": float(getattr(self.model, "dropout_p", 0.0)),
         }
-
-        mean_list = self.stats_mean.tolist()
-        std_list = self.stats_std.tolist()
-
         pipeline = {
             "zscore": {
-                "mean": mean_list,
-                "std": std_list,
                 "apply": True,
+                "mean": mean.astype(np.float32).tolist(),
+                "std": std.astype(np.float32).tolist(),
             },
-            "centered": False,
+            "centered": True,
             "div_by_diag": True,
-            "diag_mode": "cells",
-            "use_frame": False,
+            "use_frame": bool(self.config.data_config.arch_frames_path),
             "sampler": "random",
             "sample_cells": int(self.config.data_config.sample_cells),
             "target_cells": int(self.config.data_config.target_cells),
-            "feature_layout": {
-                "rotate_blocks": [
-                    [0, 3],
-                    [3, 6],
-                    [6, 9],
-                    [9, 12],
-                    [12, 15],
-                ]
-            },
-            "seed": int(getattr(self.config.data_config, "seed", 42)),
-            "zscore_mean": mean_list,
-            "zscore_std": std_list,
-            "knn_k": {
-                "glm1": int(getattr(self.model, "k_short", 6)),
-                "glm2": [int(getattr(self.model, "k_short", 6)), int(getattr(self.model, "k_long", 12))],
-            },
+            "train_ids_path": None,
+            "train_arrays_path": None,
+            "decim_cache_vtp": None,
+            "knn_k": {"to10k": 3, "tofull": 3},
+            "diag_mode": "cells",
+            "seed": 42,
         }
-
         training_meta = {
-            "epoch": int(epoch),
-            "optimizer": self.optimizer.__class__.__name__,
-            "lr": float(current_lr),
-            "weight_decay": float(getattr(self.config, "weight_decay", 0.0)),
-            "best_raw_dsc": float(self.best_val_dsc),
-            "current_raw_dsc": float(raw_dsc),
+            "epochs": int(self.config.epochs),
+            "optimizer": "Adam",
+            "lr": float(self.config.lr),
+            "weight_decay": float(self.config.weight_decay),
+            "best_val_dsc": float(self.best_val_dsc),
+            "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
         }
-
-        return {
+        payload = {
             "state_dict": self.model.state_dict(),
-            "num_classes": self.config.num_classes,
+            "num_classes": self.model.num_classes,
             "in_channels": 15,
             "arch": arch_config,
             "pipeline": pipeline,
             "training": training_meta,
+            "ce_class_weights": self.config.ce_class_weights,
         }
+        return payload
 
+    def _save_checkpoint(self, path: Path) -> None:
+        payload = self._build_checkpoint_payload()
+        torch.save(payload, path)
 
-    def _run_epoch(
-        self,
-        loader: DataLoader,
-        is_train: bool,
-    ) -> Tuple[float, Dict[str, float], Optional[Dict[str, Dict[str, float]]], Optional[Dict[str, Dict[str, float]]]]:
+    def _run_epoch(self, loader: DataLoader, is_train: bool) -> Tuple[float, float, float, float]:
         self.model.train(mode=is_train)
         total_loss = 0.0
+        preds_all = []
+        targets_all = []
         desc = "Training" if is_train else "Validation"
-        context_manager = nullcontext() if is_train else torch.no_grad()
-        case_records: List[Dict[str, np.ndarray]] = []
-        bg_ratios: List[float] = []
-        entropy_values: List[float] = []
 
-        for (x, pos_norm, pos_mm, pos_scale), y in tqdm(loader, desc=desc):
+        for (x, pos), y in tqdm(loader, desc=desc):
             x = x.to(self.device, non_blocking=True)
-            pos_norm = pos_norm.to(self.device, non_blocking=True)
+            pos = pos.to(self.device, non_blocking=True)
             y = y.to(self.device, non_blocking=True)
-            pos_mm = pos_mm  # keep on CPU for metric computation
-            pos_scale = pos_scale
 
             if not self._checked_shapes:
                 assert x.dim() == 3 and x.size(1) == 15, "x must be (B,15,N) with z-scored features"
-                assert pos_norm.dim() == 3 and pos_norm.size(1) == 3, "pos must be (B,3,N)"
+                assert pos.dim() == 3 and pos.size(1) == 3, "pos must be (B,3,N) in arch frame"
                 self._checked_shapes = True
 
-            if is_train:
+            # **关键修改：验证阶段添加 no_grad() 优化**
+            if not is_train:
+                with torch.no_grad():
+                    with autocast(enabled=self.amp_enabled):
+                        logits = self.model(x, pos)
+                        loss_dice = self.dice_loss(logits, y)
+                        loss_ce = self.ce_loss(logits, y)
+                        loss = loss_dice + loss_ce
+            else:
+                # 训练阶段保持原有逻辑
+                with autocast(enabled=self.amp_enabled):
+                    logits = self.model(x, pos)
+                    loss_dice = self.dice_loss(logits, y)
+                    loss_ce = self.ce_loss(logits, y)
+                    loss = loss_dice + loss_ce
+
+                # 训练阶段的反向传播
                 self.optimizer.zero_grad(set_to_none=True)
-
-            with context_manager:
-                # 兼容不同 PyTorch 版本的 autocast
-                if self.amp_enabled and HAS_AMP:
-                    # 尝试使用新版 API (PyTorch >= 1.10)
-                    try:
-                        autocast_ctx = autocast(device_type=self.device_type, enabled=True)
-                    except TypeError:
-                        # 回退到旧版 API (PyTorch < 1.10)
-                        autocast_ctx = autocast(enabled=True)
-                else:
-                    autocast_ctx = nullcontext()
-                
-                with autocast_ctx:
-                    logits = self.model(x, pos_norm)
-                    loss = self.dice_loss(logits, y)
-            probs_detached = torch.softmax(logits.detach(), dim=1)
-            preds_detached = torch.argmax(logits.detach(), dim=1)
-            bg_ratio = (preds_detached == 0).float().mean().item()
-            entropy = -(probs_detached * torch.log(probs_detached.clamp(min=1e-8))).sum(dim=1).mean().item()
-            bg_ratios.append(bg_ratio)
-            entropy_values.append(entropy)
-
-            if is_train:
                 if self.amp_enabled:
                     self.scaler.scale(loss).backward()
                     self.scaler.unscale_(self.optimizer)
@@ -442,191 +255,75 @@ class Trainer:
                     clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.optimizer.step()
 
+            # 移动到循环内部：
             total_loss += loss.item()
+            preds = torch.argmax(logits, dim=1)
+            preds_all.append(preds.detach().cpu())
+            targets_all.append(y.detach().cpu())
 
-            if not is_train:
-                probs = probs_detached.cpu()  # (B,C,N)
-                preds = preds_detached.cpu()    # (B,N)
-                targets_cpu = y.cpu()
-                pos_mm_cpu = pos_mm.cpu()
-                pos_scale_cpu = pos_scale.cpu()
-                for i in range(preds.size(0)):
-                    case_records.append(
-                        {
-                            "prob": probs[i].transpose(0, 1).contiguous().numpy(),
-                            "pred": preds[i].numpy(),
-                            "target": targets_cpu[i].numpy(),
-                            "pos_mm": pos_mm_cpu[i].numpy(),
-                            "diag": float(pos_scale_cpu[i].item()),
-                        }
-                    )
-
+        # 移动到循环外部
         avg_loss = total_loss / max(len(loader), 1)
-        diag_stats = {
-            "p_bg": float(np.mean(bg_ratios)) if bg_ratios else 0.0,
-            "entropy": float(np.mean(entropy_values)) if entropy_values else 0.0,
-            "dice": float(avg_loss),
-        }
-        if not is_train:
-            raw_metrics, post_metrics = evaluate_cases(case_records, self.config.num_classes)
-            return avg_loss, diag_stats, raw_metrics, post_metrics
-        return avg_loss, diag_stats, None, None
+        preds_tensor = torch.cat(preds_all, dim=0)
+        targets_tensor = torch.cat(targets_all, dim=0)
+        dsc, sen, ppv = calculate_metrics(preds_tensor, targets_tensor, self.model.num_classes)
+        return avg_loss, dsc, sen, ppv
 
     def train(self) -> None:
-        self.config.output_dir.mkdir(parents=True, exist_ok=True)
         with open(self.log_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "epoch",
-                    "train_loss",
-                    "val_loss",
-                    "train_p_bg",
-                    "train_entropy",
-                    "val_p_bg",
-                    "val_entropy",
-                    "raw_dsc",
-                    "raw_dsc_std",
-                    "raw_sen",
-                    "raw_sen_std",
-                    "raw_ppv",
-                    "raw_ppv_std",
-                    "raw_hd",
-                    "raw_hd_std",
-                    "post_dsc",
-                    "post_dsc_std",
-                    "post_sen",
-                    "post_sen_std",
-                    "post_ppv",
-                    "post_ppv_std",
-                    "post_hd",
-                    "post_hd_std",
-                    "lr",
-                    "sec_per_scan",
-                ]
-            )
-
-        def _fmt(value: float, precision: int = 4) -> str:
-            return f"{value:.{precision}f}" if np.isfinite(value) else "nan"
+            # 简化CSV头：
+            writer.writerow(["epoch", "train_loss", "val_loss", "val_dsc", "lr"])
 
         for epoch in range(1, self.config.epochs + 1):
             if self.amp_enabled:
                 torch.cuda.reset_peak_memory_stats(self.device)
-
             epoch_start = time.time()
-            train_loss, train_diag, _, _ = self._run_epoch(self.train_loader, is_train=True)
+            train_loss, _, _, _ = self._run_epoch(self.train_loader, is_train=True)
             epoch_time = time.time() - epoch_start
-
-            train_base = getattr(self.train_loader.dataset, "base_len", len(self.train_loader.dataset))
-            sec_per_scan = epoch_time / max(train_base, 1)
             train_peak_mem = (
                 torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)
                 if self.amp_enabled
                 else 0.0
             )
-
-            val_loss, val_diag, val_raw, val_post = self._run_epoch(self.val_loader, is_train=False)
+            val_loss, val_dsc, val_sen, val_ppv = self._run_epoch(self.val_loader, is_train=False)
             current_lr = self.optimizer.param_groups[0]["lr"]
 
-            raw_dsc = val_raw["dsc"]["mean"]
-            raw_dsc_std = val_raw["dsc"]["std"]
-            raw_sen = val_raw["sen"]["mean"]
-            raw_sen_std = val_raw["sen"]["std"]
-            raw_ppv = val_raw["ppv"]["mean"]
-            raw_ppv_std = val_raw["ppv"]["std"]
-            raw_hd = val_raw["hd"]["mean"]
-            raw_hd_std = val_raw["hd"]["std"]
-
-            post_dsc = val_post["dsc"]["mean"]
-            post_dsc_std = val_post["dsc"]["std"]
-            post_sen = val_post["sen"]["mean"]
-            post_sen_std = val_post["sen"]["std"]
-            post_ppv = val_post["ppv"]["mean"]
-            post_ppv_std = val_post["ppv"]["std"]
-            post_hd = val_post["hd"]["mean"]
-            post_hd_std = val_post["hd"]["std"]
-
-            raw_dsc_str = _fmt(raw_dsc)
-            raw_dsc_std_str = _fmt(raw_dsc_std)
-            raw_sen_str = _fmt(raw_sen)
-            raw_sen_std_str = _fmt(raw_sen_std)
-            raw_ppv_str = _fmt(raw_ppv)
-            raw_ppv_std_str = _fmt(raw_ppv_std)
-            raw_hd_str = _fmt(raw_hd, 3)
-            raw_hd_std_str = _fmt(raw_hd_std, 3)
-            post_dsc_str = _fmt(post_dsc)
-            post_dsc_std_str = _fmt(post_dsc_std)
-            post_sen_str = _fmt(post_sen)
-            post_sen_std_str = _fmt(post_sen_std)
-            post_ppv_str = _fmt(post_ppv)
-            post_ppv_std_str = _fmt(post_ppv_std)
-            post_hd_str = _fmt(post_hd, 3)
-            post_hd_std_str = _fmt(post_hd_std, 3)
-
-            # NOTE: Post-processed metrics (post_dsc, post_hd, etc.) are INVALID in current implementation
-            # because svm_refine does not perform true upsampling to original resolution.
-            # Focus on raw_ metrics for model evaluation.
             print(
                 f"Epoch {epoch}/{self.config.epochs} | "
-                f"Train Loss: {train_loss:.4f} | "
-                f"Train BG0: {train_diag['p_bg']:.3f} | "
-                f"Train Ent: {train_diag['entropy']:.3f} | "
-                f"Val Loss: {val_loss:.4f} | "
-                f"Val BG0: {val_diag['p_bg']:.3f} | "
-                f"Val Ent: {val_diag['entropy']:.3f} | "
-                f"Raw DSC: {raw_dsc_str}±{raw_dsc_std_str} | Raw SEN: {raw_sen_str}±{raw_sen_std_str} | "
-                f"Raw PPV: {raw_ppv_str}±{raw_ppv_std_str} | Raw HD: {raw_hd_str}±{raw_hd_std_str} mm | "
-                # Post-processing metrics commented out as they are invalid without proper upsampling:
-                # f"Post DSC: {post_dsc_str}±{post_dsc_std_str} | Post SEN: {post_sen_str}±{post_sen_std_str} | "
-                # f"Post PPV: {post_ppv_str}±{post_ppv_std_str} | Post HD: {post_hd_str}±{post_hd_std_str} mm | "
-                f"Time: {epoch_time:.1f}s | Sec/scan: {sec_per_scan:.2f}s | PeakMem: {train_peak_mem:.1f}MB | LR: {current_lr:.6f}"
+                f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+                f"Val DSC: {val_dsc:.4f} | Val SEN: {val_sen:.4f} | Val PPV: {val_ppv:.4f} | "
+                f"Time: {epoch_time:.1f}s | PeakMem: {train_peak_mem:.1f}MB | LR: {current_lr:.6f}"
             )
 
             with open(self.log_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(
-                    [
-                        epoch,
-                        f"{train_loss:.6f}",
-                        f"{val_loss:.6f}",
-                        f"{train_diag.get('p_bg', 0.0):.6f}",
-                        f"{train_diag.get('entropy', 0.0):.6f}",
-                        f"{val_diag.get('p_bg', 0.0):.6f}",
-                        f"{val_diag.get('entropy', 0.0):.6f}",
-                        raw_dsc_str,
-                        raw_dsc_std_str,
-                        raw_sen_str,
-                        raw_sen_std_str,
-                        raw_ppv_str,
-                        raw_ppv_std_str,
-                        raw_hd_str,
-                        raw_hd_std_str,
-                        post_dsc_str,
-                        post_dsc_std_str,
-                        post_sen_str,
-                        post_sen_std_str,
-                        post_ppv_str,
-                        post_ppv_std_str,
-                        post_hd_str,
-                        post_hd_std_str,
-                        f"{current_lr:.8f}",
-                        f"{sec_per_scan:.6f}",
-                    ]
-                )
+                # 简化记录内容：
+                writer.writerow([epoch, train_loss, val_loss, val_dsc, current_lr])
 
-            is_best = np.isfinite(raw_dsc) and raw_dsc > self.best_val_dsc
-            if is_best:
-                self.best_val_dsc = raw_dsc
-                print(f"✨ New best model found! Raw DSC: {raw_dsc:.4f}. Saving to best.pt")
+            if self.writer is not None:
+                self.writer.add_scalar("loss/train", train_loss, epoch)
+                self.writer.add_scalar("loss/val", val_loss, epoch)
+                self.writer.add_scalar("metrics/dsc", val_dsc, epoch)
+                self.writer.add_scalar("metrics/sensitivity", val_sen, epoch)
+                self.writer.add_scalar("metrics/ppv", val_ppv, epoch)
+                self.writer.add_scalar("lr", current_lr, epoch)
+                self.writer.add_scalar("time/epoch_seconds", epoch_time, epoch)
+                if self.amp_enabled:
+                    self.writer.add_scalar("gpu/peak_mem_mb", train_peak_mem, epoch)
 
-            checkpoint = self._build_checkpoint(epoch, current_lr, raw_dsc)
-            torch.save(checkpoint, self.config.output_dir / "last.pt")
-            if is_best:
-                torch.save(checkpoint, self.config.output_dir / "best.pt")
+            self._save_checkpoint(self.config.checkpoint_dir / "last.pt")
+            # 简化保存最佳模型的逻辑：
+            if val_dsc > self.best_val_dsc:
+                self.best_val_dsc = val_dsc
+                print(f"✨ New best model found! DSC: {val_dsc:.4f}. Saving to best.pt")
+                self._save_checkpoint(self.config.checkpoint_dir / "best.pt")
 
             self.scheduler.step()
 
-        print(f"Training finished. Best validation raw DSC: {self.best_val_dsc:.4f}")
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+        print(f"Training finished. Best validation DSC: {self.best_val_dsc:.4f}")
 
 
 # =============================================================================
@@ -637,16 +334,74 @@ class Trainer:
 @dataclass
 class TrainConfig:
     data_config: DataConfig = DataConfig()
-    output_dir: Path = Path("outputs/segmentation/module1_train")
+    run_name: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S"))
+    log_root: Path = Path("outputs/segmentation/logs")
+    checkpoint_root: Path = Path("outputs/segmentation/checkpoints")
+    tensorboard_root: Path = Path("outputs/segmentation/tensorboard")
     epochs: int = 200
     lr: float = 0.001
     min_lr: float = 1e-6
     weight_decay: float = 1e-4
     num_classes: int = SEG_NUM_CLASSES
+    ce_class_weights: Optional[Sequence[float]] = None
+    enable_amp: bool = True
+
+    log_dir: Path = field(init=False)
+    checkpoint_dir: Path = field(init=False)
+    tensorboard_dir: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.log_dir = Path(self.log_root) / self.run_name
+        self.checkpoint_dir = Path(self.checkpoint_root) / self.run_name
+        self.tensorboard_dir = Path(self.tensorboard_root) / self.run_name
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser("Module1 training for iMeshSegNet")
+    parser.add_argument("--run-name", type=str, help="Custom name for this run; defaults to a timestamp.")
+    parser.add_argument("--log-dir", type=str, help="Directory to store CSV logs; defaults to logs/<run-name>.")
+    parser.add_argument("--checkpoint-dir", type=str, help="Directory to store checkpoints; defaults to checkpoints/<run-name>.")
+    parser.add_argument("--tensorboard-dir", type=str, help="Directory to store TensorBoard events; defaults to tensorboard/<run-name>.")
+    parser.add_argument("--epochs", type=int, help="Number of training epochs.")
+    parser.add_argument("--lr", type=float, help="Initial learning rate.")
+    parser.add_argument("--min-lr", type=float, help="Minimum learning rate for the cosine scheduler.")
+    parser.add_argument("--weight-decay", type=float, help="Optimizer weight decay.")
+    parser.add_argument("--disable-amp", action="store_true", help="Disable automatic mixed precision even when CUDA is available.")
+    return parser.parse_args()
 
 
 def main() -> None:
-    config = TrainConfig()
+    args = parse_args()
+    if args.run_name:
+        config = TrainConfig(run_name=args.run_name)
+    else:
+        config = TrainConfig()
+
+    if args.log_dir:
+        config.log_dir = Path(args.log_dir)
+    if args.checkpoint_dir:
+        config.checkpoint_dir = Path(args.checkpoint_dir)
+    if args.tensorboard_dir:
+        config.tensorboard_dir = Path(args.tensorboard_dir)
+    if args.epochs is not None:
+        config.epochs = args.epochs
+    if args.lr is not None:
+        config.lr = args.lr
+    if args.min_lr is not None:
+        config.min_lr = args.min_lr
+    if args.weight_decay is not None:
+        config.weight_decay = args.weight_decay
+    if args.disable_amp:
+        config.enable_amp = False
+
+    print(
+        "Configured run directories:\n"
+        f"  run_name      : {config.run_name}\n"
+        f"  logs          : {config.log_dir}\n"
+        f"  checkpoints   : {config.checkpoint_dir}\n"
+        f"  tensorboard   : {config.tensorboard_dir}"
+    )
+
     set_seed(getattr(config.data_config, "seed", 42))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -656,6 +411,19 @@ def main() -> None:
     config.data_config.persistent_workers = True
     config.data_config.augment = True
 
+    if config.ce_class_weights is None:
+        print("Estimating class frequencies for CE weights...")
+        train_files, _ = load_split_lists(config.data_config.split_path)
+        class_hist = compute_label_histogram(train_files)
+        ce_weights = build_ce_class_weights(class_hist)
+        config.ce_class_weights = ce_weights.tolist()
+        print(
+            f"CrossEntropy class weights prepared: min={ce_weights.min():.3f}, "
+            f"max={ce_weights.max():.3f}"
+        )
+
+    stats_mean, stats_std = load_stats(config.data_config.stats_path)
+
     print("Loading datasets...")
     train_loader, val_loader = get_dataloaders(config.data_config)
 
@@ -664,9 +432,10 @@ def main() -> None:
     model = iMeshSegNet(
         num_classes=config.num_classes,
         glm_impl="edgeconv",
-        k_short=6,              # 论文：短距离邻域
-        k_long=12,              # 论文：长距离邻域
-        use_feature_stn=True,   # 论文要求：启用 64×64 特征变换
+        k_short=6,
+        k_long=12,
+        with_dropout=True,
+        dropout_p=0.5,
     ).to(device)
 
     optimizer = Adam(
@@ -677,7 +446,17 @@ def main() -> None:
     )
     scheduler = CosineAnnealingLR(optimizer, T_max=config.epochs, eta_min=config.min_lr)
 
-    trainer = Trainer(model, train_loader, val_loader, optimizer, scheduler, config, device)
+    trainer = Trainer(
+        model,
+        train_loader,
+        val_loader,
+        optimizer,
+        scheduler,
+        config,
+        device,
+        stats_mean,
+        stats_std,
+    )
     trainer.train()
 
 

@@ -12,21 +12,22 @@ from sklearn.svm import SVC
 class PPConfig:
     knn_10k: int = 5
     knn_full: int = 7
-    seed_conf_th: float = 0.80   # ↑ 从 0.70 提到 0.80
-    bg_seed_th: float = 0.995    # ↑ 牙龈更保守
-    gc_beta: float = 12.0        # ← 此处充当 λ，12 是经验稳妥值
-    gc_k: int = 8                # ↑ 稍大一点邻域
-    gc_iterations: int = 3       # ↑ ICM 迭代
-    normal_gamma: float = 10.0   #（保留签名，不再参与权重）
-    svm_max_train: int = 8000    # ↑ SVM 训练样本上限
-    svm_c: float = 8.0           # ↑ 更硬边界
+    seed_conf_th: float = 0.55
+    bg_seed_th: float = 0.98
+    gc_beta: float = 20.0
+    gc_k: int = 6
+    gc_iterations: int = 2
+    normal_gamma: float = 10.0
+    svm_max_train: int = 20000
+    svm_c: float = 1.0
     svm_gamma: float | str = "scale"
     svm_random_state: Optional[int] = 42
-    fill_radius: float = 0.55    # ↓ 半径更小，避免跨牙桥接
-    fill_majority: float = 0.65
-    fill_max_neighbors: int = 20
-    min_component_size: int = 150      # ↓ 留出完整牙冠，仍可清小噪点
-    clean_component_neighbors: int = 16
+    fill_radius: float = 1.0
+    fill_majority: float = 0.6
+    fill_max_neighbors: int = 24
+    min_component_size: int = 500
+    clean_component_neighbors: int = 12
+    min_component_size_full: int = 1200
 
 
 def softmax_np(logits: np.ndarray) -> np.ndarray:
@@ -232,6 +233,9 @@ def _radius_majority_fill(
     radius: float,
     majority_thresh: float,
     max_neighbors: int,
+    *,
+    current_labels: Optional[np.ndarray] = None,
+    bg_label: int = 0,
 ) -> Optional[np.ndarray]:
     if query_pos is None or query_pos.size == 0:
         return None
@@ -242,6 +246,9 @@ def _radius_majority_fill(
     distances_list, indices_list = nn.radius_neighbors(query_pos, radius=radius, return_distance=True)
     fill = np.full(query_pos.shape[0], -1, dtype=np.int32)
     for i, (dists, idxs) in enumerate(zip(distances_list, indices_list)):
+        if current_labels is not None:
+            if i < current_labels.shape[0] and current_labels[i] != bg_label:
+                continue
         if idxs.size == 0:
             continue
         if idxs.size > max_neighbors:
@@ -309,24 +316,36 @@ def _seed_full_labels(
     orig_cell_ids: np.ndarray,
     full_count: int,
     threshold: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    返回:
+      seeds_full: (N_full,)  以 -1 表示未播种；其他为类别id
+      seed_mask:  (N_full,)  bool，True表示该full cell为高置信度种子（后续不可覆盖）
+    """
     labels10 = np.asarray(labels10, dtype=np.int32)
-    orig_ids = np.asarray(orig_cell_ids, dtype=np.int64).reshape(-1)
-    conf_arr = None if conf10 is None else np.asarray(conf10, dtype=np.float32).reshape(-1)
+    assert orig_cell_ids is not None and orig_cell_ids.size == labels10.size, \
+        "orig_cell_ids 与 10k 预测不等长"
+    if conf10 is None or conf10.size != labels10.size:
+        conf10 = np.ones(labels10.shape[0], dtype=np.float32)
 
-    seed_labels = np.full(full_count, 0, dtype=np.int32)
-    seed_mask = np.zeros(full_count, dtype=bool)
-    valid_mask = (orig_ids >= 0) & (orig_ids < full_count)
-    if conf_arr is not None:
-        valid_mask &= conf_arr >= float(threshold)
+    seeds_full = np.full(int(full_count), -1, dtype=np.int32)
+    seed_mask  = np.zeros(int(full_count), dtype=bool)
 
-    if not np.any(valid_mask):
-        return seed_labels, seed_mask, valid_mask
+    ok = (orig_cell_ids >= 0) & (orig_cell_ids < full_count)
+    ids = orig_cell_ids[ok].astype(np.int64, copy=False)
+    labs = labels10[ok]
+    cfs = conf10[ok].astype(np.float32, copy=False)
 
-    valid_ids = orig_ids[valid_mask]
-    seed_labels[valid_ids] = labels10[valid_mask]
-    seed_mask[valid_ids] = True
-    return seed_labels, seed_mask, valid_mask
+    # 置信度从高到低遍历：高置信度优先写入
+    order = np.argsort(-cfs)
+    for idx in order:
+        oid = int(ids[idx])
+        if cfs[idx] >= float(threshold):
+            if not seed_mask[oid]:
+                seeds_full[oid] = int(labs[idx])
+                seed_mask[oid] = True
+    return seeds_full, seed_mask
+
 
 
 def _build_neighbors(pos_mm: np.ndarray, k: int) -> Optional[np.ndarray]:
@@ -348,6 +367,8 @@ def _cleanup_small_components(
     pos_mm: np.ndarray,
     min_size: int,
     neighbor_k: int,
+    *,
+    protect_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if labels is None or labels.size == 0 or min_size <= 0:
         return labels
@@ -357,6 +378,11 @@ def _cleanup_small_components(
 
     labels_out = labels.astype(np.int32, copy=True)
     visited = np.zeros(labels_out.shape[0], dtype=bool)
+    protect = None
+    if protect_mask is not None:
+        protect_arr = np.asarray(protect_mask, dtype=bool)
+        if protect_arr.shape[0] == labels_out.shape[0]:
+            protect = protect_arr
 
     for idx in range(labels_out.shape[0]):
         label = labels_out[idx]
@@ -374,6 +400,8 @@ def _cleanup_small_components(
                     stack.append(nbr)
         if len(component) >= min_size:
             continue
+        if protect is not None and np.any(protect[component]):
+            continue
         boundary_labels = []
         for node in component:
             for nbr in neighbors[node]:
@@ -390,56 +418,166 @@ def _cleanup_small_components(
     return labels_out
 
 
-def postprocess_6k_10k_full(
-    *,
-    prob6k: np.ndarray,            # (N6,C)
-    pos_mm6: np.ndarray,           # (N6,3)
-    pos_mm10: np.ndarray,          # (N10,3)
-    pos_mm_full: np.ndarray,       # (Nfull,3)
-    cfg: PPConfig,
-) -> Tuple[np.ndarray, np.ndarray]:
-    # 1) 近似GraphCut：概率平滑（含法向一致性权重） -> 6k标签/置信度
-    prob6_ref = _graphcut_refine(
-        prob_np=prob6k, pos_mm_np=pos_mm6,
-        beta=cfg.gc_beta, k=cfg.gc_k, iterations=cfg.gc_iterations,
-        normals_np=None, normal_gamma=cfg.normal_gamma
-    )
-    conf6 = prob6_ref.max(axis=1).astype(np.float32)
-    lab6  = prob6_ref.argmax(axis=1).astype(np.int32)
+def _cleanup_small_components_full(
+    pos: np.ndarray,
+    labels: np.ndarray,
+    min_size: int,
+    k: int = 12,
+    protect_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    if labels is None or labels.size == 0 or min_size <= 0:
+        return labels
+    N = labels.shape[0]
+    if N == 0:
+        return labels
+    k_eff = max(2, min(k, N))
+    nn = NearestNeighbors(n_neighbors=k_eff, algorithm="auto")
+    nn.fit(pos)
+    neighbors = nn.kneighbors(return_distance=False)  # (N, k)
 
-    # 2) 6k -> 10k：高置信度播种 + KNN 转移
-    #    a) 先整体 KNN 转移得到粗标签与置信度
-    lab10_knn, conf10_knn = knn_transfer(pos_mm6, lab6, pos_mm10, cfg.knn_10k, conf6)
-    if lab10_knn is None:
-        # 极端兜底：若KNN失败，全部置背景
-        lab10_knn = np.zeros(pos_mm10.shape[0], np.int32)
-        conf10_knn = np.zeros_like(lab10_knn, np.float32)
-    #    b) 用种子覆盖高置信度区域，其余保留KNN结果
-    seed_mask10 = conf10_knn >= float(cfg.seed_conf_th)
-    lab10 = lab10_knn.copy()
-    # seed_mask 本质已是“高置信度占优”，可直接使用
-    # 3) 10k 清理：去小连通域、再半径多数填洞
-    lab10 = _cleanup_small_components(
-        labels=lab10, pos_mm=pos_mm10,
+    out = labels.astype(np.int32, copy=True)
+    visited = np.zeros(N, dtype=bool)
+    protect = None
+    if protect_mask is not None and protect_mask.shape[0] == N:
+        protect = protect_mask.astype(bool)
+
+    for cls in np.unique(out):
+        idx_cls = np.where(out == cls)[0]
+        for start in idx_cls:
+            if visited[start]:
+                continue
+            stack = [int(start)]
+            comp: list[int] = []
+            visited[start] = True
+            while stack:
+                u = stack.pop()
+                comp.append(u)
+                for v in neighbors[u]:
+                    if not visited[v] and out[v] == cls:
+                        visited[v] = True
+                        stack.append(int(v))
+            comp_arr = np.asarray(comp, dtype=np.int64)
+            if comp_arr.size >= min_size:
+                continue
+            if protect is not None and np.any(protect[comp_arr]):
+                continue
+            neigh_labels = out[neighbors[comp_arr].reshape(-1)]
+            neigh_labels = neigh_labels[neigh_labels != cls]
+            if neigh_labels.size == 0:
+                continue
+            maj = int(np.bincount(neigh_labels).argmax())
+            out[comp_arr] = maj
+    return out
+
+
+def postprocess_6k_10k_full(
+    pos6: np.ndarray,
+    logits6: np.ndarray,
+    pos10: np.ndarray,
+    pos_full: np.ndarray,
+    *,
+    normals6: Optional[np.ndarray] = None,
+    orig_cell_ids: Optional[np.ndarray],
+    cfg: PPConfig,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    logs: Dict[str, float] = {}
+
+    # ---- 6k 概率 -> 10k 标签/置信度（带平滑）----
+    prob6 = softmax_np(logits6)
+    prob6_ref = _graphcut_refine(
+        prob6,
+        pos6,
+        beta=cfg.gc_beta,
+        k=cfg.gc_k,
+        iterations=cfg.gc_iterations,
+        normals_np=normals6,
+        normal_gamma=cfg.normal_gamma,
+    )
+    labels6 = np.argmax(prob6_ref, axis=1).astype(np.int32)
+    conf6 = prob6_ref[np.arange(prob6_ref.shape[0]), labels6].astype(np.float32)
+
+    labels10, conf10 = knn_transfer(
+        pos6, labels6,
+        pos10, cfg.knn_10k,
+        src_conf=conf6,
+    )
+    if conf10 is None:
+        conf10 = np.ones(labels10.shape[0], dtype=np.float32)
+    logs["conf10_mean"] = float(np.mean(conf10))
+
+    labels10 = _cleanup_small_components(
+        labels=labels10,
+        pos_mm=pos10,
         min_size=int(cfg.min_component_size),
         neighbor_k=int(cfg.clean_component_neighbors),
     )
-    fill = _radius_majority_fill(
-        train_pos=pos_mm10, train_labels=lab10,
-        query_pos=pos_mm10,
-        radius=float(cfg.fill_radius),
-        majority_thresh=float(cfg.fill_majority),
-        max_neighbors=int(cfg.fill_max_neighbors),
+
+    N_full = int(pos_full.shape[0])
+    seed_full = np.full(N_full, -1, dtype=np.int32)
+
+    # (A) 直接映射种子
+    if orig_cell_ids is not None and orig_cell_ids.size > 0 and N_full > 0:
+        mapped = np.asarray(orig_cell_ids, dtype=np.int64)
+        valid = (mapped >= 0) & (mapped < N_full)
+        if np.any(valid):
+            lim = min(valid.sum(), labels10.shape[0])
+            seed_full[mapped[valid][:lim]] = labels10[:lim]
+
+    # (B) 10k -> full 加权 KNN 种子
+    labels_knn, conf_knn = knn_transfer(
+        src_pos=pos10,
+        src_labels=labels10,
+        dst_pos=pos_full,
+        k=cfg.knn_full,
+        src_conf=conf10,
     )
-    if fill is not None:
-        need = fill >= 0
-        lab10[need] = fill[need].astype(np.int32)
+    if conf_knn is None:
+        conf_knn = np.ones(N_full, dtype=np.float32)
+    mask_knn = conf_knn >= float(cfg.seed_conf_th)
+    seed_full[mask_knn] = labels_knn[mask_knn]
 
-    # 4) 10k -> full：SVM(RBF) 上采样（论文原始做法）
-    lab_full = svm_upsample(
-        train_pos=pos_mm10, train_labels=lab10,
-        query_pos=pos_mm_full, cfg=cfg
+    seed_ratio = float(np.mean(seed_full >= 0)) if N_full > 0 else 0.0
+    logs["seed_ratio"] = seed_ratio
+
+    # ---------- 仅对未标记空洞做半径多数 ----------
+    unl_mask = seed_full < 0
+    if np.any(unl_mask):
+        fill = _radius_majority_fill(
+            train_pos=pos_full[seed_full >= 0],
+            train_labels=seed_full[seed_full >= 0],
+            query_pos=pos_full[unl_mask],
+            radius=cfg.fill_radius,
+            majority_thresh=cfg.fill_majority,
+            max_neighbors=cfg.fill_max_neighbors,
+        )
+        if fill is not None:
+            take = fill >= 0
+            if np.any(take):
+                unl_indices = np.nonzero(unl_mask)[0]
+                seed_full[unl_indices[take]] = fill[take].astype(np.int32, copy=False)
+
+    # ---------- SVM 收尾（仅用 full 种子训练） ----------
+    if np.any(seed_full < 0):
+        train_pos = pos_full[seed_full >= 0]
+        train_lab = seed_full[seed_full >= 0]
+        pred_full = svm_upsample(
+            train_pos=train_pos,
+            train_labels=train_lab,
+            query_pos=pos_full,
+            cfg=cfg,
+        )
+        mask_seed = seed_full >= 0
+        pred_full[mask_seed] = seed_full[mask_seed]
+    else:
+        pred_full = seed_full.copy()
+
+    # ---------- Full 级小连通域清理 ----------
+    pred_full = _cleanup_small_components_full(
+        pos=pos_full,
+        labels=pred_full,
+        min_size=int(getattr(cfg, "min_component_size_full", cfg.min_component_size)),
+        k=int(cfg.clean_component_neighbors),
+        protect_mask=(seed_full >= 0),
     )
 
-    return lab10.astype(np.int32, copy=False), lab_full.astype(np.int32, copy=False)
-
+    return labels10.astype(np.int32, copy=False), pred_full.astype(np.int32, copy=False), logs

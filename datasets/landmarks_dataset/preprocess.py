@@ -105,7 +105,7 @@ def make_heatmaps(centroids:(np.ndarray), lm_xyz:(np.ndarray), valid:(np.ndarray
         P = lm_xyz[idx][:,None,:].astype(np.float32)
         d2 = ((C-P)**2).sum(axis=-1)
         s2 = sigma_mm**2
-        y_eff = np.exp(-0.5*d2/s2, dtype=np.float32)
+        y_eff = np.exp(-0.5*d2/s2).astype(np.float32)
         if cutoff_sigma and cutoff_sigma>0:
             thr2 = (cutoff_sigma**2)*s2
             y_eff[d2>thr2] = 0.0
@@ -213,6 +213,8 @@ def process_arch(case_id="001", arch="L"):
 
         # 零均值平移到 ROI 局部
         center = pos.mean(axis=0, keepdims=True)
+        center_vec = center.squeeze(0).astype(np.float32)
+        roi_bounds = np.asarray(sub.bounds(), dtype=np.float32)
         pos = (pos - center).astype(np.float32)
         x15[:, -3:] = (x15[:, -3:] - x15[:, -3:].mean(axis=0, keepdims=True)).astype(np.float32)
 
@@ -230,7 +232,8 @@ def process_arch(case_id="001", arch="L"):
                 valid[i]  = 1.0
 
         # 热图 + mask
-        y_full, mask = make_heatmaps(pos, lm_xyz, valid, sigma_mm=SIGMA_MM)
+        # 与论文一致：σ=5mm，默认不截断；若想稳定一些可把 cutoff_sigma 设回 3.0
+        y_full, mask = make_heatmaps(pos, lm_xyz, valid, sigma_mm=SIGMA_MM, cutoff_sigma=0.0)
 
         # 采样 N'
         sel = fps(pos, N_PRIME, start_idx=0)
@@ -241,15 +244,18 @@ def process_arch(case_id="001", arch="L"):
 
         # 落盘
         npz_name = COOK/"samples"/f"{case_id}_{arch}_t{fdi}.npz"
+        x_pn9 = np.concatenate([pos_s, x_s[:, 9:15]], axis=1).astype(np.float32)  # [pos, nrm, cent_rel]
         np.savez_compressed(npz_name,
-            x=x_s.astype(np.float32),
+            x=x_pn9,
             pos=pos_s.astype(np.float32),
             y=y_pad.astype(np.float32),
             loss_mask=mask_pad.astype(np.float32),
             landmarks=lm_pad.astype(np.float32),
             sample_indices=sel.astype(np.int64),
             meta=dict(case_id=case_id, arch=arch, fdi=int(fdi), tooth_id=int(tid),
-                      L_t=int(L_t), L_max=int(L_MAX), sigma_mm=float(SIGMA_MM), unit="mm")
+                      L_t=int(L_t), L_max=int(L_MAX), sigma_mm=float(SIGMA_MM), unit="mm",
+                      center_mm=center_vec.tolist(),
+                      bounds_mm=roi_bounds.astype(np.float32).tolist())
         )
         made += 1
         print(f"[ok] -> {npz_name.name}  x:{x_s.shape}  y:{y_pad.shape}  mask:{mask_pad.shape}")

@@ -1,266 +1,203 @@
 from __future__ import annotations
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import math
-import re
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-
-from tooth_groups import TOOTH_GROUPS, get_group_teeth, get_tooth_group, validate_tooth_id
 
 Tensor = torch.Tensor
 Array = np.ndarray
 
 
-def _to_tensor(data: Array, dtype: torch.dtype = torch.float32) -> Tensor:
-    return torch.from_numpy(data).to(dtype)
+# --------------------------- utils ---------------------------
 
+def _to_tensor(a: Array, dtype: torch.dtype = torch.float32) -> Tensor:
+    return torch.from_numpy(a).to(dtype)
 
-def _rotz(theta: float) -> Array:
+def _rigid_z_rotation_matrix(theta: float) -> np.ndarray:
     c, s = math.cos(theta), math.sin(theta)
-    return np.asarray([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    return np.array([[c, -s, 0.0],
+                     [s,  c, 0.0],
+                     [0.0, 0.0, 1.0]], dtype=np.float32)
+
+def apply_rigid_to_x(x_cn: Array, R: Array, t: Array) -> Array:
+    """
+    x_cn: (C, N) with first 3 rows = xyz, next 3 rows (optional) = normals.
+    Applies xyz' = R*xyz + t, normal' = R*normal (if present).
+    """
+    C, N = x_cn.shape
+    assert C >= 3, "x must have at least 3 dims (xyz)."
+    xyz = x_cn[0:3, :]
+    xyz = R @ xyz + t.reshape(3, 1)
+    out = [xyz]
+    if C >= 6:
+        nrm = x_cn[3:6, :]
+        nrm = R @ nrm
+        out.append(nrm)
+        if C > 6:
+            out.append(x_cn[6:, :])  # extras unchanged
+    else:
+        if C > 3:
+            out.append(x_cn[3:, :])
+    return np.concatenate(out, axis=0)
 
 
-def _apply_rigid(x_cn: Array, R: Array, t: Array) -> Array:
-    xyz = R @ x_cn[0:3] + t.reshape(3, 1)
-    blocks = [xyz]
-    if x_cn.shape[0] >= 6:
-        blocks.append(R @ x_cn[3:6])
-        if x_cn.shape[0] > 6:
-            blocks.append(x_cn[6:])
-    elif x_cn.shape[0] > 3:
-        blocks.append(x_cn[3:])
-    return np.concatenate(blocks, axis=0)
-
-
-def _apply_mirror(x_cn: Array) -> Array:
-    """应用左右镜像变换 (x -> -x)"""
-    x_mirrored = x_cn.copy()
-    x_mirrored[0] *= -1  # x坐标取反
-    if x_cn.shape[0] >= 6:  # 如果有法向量，也需要镜像
-        x_mirrored[3] *= -1  # 法向量x分量取反
-    return x_mirrored
-
-
-def _extract_tooth_id_from_path(path: Path) -> Optional[str]:
-    """从文件路径中提取牙位ID"""
-    # 匹配模式：数字_字母_牙位.npz，如 001_L_t31.npz
-    pattern = r'.*_([tT]\d{2})\.npz$'
-    match = re.search(pattern, path.name)
-    if match:
-        return match.group(1).lower()
-    return None
-
-
-def _load_stats(stats_path: str) -> Tuple[Array, Array]:
-    """加载统计信息文件"""
-    try:
-        stats = np.load(stats_path)
-        mean = stats.get("mean", np.zeros(1))
-        std = stats.get("std", np.ones(1))
-        return mean.astype(np.float32), std.astype(np.float32)
-    except Exception:
-        return np.zeros(1, dtype=np.float32), np.ones(1, dtype=np.float32)
-
+# ------------------------ config/dataclass ------------------------
 
 @dataclass
 class DatasetConfig:
-    root: Union[str, Path]
-    file_patterns: Sequence[str] = ("*.npz",)
-    features: str = "all"
-    select_landmarks: str = "active"
-    augment: bool = False
-    rotz_deg: float = 15.0
-    trans_mm: float = 0.5
-    ensure_constant_L: bool = True
+    root: Union[str, Path]                      # 目录，含 *.npz
+    file_patterns: Sequence[str] = ("*.npz",)  # 支持按牙过滤，如 "*_t31.npz"
+    features: str = "pn"                       # "pn" | "xyz" （pn = pos+nrm+cent_rel）
+    select_landmarks: str = "active"           # "active" 只保留 mask==1 的通道；"all" 保留全部并返回 mask
+    augment: bool = False                      # 只做刚体增强（Rz + 平移）
+    rotz_deg: float = 15.0                     # 增强旋转幅度（±度）
+    trans_mm: float = 0.5                      # 增强平移幅度（各轴均匀±）
+    ensure_constant_L: bool = True             # 同一数据集内 L 必须一致（建议“每牙一个数据集”）
     dtype: torch.dtype = torch.float32
-    
-    # ✅ 新增：分组/牙位筛选
-    group: Optional[str] = None  # 牙位组名，与file_patterns互斥
-    tooth_ids: Optional[List[str]] = None  # 显式牙位列表，优先生效
-    
-    # ✅ 新增：牙弓对齐
-    arch_align: bool = True  # 是否进行牙弓对齐
-    arch_keys: Tuple[str, str] = ("arch_R", "arch_t")  # 对齐矩阵和平移键名
-    
-    # ✅ 新增：左右镜像增强
-    mirror_prob: float = 0.5  # 镜像增强概率
-    
-    # ✨ 可选：特征标准化
-    zscore: bool = False  # 是否进行Z-score标准化
-    stats_path: Optional[str] = None  # 统计信息文件路径
 
+
+# --------------------------- dataset ---------------------------
 
 class P0PointNetRegDataset(Dataset):
+    """
+    读取预处理好的 *.npz，为 PointNet-Reg 提供样本：
+      x: (C, N), y: (L, N), mask: (L,) [可选], meta: dict
+    DataLoader 会把它们堆成：
+      x: (B, C, N), y: (B, L, N), mask: (B, L)  (如 select_landmarks='all')
+    """
     def __init__(self, cfg: DatasetConfig):
         super().__init__()
         self.cfg = cfg
         root = Path(cfg.root)
-        
-        # ✅ 支持分组/牙位筛选
         files: List[Path] = []
-        
-        if cfg.tooth_ids is not None:
-            # 显式牙位列表优先生效
-            for tooth_id in cfg.tooth_ids:
-                if not validate_tooth_id(tooth_id):
-                    raise ValueError(f"Invalid tooth_id: {tooth_id}")
-                patterns = [f"*_{tooth_id}.npz", f"*_{tooth_id.upper()}.npz"]
-                for pat in patterns:
-                    files.extend(sorted(root.glob(pat)))
-        elif cfg.group is not None:
-            # 按组内牙位聚合样本
-            group_teeth = get_group_teeth(cfg.group)
-            if not group_teeth:
-                raise ValueError(f"Invalid group name: {cfg.group}")
-            for tooth_id in group_teeth:
-                patterns = [f"*_{tooth_id}.npz", f"*_{tooth_id.upper()}.npz"]
-                for pat in patterns:
-                    files.extend(sorted(root.glob(pat)))
-        else:
-            # 使用传统的file_patterns方式
-            for pat in cfg.file_patterns:
-                files.extend(sorted(root.glob(pat)))
-        
+        for pat in cfg.file_patterns:
+            files += sorted(root.glob(pat))
         if not files:
-            search_desc = f"group={cfg.group}" if cfg.group else f"tooth_ids={cfg.tooth_ids}" if cfg.tooth_ids else f"file_patterns={cfg.file_patterns}"
-            raise FileNotFoundError(f"no npz files found under {root} with {search_desc}")
-        
+            raise FileNotFoundError(f"No .npz found under {root} with {cfg.file_patterns}")
         self.files = files
-        
-        # 加载统计信息（如果需要）
-        self.stats_mean = None
-        self.stats_std = None
-        if cfg.zscore and cfg.stats_path:
-            self.stats_mean, self.stats_std = _load_stats(cfg.stats_path)
 
+        # 确认通道与 L（第一次样本为基准）
+        # 约定：npz 至少包含 x(N,C)、y(Lmax,N) 与 loss_mask(Lmax,)（或 mask）
         x0, y0, m0, _ = self._peek(self.files[0])
         self.C = x0.shape[0]
         self.N = x0.shape[1]
         self.L_all = y0.shape[0]
         self._active_L = int(m0.sum()) if m0 is not None else self.L_all
-        self._use_channels = slice(0, 3 if cfg.features == "xyz" else self.C)
+
+        # features 选择
+        if cfg.features == "xyz":
+            self._use_channels = slice(0, 3)
+        elif cfg.features in ("pn", "all"):
+            # 期望新 npz 的 x 为 [pos(3), nrm(3), cent_rel(3)]
+            self._use_channels = slice(0, min(9, self.C))
+        else:
+            raise ValueError("features must be 'pn', 'all', or 'xyz'.")
+
+        # 决定实际导出的 L
         self.L = self._active_L if cfg.select_landmarks == "active" else self.L_all
 
+        # 可选：全体文件 L 一致性检查（建议“每牙一数据集”，L 自然一致）
         if cfg.ensure_constant_L:
-            target = self._active_L if cfg.select_landmarks == "active" else self.L_all
-            for path in self.files:
-                _, y, m, _ = self._peek(path)
-                current = int(m.sum()) if (cfg.select_landmarks == "active" and m is not None) else y.shape[0]
-                if current != target:
-                    group_info = f" in group '{cfg.group}'" if cfg.group else ""
-                    raise ValueError(
-                        f"Inconsistent landmark count in {path.name}: expected {target}, got {current}. "
-                        f"This indicates annotation template inconsistency{group_info}. "
-                        f"Please check landmark definitions for this tooth type."
-                    )
+            for f in self.files:
+                _, y, m, _ = self._peek(f)
+                L_all = y.shape[0]
+                L_act = int(m.sum()) if m is not None else L_all
+                tgt = self._active_L if cfg.select_landmarks == "active" else self.L_all
+                got = L_act if cfg.select_landmarks == "active" else L_all
+                if got != tgt:
+                    raise ValueError(f"Inconsistent L in {f.name}: expect {tgt}, got {got}")
 
     def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, index: int) -> Dict[str, Any]:
-        path = self.files[index]
-        with np.load(path, allow_pickle=True) as data:
-            x = data["x"]
-            y = data["y"]
-            mask = data.get("loss_mask", data.get("mask"))
-            meta = data.get("meta", {})
+    def __getitem__(self, idx: int) -> Dict[str, Tensor]:
+        path = self.files[idx]
+        with np.load(path, allow_pickle=True) as Z:
+            x = Z["x"]  # (N, C) or (C, N)  —— 我们统一成 (C,N)
+            y = Z["y"]  # (Lmax, N)
+            mask = Z.get("loss_mask", Z.get("mask", None))  # (Lmax,)
+            meta = Z.get("meta", {}).item() if "meta" in Z else {}
 
-        if x.ndim != 2:
-            raise ValueError(f"bad x shape: {x.shape}")
-        if x.shape[0] == self.N:
+        # 统一形状
+        if x.shape == (self.N, self.C):
             x = x.T
-        x = x[self._use_channels]
+        elif x.shape == (self.C, self.N):
+            pass  # already (C,N)
+        elif x.shape[0] == self.N and x.shape[1] >= 3:
+            x = x.T
+        elif x.shape[1] == self.N and x.shape[0] >= 3:
+            pass  # treat as (C,N) even if通道数与self.C不同
+        assert x.shape[0] >= 3 and x.shape[1] == self.N, f"x shape bad: {x.shape}"
 
+        # 选择特征通道
+        x = x[self._use_channels, :]  # (C_use, N)
+
+        # 选择 landmarks 通道
         if self.cfg.select_landmarks == "active" and mask is not None:
-            y = y[mask.astype(bool)]
+            sel = mask.astype(bool)
+            y = y[sel, :]
             mask_out = None
         else:
-            mask_out = mask
+            mask_out = mask  # 训练时可用作 loss 掩码（BCE/MSE）
 
-        # ✅ 牙弓对齐（arch frame alignment）
-        if self.cfg.arch_align and isinstance(meta, dict):
-            arch_R_key, arch_t_key = self.cfg.arch_keys
-            if arch_R_key in meta and arch_t_key in meta:
-                try:
-                    arch_R = np.asarray(meta[arch_R_key], dtype=np.float32).reshape(3, 3)
-                    arch_t = np.asarray(meta[arch_t_key], dtype=np.float32).reshape(3)
-                    x = _apply_rigid(x, arch_R, arch_t)
-                except Exception:
-                    # 如果对齐失败，继续使用原始数据
-                    pass
-
-        # ✅ 数据增强（在对齐后进行）
+        # 可选刚体增强（不改变 y，因为欧氏距离在刚体下不变）
         if self.cfg.augment:
-            # 旋转和平移增强
             theta = math.radians(np.random.uniform(-self.cfg.rotz_deg, self.cfg.rotz_deg))
-            R = _rotz(theta)
-            t = np.random.uniform(-self.cfg.trans_mm, self.cfg.trans_mm, size=3).astype(np.float32)
-            x = _apply_rigid(x, R, t)
-            
-            # ✅ 左右镜像增强
-            if np.random.random() < self.cfg.mirror_prob:
-                x = _apply_mirror(x)
+            R = _rigid_z_rotation_matrix(theta)
+            t = np.random.uniform(-self.cfg.trans_mm, self.cfg.trans_mm, size=(3,)).astype(np.float32)
+            # 旋转 xyz、normal，并把 cent_rel 也一并旋转（若存在）
+            x[:3, :] = (R @ x[:3, :] + t.reshape(3, 1)).astype(np.float32)
+            if x.shape[0] >= 6:
+                x[3:6, :] = (R @ x[3:6, :]).astype(np.float32)
+            if x.shape[0] >= 9:
+                x[6:9, :] = (R @ x[6:9, :]).astype(np.float32)
 
-        # ✨ 特征标准化
-        if self.cfg.zscore and self.stats_mean is not None and self.stats_std is not None:
-            # 按通道标准化
-            C = x.shape[0]
-            if len(self.stats_mean) == C and len(self.stats_std) == C:
-                x = (x - self.stats_mean.reshape(-1, 1)) / (self.stats_std.reshape(-1, 1) + 1e-8)
-            else:
-                # 简单的xyz标准化
-                if C >= 3:
-                    xyz = x[:3]
-                    xyz_mean = xyz.mean(axis=1, keepdims=True)
-                    xyz_std = xyz.std(axis=1, keepdims=True) + 1e-8
-                    x[:3] = (xyz - xyz_mean) / xyz_std
-
-        sample = {"x": _to_tensor(x, self.cfg.dtype), "y": _to_tensor(y, self.cfg.dtype)}
+        # 转 tensor
+        sample = {
+            "x": _to_tensor(x, self.cfg.dtype),         # (C_use, N)
+            "y": _to_tensor(y, self.cfg.dtype),         # (L, N)
+        }
         if mask_out is not None:
-            sample["mask"] = _to_tensor(mask_out.astype(np.float32), self.cfg.dtype)
-        
-        # 🧩 元信息透传（补充tooth_id/group字段）
-        meta_dict = {"path": str(path)}
-        if isinstance(meta, dict):
-            meta_dict.update(meta)
-        
-        # 提取牙位ID
-        tooth_id = _extract_tooth_id_from_path(path)
-        if tooth_id:
-            meta_dict["tooth_id"] = tooth_id
-            meta_dict["group"] = get_tooth_group(tooth_id)
-        elif self.cfg.group:
-            meta_dict["group"] = self.cfg.group
-
-        sample["meta"] = meta_dict
+            sample["mask"] = _to_tensor(mask_out.astype(np.float32), self.cfg.dtype)  # (L_all,)
+        # 附带元信息（字符串保持 Python 对象）
+        sample["meta"] = {"path": str(path), **(meta if isinstance(meta, dict) else {})}
         return sample
 
     def _peek(self, path: Path) -> Tuple[Array, Array, Optional[Array], dict]:
-        with np.load(path, allow_pickle=True) as data:
-            x = data["x"]
-            y = data["y"]
-            mask = data.get("loss_mask", data.get("mask"))
-            meta = data.get("meta", {})
+        with np.load(path, allow_pickle=True) as Z:
+            x = Z["x"]
+            y = Z["y"]
+            mask = Z.get("loss_mask", Z.get("mask", None))
+            meta = Z.get("meta", {})
             if isinstance(meta, np.ndarray):
                 meta = meta.item()
-        if x.ndim != 2 or y.ndim != 2:
-            raise ValueError(f"bad tensor shape in {path.name}")
-        if x.shape[0] == y.shape[1]:
-            x = x.T
-        return x, y, mask, meta
+        # 统一到 (C,N)
+        x = x.T if x.shape[0] != x.shape[1] and x.shape[0] == y.shape[1] else x
+        if x.ndim != 2:
+            raise ValueError(f"bad x ndim in {path.name}: {x.shape}")
+        if y.ndim != 2:
+            raise ValueError(f"bad y ndim in {path.name}: {y.shape}")
+        return x if x.shape[0] < x.shape[1] else x.T, y, mask, meta
 
 
-def collate_p0(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    xs = torch.stack([b["x"] for b in batch])
-    ys = torch.stack([b["y"] for b in batch])
+# ------------------------- collate & loader -------------------------
+
+def collate_p0(batch: List[Dict[str, Tensor]]) -> Dict[str, Tensor]:
+    """
+    要求同一批次 (L, N) 一致（推荐“每牙一个 DataLoader”）。
+    返回：
+      x: (B,C,N), y: (B,L,N), mask: (B,L) [可选], meta: list[dict]
+    """
+    xs = torch.stack([b["x"] for b in batch], dim=0)              # (B,C,N)
+    ys = torch.stack([b["y"] for b in batch], dim=0)              # (B,L,N)
     out = {"x": xs, "y": ys, "meta": [b["meta"] for b in batch]}
     if "mask" in batch[0]:
-        out["mask"] = torch.stack([b["mask"] for b in batch])
+        ms = torch.stack([b["mask"] for b in batch], dim=0)       # (B,L_all)
+        out["mask"] = ms
     return out
 
 
@@ -271,14 +208,8 @@ def make_dataloader(
     num_workers: int = 4,
     pin_memory: bool = True,
 ) -> Tuple[P0PointNetRegDataset, DataLoader]:
-    dataset = P0PointNetRegDataset(cfg)
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        collate_fn=collate_p0,
-        drop_last=False,
-    )
-    return dataset, loader
+    ds = P0PointNetRegDataset(cfg)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                    num_workers=num_workers, pin_memory=pin_memory,
+                    collate_fn=collate_p0, drop_last=False)
+    return ds, dl
