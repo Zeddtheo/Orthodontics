@@ -206,7 +206,9 @@ def build_landmark_results(
     margins_raw = detect_margin_scores(tooth_data, names)
     secondary_scores = detect_secondary_scores(tooth_data, names)
 
-    offset = get_offset(tooth_data.get("meta", {}), case_meta) or get_offset(tooth_data, case_meta)
+    offset = get_offset(tooth_data.get("meta", {}), case_meta)
+    if offset is None:
+        offset = get_offset(tooth_data, case_meta)
 
     missing = []
     nans = []

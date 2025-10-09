@@ -333,7 +333,7 @@ class Trainer:
 
 @dataclass
 class TrainConfig:
-    data_config: DataConfig = DataConfig()
+    data_config: DataConfig = field(default_factory=DataConfig)
     run_name: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S"))
     log_root: Path = Path("outputs/segmentation/logs")
     checkpoint_root: Path = Path("outputs/segmentation/checkpoints")
