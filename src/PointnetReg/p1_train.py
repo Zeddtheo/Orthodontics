@@ -29,12 +29,16 @@ def build_loaders(root: str, tooth_id: str, features: str, batch_size: int, work
         root=root,
         file_patterns=(f"*_{tooth_id}.npz", f"*_{tooth_id.upper()}.npz"),
         features=features,
-        select_landmarks="active",
+        select_landmarks="all",
         augment=augment,
     )
     dataset = P0PointNetRegDataset(cfg)
-    val_len = max(1, int(round(len(dataset) * val_ratio)))
-    train_len = max(1, len(dataset) - val_len)
+    n = len(dataset)
+    if n == 0:
+        raise ValueError(f"No samples found for tooth {tooth_id} in {root}")
+    val_len = int(round(n * val_ratio))
+    val_len = min(max(0, val_len), max(0, n - 1))
+    train_len = n - val_len
     train_set, val_set = random_split(dataset, [train_len, val_len], generator=torch.Generator().manual_seed(2025))
 
     train_loader = DataLoader(
@@ -57,80 +61,136 @@ def build_loaders(root: str, tooth_id: str, features: str, batch_size: int, work
     return dataset, train_loader, val_loader
 
 
-def train_one_tooth(args, tooth_id: str, device: torch.device) -> None:
-    dataset, train_loader, val_loader = build_loaders(
-        root=args.root,
-        tooth_id=tooth_id,
-        features=args.features,
-        batch_size=args.batch_size,
-        workers=args.workers,
-        val_ratio=args.val_ratio,
-        augment=args.augment,
-    )
+def train_all_teeth(args, device: torch.device) -> None:
+    loaders = {}
+    heads_config = {}
+    in_channels = None
 
-    sample = dataset[0]
+    for tooth in args.tooth:
+        dataset, train_loader, val_loader = build_loaders(
+            root=args.root,
+            tooth_id=tooth,
+            features=args.features,
+            batch_size=args.batch_size,
+            workers=args.workers,
+            val_ratio=args.val_ratio,
+            augment=args.augment,
+        )
+        key = tooth.lower()
+        loaders[key] = {
+            "train": train_loader,
+            "val": val_loader,
+            "len_train": len(train_loader.dataset),
+            "len_val": len(val_loader.dataset),
+        }
+        heads_config[key] = dataset[0]["y"].shape[0]
+        if in_channels is None:
+            in_channels = dataset[0]["x"].shape[0]
+
+    if not loaders:
+        raise ValueError("No loaders constructed. Check --tooth and dataset root.")
+
     model = PointNetReg(
-        in_channels=sample["x"].shape[0],
-        num_landmarks=sample["y"].shape[0],
-        use_tnet=True,
+        in_channels=in_channels,
+        num_landmarks=max(heads_config.values()),
+        heads_config=heads_config,
+        use_tnet=args.use_tnet,
         return_logits=False,
     ).to(device)
 
     optim = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode="min", factor=0.5, patience=5, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode="min", factor=0.5, patience=5)
     scaler = GradScaler(enabled=device.type == "cuda")
-    criterion = torch.nn.MSELoss()
-
-    out_dir = Path(args.out_dir) / tooth_id
+    out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     best = float("inf")
     best_epoch = 0
     log_path = out_dir / "log.txt"
     with open(log_path, "a", encoding="utf-8") as fh:
-        fh.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} {tooth_id} ===="
-                 f" C={sample['x'].shape[0]} L={sample['y'].shape[0]} N={sample['x'].shape[-1]}"
-                 f" train={len(train_loader.dataset)} val={len(val_loader.dataset)}\n")
+        fh.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} multi-tooth ===="
+                 f" teeth={args.tooth} in_channels={in_channels}\n")
+
+    tooth_list = list(loaders.keys())
 
     for epoch in range(1, args.epochs + 1):
         model.train()
-        train_loss = 0.0
-        for batch in train_loader:
-            x = batch["x"].to(device, non_blocking=True)
-            y = batch["y"].to(device, non_blocking=True)
-            optim.zero_grad(set_to_none=True)
-            with autocast(enabled=device.type == "cuda"):
-                pred = model(x)
-                loss = criterion(pred, y)
-            scaler.scale(loss).backward()
-            scaler.unscale_(optim)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            scaler.step(optim)
-            scaler.update()
-            train_loss += loss.item()
-        train_loss /= max(1, len(train_loader))
-
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad(), autocast(enabled=device.type == "cuda"):
-            for batch in val_loader:
+        train_losses = {}
+        for tooth in tooth_list:
+            train_loader = loaders[tooth]["train"]
+            running = 0.0
+            for batch in train_loader:
                 x = batch["x"].to(device, non_blocking=True)
                 y = batch["y"].to(device, non_blocking=True)
-                val_loss += criterion(model(x), y).item()
-        val_loss /= max(1, len(val_loader))
-        scheduler.step(val_loss)
+                mask = batch.get("mask")
+                if mask is not None:
+                    mask = mask.to(device, non_blocking=True).float()
+                else:
+                    mask = torch.ones(y.shape[0], y.shape[1], device=device)
+                mask_exp = mask.unsqueeze(-1)
+                optim.zero_grad(set_to_none=True)
+                with autocast(enabled=device.type == "cuda"):
+                    pred = model(x, tooth_id=tooth)
+                    loss_map = (pred - y) ** 2
+                    loss = (loss_map * mask_exp).sum() / mask_exp.sum().clamp(min=1e-12)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optim)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                scaler.step(optim)
+                scaler.update()
+                running += loss.item()
+            train_losses[tooth] = running / max(1, len(train_loader))
 
-        if val_loss < best:
-            best = val_loss
+        mean_train = sum(train_losses.values()) / max(1, len(train_losses))
+
+        model.eval()
+        val_losses = {}
+        with torch.no_grad(), autocast(enabled=device.type == "cuda"):
+            for tooth in tooth_list:
+                val_loader = loaders[tooth]["val"]
+                if len(val_loader.dataset) == 0:
+                    val_losses[tooth] = train_losses[tooth]
+                    continue
+                running = 0.0
+                for batch in val_loader:
+                    x = batch["x"].to(device, non_blocking=True)
+                    y = batch["y"].to(device, non_blocking=True)
+                    mask = batch.get("mask")
+                    if mask is not None:
+                        mask = mask.to(device, non_blocking=True).float()
+                    else:
+                        mask = torch.ones(y.shape[0], y.shape[1], device=device)
+                    mask_exp = mask.unsqueeze(-1)
+                    pred = model(x, tooth_id=tooth)
+                    loss_map = (pred - y) ** 2
+                    running += ((loss_map * mask_exp).sum() / mask_exp.sum().clamp(min=1e-12)).item()
+                val_losses[tooth] = running / max(1, len(val_loader))
+
+        mean_val = sum(val_losses.values()) / max(1, len(val_losses))
+        scheduler.step(mean_val)
+
+        if mean_val < best:
+            best = mean_val
             best_epoch = epoch
-            torch.save({"model": model.state_dict(), "in_channels": sample["x"].shape[0], "num_landmarks": sample["y"].shape[0]}, out_dir / "best.pt")
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "in_channels": in_channels,
+                    "heads_config": heads_config,
+                    "features": args.features,
+                    "use_tnet": args.use_tnet,
+                },
+                out_dir / "best.pt",
+            )
 
         if epoch % args.log_every == 0 or epoch in (1, args.epochs):
-            msg = f"[{tooth_id}] epoch {epoch:03d}/{args.epochs} train {train_loss:.6f} val {val_loss:.6f} best {best:.6f} (ep {best_epoch})"
+            parts = [f"[epoch {epoch:03d}/{args.epochs}] train {mean_train:.6f} val {mean_val:.6f} best {best:.6f} (ep {best_epoch})"]
+            parts.extend(f"{tooth}:trn={train_losses[tooth]:.6f}/val={val_losses[tooth]:.6f}" for tooth in tooth_list)
+            msg = " | ".join(parts)
             print(msg)
             with open(log_path, "a", encoding="utf-8") as fh:
                 fh.write(msg + "\n")
 
-    print(f"[{tooth_id}] done; best {best:.6f} epoch {best_epoch}")
+    print(f"Training done; best {best:.6f} epoch {best_epoch} saved to {out_dir/'best.pt'}")
 
 
 def parse_args():
@@ -141,14 +201,16 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--features", type=str, choices=["all", "xyz"], default="all")
+    parser.add_argument("--features", type=str, choices=["pn", "all", "xyz"], default="pn")
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--augment", action="store_true")
     parser.add_argument("--out_dir", type=str, default="runs_pointnetreg")
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--log_every", type=int, default=1)
+    parser.add_argument("--disable_tnet", action="store_true", help="Disable TNet alignment.")
     args = parser.parse_args()
     args.tooth = DEFAULT_TOOTH_IDS if args.tooth.strip().lower() == "all" else [t.strip() for t in args.tooth.split(",") if t.strip()]
+    args.use_tnet = not args.disable_tnet
     return args
 
 
@@ -157,8 +219,7 @@ def main():
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device={device} root={args.root} teeth={args.tooth}")
-    for tooth in args.tooth:
-        train_one_tooth(args, tooth, device)
+    train_all_teeth(args, device)
 
 
 if __name__ == "__main__":

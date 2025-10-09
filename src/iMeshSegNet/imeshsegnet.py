@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp import autocast as amp_autocast
 
 
 # ------------------------------------------------------------
@@ -11,6 +12,10 @@ import torch.nn.functional as F
 # ------------------------------------------------------------
 def knn_graph(pos: torch.Tensor, k: int) -> torch.Tensor:
     """Build k-NN graph with explicit self-loop for each center.
+    
+    ⚠️ CRITICAL: Forces FP32 computation to prevent AMP quantization errors
+    that can corrupt neighbor ordering in early training.
+    
     Args:
         pos: (B, 3, N) positions in *the unified arch coordinate frame*.
         k:   number of neighbors (including self).
@@ -21,7 +26,12 @@ def knn_graph(pos: torch.Tensor, k: int) -> torch.Tensor:
     assert C == 3, "pos must be (B,3,N)"
     if k <= 0:
         raise ValueError("k must be positive for knn_graph")
-    dists = torch.cdist(pos.transpose(1, 2), pos.transpose(1, 2), p=2)  # (B,N,N)
+    
+    # ========== 修复1: 强制 FP32 计算距离，避免 AMP 下的量化误差 ==========
+    with amp_autocast(enabled=False):
+        pos32 = pos.float()  # 确保 FP32
+        dists = torch.cdist(pos32.transpose(1, 2), pos32.transpose(1, 2), p=2)  # (B,N,N)
+    
     knn_i = torch.topk(dists, k=k, dim=-1, largest=False, sorted=False).indices  # (B,N,k)
     self_idx = torch.arange(N, device=pos.device).view(1, N, 1)
     knn_i[..., 0:1] = self_idx  # ensure self-loop present
@@ -163,9 +173,24 @@ class GLMEdgeConv(nn.Module):
         self.ec_long = EdgeConv(in_ch, out_ch // 2)
 
     def forward(self, x: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
+        """Original forward: computes kNN internally (kept for backward compatibility)."""
         # pos: (B,3,N) for kNN graph construction
         idx_s = knn_graph(pos, self.k_short)  # (B,N,ks)
         idx_l = knn_graph(pos, self.k_long)   # (B,N,kl)
+        xs = self.ec_short(x, idx_s)          # (B,out/2,N)
+        xl = self.ec_long(x, idx_l)           # (B,out/2,N)
+        return torch.cat([xs, xl], dim=1)     # (B,out,N)
+    
+    def forward_idx(self, x: torch.Tensor, idx_s: torch.Tensor, idx_l: torch.Tensor) -> torch.Tensor:
+        """========== 修复2: 复用预计算的 kNN 索引（减少 50% O(N²) 开销）==========
+        
+        Args:
+            x: (B, C, N) features
+            idx_s: (B, N, k_short) pre-computed short-range neighbor indices
+            idx_l: (B, N, k_long) pre-computed long-range neighbor indices
+        Returns:
+            out: (B, out_ch, N)
+        """
         xs = self.ec_short(x, idx_s)          # (B,out/2,N)
         xl = self.ec_long(x, idx_l)           # (B,out/2,N)
         return torch.cat([xs, xl], dim=1)     # (B,out,N)
@@ -214,6 +239,8 @@ class iMeshSegNet(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.glm_impl = glm_impl
+        self.k_short = k_short  # ← 新增：保存为属性，便于追踪
+        self.k_long = k_long    # ← 新增：保存为属性，便于追踪
         self.with_dropout = with_dropout
         self.dropout_p = dropout_p
         self.use_feature_stn = use_feature_stn
@@ -289,6 +316,7 @@ class iMeshSegNet(nn.Module):
         """
         B, C, N = x.shape
         assert C == 15, "Input feature must be 15-D"
+        
         # ----- MLP-1 -----
         x = F.relu(self.mlp1_bn1(self.mlp1_conv1(x)))   # (B,64,N)
         x = F.relu(self.mlp1_bn2(self.mlp1_conv2(x)))   # (B,64,N)
@@ -300,12 +328,19 @@ class iMeshSegNet(nn.Module):
             x = torch.bmm(x_t, trans).transpose(2, 1)   # (B,64,N)
         g1 = torch.max(x, dim=-1)[0]                    # (B,64)
 
+        # ========== 修复2: 一次性计算 kNN（FP32 + 复用两层）==========
         # ----- GLM-1 -----
         if self.glm_impl == "edgeconv":
-            y1 = self.glm1(x, pos)                      # (B,128,N)
+            # 计算 kNN 索引（强制 FP32，避免 AMP 量化误差）
+            with amp_autocast(enabled=False):
+                pos32 = pos.float()
+                idx_s = knn_graph(pos32, self.k_short)  # (B,N,ks)
+                idx_l = knn_graph(pos32, self.k_long)   # (B,N,kl)
+            y1 = self.glm1.forward_idx(x, idx_s, idx_l) # (B,128,N) 复用索引
         else:
             assert a_s is not None and a_l is not None, "SAP mode requires a_s/a_l"
             y1 = self.glm1(x, a_s, a_l)
+            idx_s = idx_l = None  # SAP 模式不需要
         g2 = torch.max(y1, dim=-1)[0]                   # (B,128)
 
         # ----- MLP-2 -----
@@ -315,7 +350,9 @@ class iMeshSegNet(nn.Module):
 
         # ----- GLM-2 -----
         if self.glm_impl == "edgeconv":
-            y3 = self.glm2(y2, pos)                     # (B,128,N)
+            # 复用 GLM-1 计算的索引（节省 50% kNN 开销）
+            assert idx_s is not None and idx_l is not None
+            y3 = self.glm2.forward_idx(y2, idx_s, idx_l) # (B,128,N) 复用索引
         else:
             y3 = self.glm2(y2, a_s, a_l)
         g4 = torch.max(y3, dim=-1)[0]                   # (B,128)

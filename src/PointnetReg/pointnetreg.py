@@ -2,7 +2,7 @@
 # A lightweight PointNet-Reg backbone for ROI landmark heatmap regression.
 # Focus: clean model only (no dataset/loss/decoder here).
 
-from typing import Optional
+from typing import Optional, Dict, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -45,8 +45,8 @@ class TNet(nn.Module):
         self.conv1 = nn.Conv1d(k, 64, 1);   self.bn1 = make_norm(64, norm)
         self.conv2 = nn.Conv1d(64, 128, 1); self.bn2 = make_norm(128, norm)
         self.conv3 = nn.Conv1d(128, 256, 1); self.bn3 = make_norm(256, norm)
-        self.fc1 = nn.Linear(256, 128);     self.bn4 = make_norm(128, norm)
-        self.fc2 = nn.Linear(128, 64);      self.bn5 = make_norm(64, norm)
+        self.fc1 = nn.Linear(256, 128);     self.ln1 = nn.LayerNorm(128)
+        self.fc2 = nn.Linear(128, 64);      self.ln2 = nn.LayerNorm(64)
         self.fc3 = nn.Linear(64, k * k)
         self.last_A: Optional[torch.Tensor] = None
 
@@ -57,8 +57,8 @@ class TNet(nn.Module):
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))          # (B,256,N)
         g = torch.max(x, dim=2).values               # (B,256)
-        g = F.relu(self.bn4(self.fc1(g)))
-        g = F.relu(self.bn5(self.fc2(g)))
+        g = F.relu(self.ln1(self.fc1(g)))
+        g = F.relu(self.ln2(self.fc2(g)))
         A = self.fc3(g)                              # (B,9)
         I = torch.eye(self.k, device=A.device).view(1, -1).expand(B, -1)
         A = (A + I).view(B, self.k, self.k)         # residual → near identity
@@ -96,6 +96,7 @@ class PointNetReg(nn.Module):
         self,
         in_channels: int,
         num_landmarks: int,
+        heads_config: Optional[Dict[str, int]] = None,
         use_tnet: bool = True,
         norm: str = "gn",
         dropout_p: float = 0.0,
@@ -104,9 +105,11 @@ class PointNetReg(nn.Module):
         super().__init__()
         assert in_channels >= 3, "in_channels must include xyz as first 3 dims."
         self.in_channels = in_channels
-        self.num_landmarks = num_landmarks
         self.use_tnet = use_tnet
         self.return_logits = return_logits
+
+        self.multi_head = heads_config is not None
+        self.heads_config: Optional[Dict[str, int]] = None
 
         self.tnet = TNet(k=3, norm=norm) if use_tnet else None
 
@@ -121,12 +124,28 @@ class PointNetReg(nn.Module):
         # fusion head: (256 local + 512 global = 768) -> 256 -> L
         self.head1 = nn.Conv1d(768, 256, 1);          self.bnh1 = make_norm(256, norm)
         self.dropout = ChannelDropout1d(dropout_p) if dropout_p > 0 else nn.Identity()
-        self.head2 = nn.Conv1d(256, num_landmarks, 1)
+
+        if self.multi_head:
+            if not heads_config:
+                raise ValueError("heads_config must be provided when multi_head is enabled.")
+            self.heads_config = {self._normalize_head_key(k): int(v) for k, v in heads_config.items()}
+            self.head2 = None
+            self.heads = nn.ModuleDict({
+                key: nn.Conv1d(256, channels, 1) for key, channels in self.heads_config.items()
+            })
+            self.default_head_key = next(iter(self.heads))
+            self.num_landmarks = None
+        else:
+            self.heads = None
+            self.heads_config = None
+            self.default_head_key = None
+            self.head2 = nn.Conv1d(256, num_landmarks, 1)
+            self.num_landmarks = num_landmarks
 
         self.act = nn.ReLU(inplace=True)
         self.apply(init_weights)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, tooth_id: Optional[Union[str, int]] = None) -> torch.Tensor:
         # x: (B,C,N) with xyz in x[:, :3, :]
         B, C, N = x.shape
         xyz, extras = x[:, :3, :], x[:, 3:, :]
@@ -161,10 +180,31 @@ class PointNetReg(nn.Module):
         h = torch.cat([feat_local, g], dim=1)     # (B,768,N)
         h = self.act(self.bnh1(self.head1(h)))    # (B,256,N)
         h = self.dropout(h)
-        logits = self.head2(h)                    # (B,L,N)
+        if self.multi_head:
+            head_key = self._normalize_head_key(tooth_id)
+            if head_key not in self.heads:
+                raise KeyError(f"Head '{head_key}' not found. Available: {list(self.heads.keys())}")
+            logits = self.heads[head_key](h)
+        else:
+            logits = self.head2(h)                    # (B,L,N)
 
         return logits if self.return_logits else torch.sigmoid(logits)
 
     @property
     def last_tnet_matrix(self) -> Optional[torch.Tensor]:
         return None if not self.use_tnet else self.tnet.last_A
+
+    @staticmethod
+    def _normalize_head_key(tooth_id: Optional[Union[str, int]]) -> str:
+        if tooth_id is None:
+            raise ValueError("tooth_id must be provided for multi-head forward.")
+        if isinstance(tooth_id, (int, float)):
+            return f"t{int(tooth_id)}"
+        key = str(tooth_id).strip()
+        if not key:
+            raise ValueError("Empty tooth_id provided.")
+        if key[0].lower() == "t":
+            return key.lower()
+        if key.isdigit():
+            return f"t{key}"
+        return key.lower()

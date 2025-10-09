@@ -48,7 +48,10 @@ def ensure_clean_dir(path: Path, keep_existing: bool) -> None:
         for item in sorted(path.glob("**"), reverse=True):
             if item.is_dir():
                 item.rmdir()
-        path.rmdir()
+        try:
+            path.rmdir()
+        except FileNotFoundError:
+            pass
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -168,6 +171,8 @@ def main() -> None:
         "1",
         "--workers",
         "0",
+        "--cases",
+        args.case,
     ]
     if args.use_tnet:
         infer_cmd.append("--use_tnet")

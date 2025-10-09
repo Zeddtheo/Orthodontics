@@ -84,13 +84,15 @@ def infer_one_tooth(
     out_dir="runs_infer",
     landmark_json=None,
     use_tnet=False,
+    export_roi_ply=False,
+    cases: list[str] | None = None,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cfg = DatasetConfig(
         root=root,
         file_patterns=(f"*_{tooth_id}.npz", f"*_{tooth_id.upper()}.npz"),
         features=features,
-        select_landmarks="active",
+        select_landmarks="all",
         ensure_constant_L=False,
     )
     dataset = P0PointNetRegDataset(cfg)
@@ -98,29 +100,56 @@ def infer_one_tooth(
 
     sample = dataset[0]
     names = _load_landmark_names(landmark_json, tooth_id, sample["y"].shape[0])
-    model = PointNetReg(
-        in_channels=sample["x"].shape[0],
-        num_landmarks=sample["y"].shape[0],
-        use_tnet=use_tnet,
-        return_logits=True,
-    ).to(device)
-    ckpt_path = Path(ckpt_root) / tooth_id / "best.pt"
+    ckpt_root = Path(ckpt_root)
+    ckpt_path = (
+        ckpt_root / "best.pt"
+        if (ckpt_root / "best.pt").exists()
+        else ckpt_root / tooth_id / "best.pt"
+    )
     if not ckpt_path.exists():
         print(f"[{tooth_id}] missing checkpoint: {ckpt_path}")
         return
     state = torch.load(ckpt_path, map_location="cpu")
-    model.load_state_dict(state["model"] if isinstance(state, dict) and "model" in state else state)
+    payload = state if isinstance(state, dict) else {"model": state}
+
+    heads_config = payload.get("heads_config")
+    in_channels = payload.get("in_channels", sample["x"].shape[0])
+    num_landmarks = payload.get("num_landmarks", sample["y"].shape[0])
+
+    ckpt_use_tnet = payload.get("use_tnet", use_tnet)
+
+    model = PointNetReg(
+        in_channels=in_channels,
+        num_landmarks=num_landmarks,
+        heads_config=heads_config,
+        use_tnet=ckpt_use_tnet,
+        return_logits=True,
+    ).to(device)
+    model.load_state_dict(payload["model"])
     model.eval()
+
+    allowed_cases: set[str] | None = None
+    if cases:
+        allowed_cases = {str(c).strip() for c in cases if str(c).strip()}
+        normalised = set()
+        for cid in allowed_cases:
+            if cid.isdigit():
+                normalised.add(f"{int(cid):03d}")
+            else:
+                normalised.add(cid)
+        allowed_cases = normalised if normalised else None
 
     out_root = Path(out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
-    ply_root = out_root / "roi_ply" / tooth_id
-    ply_root.mkdir(parents=True, exist_ok=True)
+    ply_root = None
+    if export_roi_ply:
+        ply_root = out_root / "roi_ply" / tooth_id
+        ply_root.mkdir(parents=True, exist_ok=True)
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
             x = batch["x"].to(device, non_blocking=True)
-            logits = model(x)  # (B, L, N)
+            logits = model(x, tooth_id=tooth_id if model.multi_head else None)  # (B, L, N)
             probs = torch.sigmoid(logits)
             topk_vals, topk_idx = torch.topk(probs, k=2, dim=-1)
             top1_vals = topk_vals[..., 0]
@@ -129,8 +158,15 @@ def infer_one_tooth(
             idx = top1_idx.cpu().numpy()
             scores = top1_vals.cpu().numpy()
             seconds = top2_vals.cpu().numpy()
+            mask_batch = batch.get("mask")
+            if mask_batch is not None:
+                mask_np = (mask_batch.cpu().numpy() > 0.5)
+            else:
+                mask_np = None
             for b, meta in enumerate(batch["meta"]):
                 case_id = _case_id(meta)
+                if allowed_cases and case_id not in allowed_cases:
+                    continue
                 npz_path = meta.get("path") if isinstance(meta, dict) else None
                 pos = None
                 if npz_path:
@@ -141,7 +177,7 @@ def infer_one_tooth(
                                 pos = pos.T
                         else:
                             x_raw = data["x"]
-                            if x_raw.shape[0] == pred.shape[-1]:
+                            if x_raw.shape[0] == logits.shape[-1]:
                                 x_raw = x_raw.T
                             pos = x_raw[:, :3].astype(np.float32)
                 if pos is None:
@@ -150,6 +186,14 @@ def infer_one_tooth(
                 lm_local = pos[idx[b]]
                 offset = _offset(meta)
                 lm_global = lm_local + offset if offset is not None else lm_local.copy()
+                active_mask = None
+                if mask_np is not None:
+                    active_mask = mask_np[b]
+                    inactive = ~active_mask
+                    lm_local = lm_local.copy()
+                    lm_local[inactive] = np.nan
+                    lm_global = lm_global.copy()
+                    lm_global[inactive] = np.nan
 
                 out_path = out_root / f"{case_id}.json"
                 payload = {}
@@ -160,19 +204,21 @@ def infer_one_tooth(
                         payload = {}
                 payload.setdefault("predictions", {})
                 tooth_payload = payload["predictions"].get(tooth_id, {})
-                tooth_payload["landmarks_local"] = {names[i]: lm_local[i].tolist() for i in range(len(names))}
-                tooth_payload["landmarks_global"] = {names[i]: lm_global[i].tolist() for i in range(len(names))}
-                tooth_payload["indices"] = {names[i]: int(idx[b, i]) for i in range(len(names))}
+                tooth_payload["landmarks_local"] = {names[i]: lm_local[i].tolist() if np.all(np.isfinite(lm_local[i])) else None for i in range(len(names))}
+                tooth_payload["landmarks_global"] = {names[i]: lm_global[i].tolist() if np.all(np.isfinite(lm_global[i])) else None for i in range(len(names))}
+                tooth_payload["indices"] = {names[i]: (int(idx[b, i]) if active_mask is None or active_mask[i] else -1) for i in range(len(names))}
                 # 附带峰值强度、第二峰与置信边际，方便后处理过滤
-                score_map = {names[i]: float(scores[b, i]) for i in range(len(names))}
-                second_map = {names[i]: float(seconds[b, i]) for i in range(len(names))}
-                margin_map = {names[i]: float(scores[b, i] - seconds[b, i]) for i in range(len(names))}
+                score_map = {names[i]: (float(scores[b, i]) if active_mask is None or active_mask[i] else 0.0) for i in range(len(names))}
+                second_map = {names[i]: (float(seconds[b, i]) if active_mask is None or active_mask[i] else 0.0) for i in range(len(names))}
+                margin_map = {names[i]: (float(scores[b, i] - seconds[b, i]) if active_mask is None or active_mask[i] else 0.0) for i in range(len(names))}
                 tooth_payload["scores"] = score_map.copy()
                 tooth_payload.setdefault("top1", score_map.copy())
                 tooth_payload.setdefault("peak_scores", score_map.copy())
                 tooth_payload["top2"] = second_map.copy()
                 tooth_payload.setdefault("second_scores", second_map.copy())
                 tooth_payload["margin"] = margin_map
+                if active_mask is not None:
+                    tooth_payload["active_mask"] = {names[i]: bool(active_mask[i]) for i in range(len(names))}
                 tooth_meta_out = {}
                 if isinstance(meta, dict):
                     for key in ("case_id", "arch", "fdi", "tooth_id", "sigma_mm", "unit"):
@@ -192,15 +238,15 @@ def infer_one_tooth(
                     json.dump(payload, fh, ensure_ascii=False, indent=2)
                 print(f"[{tooth_id}] {case_id} -> {out_path}")
 
-                # Export ROI prediction as PLY for quick inspection
-                ply_path = ply_root / f"{case_id}_sample{batch_idx:04d}.ply"
-                with ply_path.open("w", encoding="utf-8") as fh:
-                    fh.write("ply\nformat ascii 1.0\n")
-                    fh.write(f"element vertex {lm_local.shape[0]}\n")
-                    fh.write("property float x\nproperty float y\nproperty float z\n")
-                    fh.write("end_header\n")
-                    for point in lm_local:
-                        fh.write(f"{point[0]:.6f} {point[1]:.6f} {point[2]:.6f}\n")
+                if export_roi_ply and ply_root is not None:
+                    ply_path = ply_root / f"{case_id}_sample{batch_idx:04d}.ply"
+                    with ply_path.open("w", encoding="utf-8") as fh:
+                        fh.write("ply\nformat ascii 1.0\n")
+                        fh.write(f"element vertex {lm_local.shape[0]}\n")
+                        fh.write("property float x\nproperty float y\nproperty float z\n")
+                        fh.write("end_header\n")
+                        for point in lm_local:
+                            fh.write(f"{point[0]:.6f} {point[1]:.6f} {point[2]:.6f}\n")
 
 
 def parse_args():
@@ -214,6 +260,8 @@ def parse_args():
     parser.add_argument("--out_dir", type=str, default="runs_infer")
     parser.add_argument("--landmark_json", type=str, default="landmark_def.json")
     parser.add_argument("--use_tnet", action="store_true", help="Enable TNet alignment (default disabled).")
+    parser.add_argument("--cases", type=str, default=None, help="仅导出指定 case（逗号分隔）。默认导出全部。")
+    parser.add_argument("--export_roi_ply", action="store_true", help="导出 ROI PLY 点云（默认不导出）。")
     return parser.parse_args()
 
 
@@ -235,6 +283,8 @@ def main():
             args.out_dir,
             args.landmark_json,
             use_tnet=args.use_tnet,
+            export_roi_ply=args.export_roi_ply,
+            cases=[c.strip() for c in args.cases.split(",")] if args.cases else None,
         )
 
 
