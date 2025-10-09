@@ -151,9 +151,9 @@ def infer_one_tooth(
             x = batch["x"].to(device, non_blocking=True)
             logits = model(x, tooth_id=tooth_id if model.multi_head else None)  # (B, L, N)
             probs = torch.sigmoid(logits)
-            topk_vals, topk_idx = torch.topk(probs, k=2, dim=-1)
-            top1_vals = topk_vals[..., 0]
-            top2_vals = topk_vals[..., 1]
+            topk_logits, topk_idx = torch.topk(logits, k=2, dim=-1)
+            top1_vals = torch.sigmoid(topk_logits[..., 0])
+            top2_vals = torch.sigmoid(topk_logits[..., 1])
             top1_idx = topk_idx[..., 0]
             idx = top1_idx.cpu().numpy()
             scores = top1_vals.cpu().numpy()
@@ -208,9 +208,12 @@ def infer_one_tooth(
                 tooth_payload["landmarks_global"] = {names[i]: lm_global[i].tolist() if np.all(np.isfinite(lm_global[i])) else None for i in range(len(names))}
                 tooth_payload["indices"] = {names[i]: (int(idx[b, i]) if active_mask is None or active_mask[i] else -1) for i in range(len(names))}
                 # 附带峰值强度、第二峰与置信边际，方便后处理过滤
+                margin_logits = torch.sigmoid(
+                    (topk_logits[..., 0] - topk_logits[..., 1])
+                ).cpu().numpy()
                 score_map = {names[i]: (float(scores[b, i]) if active_mask is None or active_mask[i] else 0.0) for i in range(len(names))}
                 second_map = {names[i]: (float(seconds[b, i]) if active_mask is None or active_mask[i] else 0.0) for i in range(len(names))}
-                margin_map = {names[i]: (float(scores[b, i] - seconds[b, i]) if active_mask is None or active_mask[i] else 0.0) for i in range(len(names))}
+                margin_map = {names[i]: (float(margin_logits[b, i]) if active_mask is None or active_mask[i] else 0.0) for i in range(len(names))}
                 tooth_payload["scores"] = score_map.copy()
                 tooth_payload.setdefault("top1", score_map.copy())
                 tooth_payload.setdefault("peak_scores", score_map.copy())
@@ -259,7 +262,11 @@ def parse_args():
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--out_dir", type=str, default="runs_infer")
     parser.add_argument("--landmark_json", type=str, default="landmark_def.json")
-    parser.add_argument("--use_tnet", action="store_true", help="Enable TNet alignment (default disabled).")
+    parser.add_argument(
+        "--use_tnet",
+        action="store_true",
+        help="Enable TNet alignment (default disabled). Note: if the checkpoint stores a use_tnet flag, that setting overrides this switch.",
+    )
     parser.add_argument("--cases", type=str, default=None, help="仅导出指定 case（逗号分隔）。默认导出全部。")
     parser.add_argument("--export_roi_ply", action="store_true", help="导出 ROI PLY 点云（默认不导出）。")
     return parser.parse_args()

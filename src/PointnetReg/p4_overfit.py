@@ -1,14 +1,14 @@
-# p5_overfit.py
+# p4_overfit.py
 # Single-sample overfit test for PointNetReg.
-# This script trains the model on a single data point to verify that it can
-# achieve a very low loss, which is a good sanity check for the model and training pipeline.
+# 采用 select_landmarks="all"+mask 的方式，确保与正式训练同口径。
+# 可选择单牙或共享骨干多头两种模式，损失为 Sigmoid+加权 MSE，可选峰值 CE 约束。
 
 import argparse
 import random
 from pathlib import Path
 
 import torch
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
 from p0_dataset import DatasetConfig, P0PointNetRegDataset, collate_p0
@@ -95,7 +95,8 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
     ).to(device)
 
     optim = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True)
-    scaler = GradScaler(enabled=False)  # 单样本更稳；若你想更快可再打开
+    device_type = 'cuda' if device.type == 'cuda' else 'cpu'
+    scaler = GradScaler(device_type, enabled=False)  # 单样本更稳；若你想更快可再打开
     mse_loss = torch.nn.MSELoss(reduction="none")
 
     print(f"\n==== Overfitting test for tooth: {tooth_id} | Sample: {args.sample_idx} ====")
@@ -123,7 +124,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
             xyz = x[:, :3, :]  # ROI 局部 (B,3,N)
 
             optim.zero_grad(set_to_none=True)
-            with autocast(enabled=False):  # 全精度，确保单样本稳定收敛
+            with autocast(device_type, enabled=False):  # 全精度，确保单样本稳定收敛
                 logits = model(x, tooth_id=head_key)
                 probs = torch.sigmoid(logits)
                 loss_target = y
@@ -274,7 +275,8 @@ def overfit_shared(args, device: torch.device):
     ).to(device)
 
     optim = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True)
-    scaler = GradScaler(enabled=False)
+    device_type = 'cuda' if device.type == 'cuda' else 'cpu'
+    scaler = GradScaler(device_type, enabled=False)
     mse_loss = torch.nn.MSELoss(reduction="none")
 
     out_dir = Path(args.out_dir) / "shared"
@@ -305,7 +307,7 @@ def overfit_shared(args, device: torch.device):
             mask_exp = mask.unsqueeze(-1)
 
             optim.zero_grad(set_to_none=True)
-            with autocast(enabled=False):
+            with autocast(device_type, enabled=False):
                 logits = model(x, tooth_id=tooth)
                 probs = torch.sigmoid(logits)
                 loss_target = y

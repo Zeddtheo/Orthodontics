@@ -17,7 +17,7 @@ import time
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 import numpy as np
@@ -263,8 +263,10 @@ class OverfitTrainer:
         )
         
         # 混合精度训练
-        self.scaler = GradScaler() if device.type == 'cuda' else None
+        device_type = 'cuda' if device.type == 'cuda' else 'cpu'
+        self.scaler = GradScaler(device_type) if device.type == 'cuda' else None
         self.use_amp = device.type == 'cuda'
+        self.device_type = device_type  # 保存用于 autocast
         
         # 记录训练历史
         self.history = {
@@ -304,12 +306,13 @@ class OverfitTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             
             if self.use_amp:
-                with autocast():
+                with autocast(self.device_type):
                     logits = self.model(features, pos)
                     dice_loss = self.dice_loss(logits, labels)
                     ce_loss = self.ce_loss(logits, labels)
                     total_loss = dice_loss + ce_loss
                 
+                assert self.scaler is not None
                 self.scaler.scale(total_loss).backward()
                 self.scaler.unscale_(self.optimizer)
                 clip_grad_norm_(self.model.parameters(), max_norm=1.0)
@@ -380,7 +383,7 @@ class OverfitTrainer:
                 labels = labels.to(self.device, non_blocking=True)
                 
                 if self.use_amp:
-                    with autocast():
+                    with autocast(self.device_type):
                         logits = self.model(features, pos)
                 else:
                     logits = self.model(features, pos)

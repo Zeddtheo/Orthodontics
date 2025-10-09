@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import autocast as amp_autocast
+from torch.amp import autocast as amp_autocast
 
 
 # ------------------------------------------------------------
@@ -28,7 +28,8 @@ def knn_graph(pos: torch.Tensor, k: int) -> torch.Tensor:
         raise ValueError("k must be positive for knn_graph")
     
     # ========== 修复1: 强制 FP32 计算距离，避免 AMP 下的量化误差 ==========
-    with amp_autocast(enabled=False):
+    device_type = 'cuda' if pos.device.type == 'cuda' else 'cpu'
+    with amp_autocast(device_type, enabled=False):
         pos32 = pos.float()  # 确保 FP32
         dists = torch.cdist(pos32.transpose(1, 2), pos32.transpose(1, 2), p=2)  # (B,N,N)
     
@@ -325,6 +326,7 @@ class iMeshSegNet(nn.Module):
         if self.fstn is not None:
             x_t = x.transpose(2, 1)                     # (B,N,64)
             trans = self.fstn(x)                        # (B,64,64)
+            self._last_fstn = trans                     # ← 缓存 STN 矩阵供正交正则使用
             x = torch.bmm(x_t, trans).transpose(2, 1)   # (B,64,N)
         g1 = torch.max(x, dim=-1)[0]                    # (B,64)
 
@@ -332,7 +334,8 @@ class iMeshSegNet(nn.Module):
         # ----- GLM-1 -----
         if self.glm_impl == "edgeconv":
             # 计算 kNN 索引（强制 FP32，避免 AMP 量化误差）
-            with amp_autocast(enabled=False):
+            device_type = 'cuda' if pos.device.type == 'cuda' else 'cpu'
+            with amp_autocast(device_type, enabled=False):
                 pos32 = pos.float()
                 idx_s = knn_graph(pos32, self.k_short)  # (B,N,ks)
                 idx_l = knn_graph(pos32, self.k_long)   # (B,N,kl)

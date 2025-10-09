@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import confusion_matrix
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -148,7 +148,7 @@ class Trainer:
         self.log_path = self.config.log_dir / "train_log.csv"
         self.best_val_dsc = -1.0
         self.amp_enabled = self.config.enable_amp and device.type == "cuda"
-        self.scaler = GradScaler(enabled=self.amp_enabled)
+        self.scaler = GradScaler(device.type, enabled=self.amp_enabled)
         self.writer: Optional[SummaryWriter] = None
         try:
             self.writer = SummaryWriter(log_dir=str(self.config.tensorboard_dir))
@@ -242,7 +242,7 @@ class Trainer:
             # ========== 快改开关4：损失权重平衡 ==========
             if not is_train:
                 with torch.no_grad():
-                    with autocast(enabled=self.amp_enabled):
+                    with autocast(self.device.type, enabled=self.amp_enabled):
                         logits = self.model(x, pos)
                         loss_dice = self.dice_loss(logits, y)
                         loss_ce = self.ce_loss(logits, y)
@@ -250,12 +250,32 @@ class Trainer:
                         loss = 0.5 * loss_dice + 1.0 * loss_ce
             else:
                 # 训练阶段保持原有逻辑
-                with autocast(enabled=self.amp_enabled):
+                with autocast(self.device.type, enabled=self.amp_enabled):
                     logits = self.model(x, pos)
                     loss_dice = self.dice_loss(logits, y)
                     loss_ce = self.ce_loss(logits, y)
-                    # ← 改4：降低 Dice 主导性，先用 0.5 * Dice + 1.0 * CE
-                    loss = 0.5 * loss_dice + 1.0 * loss_ce
+                    
+                    # ========== 修复2: STN 正交正则（防止越位变形）==========
+                    stn_reg = 0.0
+                    fstn = getattr(self.model, "fstn", None)
+                    trans = getattr(self.model, "_last_fstn", None)
+                    if fstn is not None and trans is not None:
+                        # || T·Tᵀ - I ||_F
+                        I = torch.eye(trans.size(1), device=trans.device).unsqueeze(0).expand_as(trans)
+                        stn_reg = ((trans @ trans.transpose(1, 2) - I) ** 2).sum(dim=(1, 2)).mean()
+                    
+                    # ← 改4：降低 Dice 主导性，先用 0.5 * Dice + 1.0 * CE + 极轻 STN 正则
+                    loss = 0.5 * loss_dice + 1.0 * loss_ce + 1e-3 * stn_reg
+
+                # ========== 修复4: NaN/Inf 哨兵（防飙车）==========
+                if not torch.isfinite(loss):
+                    print("[Warn] non-finite loss; skip step.")
+                    self.optimizer.zero_grad(set_to_none=True)
+                    continue
+                if not torch.isfinite(logits).all():
+                    print("[Warn] non-finite logits; skip step.")
+                    self.optimizer.zero_grad(set_to_none=True)
+                    continue
 
                 # 训练阶段的反向传播
                 self.optimizer.zero_grad(set_to_none=True)
@@ -283,9 +303,12 @@ class Trainer:
                 bg_ratio = (preds == 0).float().mean().item()
                 bg_ratios.append(bg_ratio)
                 
-                # 预测熵
-                probs = F.softmax(logits, dim=1)
-                entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1).mean().item()
+                # ========== 修复1: 熵计算强制 FP32 + log_softmax 防止 NaN ==========
+                # 用 logits.float() 保证 FP32，再用 log_softmax 防溢出
+                logp = F.log_softmax(logits.float(), dim=1)
+                p    = F.softmax(logits.float(), dim=1)
+                # 信息熵（按 cell 平均）
+                entropy = -(p * logp).sum(dim=1).mean().item()
                 entropies.append(entropy)
 
         # 移动到循环外部
@@ -495,6 +518,14 @@ def main() -> None:
         dropout_p=0.1,             # ← 如果 with_dropout=True，用更轻的值
         use_feature_stn=True,      # ← 改2：开启特征 STN，抵消增强带来的旋转
     ).to(device)
+
+    # ========== 修复3: 初始化 classifier 最后一层 bias 为 log-先验（抑制背景偏好）==========
+    priors = np.maximum(class_hist, 1) / max(class_hist.sum(), 1)   # 平滑一下，避免 0
+    logit_bias = torch.log(torch.tensor(priors, dtype=torch.float32, device=device))
+    with torch.no_grad():
+        # classifier 的最后一层是 Sequential 的倒数第一项 Conv1d
+        model.classifier[-1].bias.copy_(logit_bias)
+    print(f"✨ Initialized classifier bias with log-priors: min={logit_bias.min():.3f}, max={logit_bias.max():.3f}")
 
     optimizer = Adam(
         model.parameters(),
