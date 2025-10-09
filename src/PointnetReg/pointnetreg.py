@@ -98,7 +98,7 @@ class PointNetReg(nn.Module):
         num_landmarks: int,
         use_tnet: bool = True,
         norm: str = "gn",
-        dropout_p: float = 0.3,
+        dropout_p: float = 0.0,
         return_logits: bool = True,
     ):
         super().__init__()
@@ -134,6 +134,15 @@ class PointNetReg(nn.Module):
         if self.use_tnet:
             A = self.tnet(xyz)             # (B,3,3)
             xyz = torch.bmm(A, xyz)        # align xyz
+            if extras.numel() > 0:
+                rotated_chunks = []
+                for start in range(0, extras.shape[1], 3):
+                    chunk = extras[:, start:start + 3, :]
+                    if chunk.shape[1] == 3:
+                        rotated_chunks.append(torch.bmm(A, chunk))
+                    else:
+                        rotated_chunks.append(chunk)
+                extras = torch.cat(rotated_chunks, dim=1)
 
         x = torch.cat([xyz, extras], dim=1)   # (B,C,N)
 

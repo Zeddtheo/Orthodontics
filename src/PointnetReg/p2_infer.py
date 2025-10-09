@@ -74,7 +74,17 @@ def _offset(meta) -> np.ndarray | None:
     return None
 
 
-def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, workers=2, out_dir="runs_infer", landmark_json=None):
+def infer_one_tooth(
+    root,
+    ckpt_root,
+    tooth_id,
+    features="pn",
+    batch_size=8,
+    workers=2,
+    out_dir="runs_infer",
+    landmark_json=None,
+    use_tnet=False,
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cfg = DatasetConfig(
         root=root,
@@ -91,8 +101,8 @@ def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, wor
     model = PointNetReg(
         in_channels=sample["x"].shape[0],
         num_landmarks=sample["y"].shape[0],
-        use_tnet=True,
-        return_logits=False,
+        use_tnet=use_tnet,
+        return_logits=True,
     ).to(device)
     ckpt_path = Path(ckpt_root) / tooth_id / "best.pt"
     if not ckpt_path.exists():
@@ -104,12 +114,15 @@ def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, wor
 
     out_root = Path(out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
+    ply_root = out_root / "roi_ply" / tooth_id
+    ply_root.mkdir(parents=True, exist_ok=True)
 
     with torch.no_grad():
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader):
             x = batch["x"].to(device, non_blocking=True)
-            pred = model(x)  # (B, L, N) in [0,1]
-            topk_vals, topk_idx = torch.topk(pred, k=2, dim=-1)
+            logits = model(x)  # (B, L, N)
+            probs = torch.sigmoid(logits)
+            topk_vals, topk_idx = torch.topk(probs, k=2, dim=-1)
             top1_vals = topk_vals[..., 0]
             top2_vals = topk_vals[..., 1]
             top1_idx = topk_idx[..., 0]
@@ -168,10 +181,26 @@ def infer_one_tooth(root, ckpt_root, tooth_id, features="all", batch_size=8, wor
                 if tooth_meta_out:
                     tooth_payload["meta"] = tooth_meta_out
                 payload["predictions"][tooth_id] = tooth_payload
-                payload.setdefault("meta", {}).setdefault("root", str(Path(root).resolve()))
+                payload_meta = payload.setdefault("meta", {})
+                payload_meta.setdefault("root", str(Path(root).resolve()))
+                if isinstance(meta, dict):
+                    if "bounds_mm" in meta and "bounds_mm" not in payload_meta:
+                        payload_meta["bounds_mm"] = meta["bounds_mm"]
+                if offset is not None:
+                    tooth_payload.setdefault("meta", {})["offset_mm"] = offset.tolist()
                 with open(out_path, "w", encoding="utf-8") as fh:
                     json.dump(payload, fh, ensure_ascii=False, indent=2)
                 print(f"[{tooth_id}] {case_id} -> {out_path}")
+
+                # Export ROI prediction as PLY for quick inspection
+                ply_path = ply_root / f"{case_id}_sample{batch_idx:04d}.ply"
+                with ply_path.open("w", encoding="utf-8") as fh:
+                    fh.write("ply\nformat ascii 1.0\n")
+                    fh.write(f"element vertex {lm_local.shape[0]}\n")
+                    fh.write("property float x\nproperty float y\nproperty float z\n")
+                    fh.write("end_header\n")
+                    for point in lm_local:
+                        fh.write(f"{point[0]:.6f} {point[1]:.6f} {point[2]:.6f}\n")
 
 
 def parse_args():
@@ -179,11 +208,12 @@ def parse_args():
     parser.add_argument("--root", type=str, default="datasets/p0_npz")
     parser.add_argument("--ckpt_root", type=str, default="outputs/landmarks/overfit")
     parser.add_argument("--tooth", type=str, default="t31")
-    parser.add_argument("--features", type=str, choices=["all", "xyz"], default="all")
+    parser.add_argument("--features", type=str, choices=["pn", "xyz"], default="pn")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--out_dir", type=str, default="runs_infer")
     parser.add_argument("--landmark_json", type=str, default="landmark_def.json")
+    parser.add_argument("--use_tnet", action="store_true", help="Enable TNet alignment (default disabled).")
     return parser.parse_args()
 
 
@@ -195,7 +225,17 @@ def main():
     else:
         teeth = [t.strip() for t in args.tooth.split(",") if t.strip()]
     for tooth in teeth:
-        infer_one_tooth(args.root, args.ckpt_root, tooth, args.features, args.batch_size, args.workers, args.out_dir, args.landmark_json)
+        infer_one_tooth(
+            args.root,
+            args.ckpt_root,
+            tooth,
+            args.features,
+            args.batch_size,
+            args.workers,
+            args.out_dir,
+            args.landmark_json,
+            use_tnet=args.use_tnet,
+        )
 
 
 if __name__ == "__main__":

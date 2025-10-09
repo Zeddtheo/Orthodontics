@@ -123,15 +123,15 @@ class P0PointNetRegDataset(Dataset):
             meta = Z.get("meta", {}).item() if "meta" in Z else {}
 
         # 统一形状
-        if x.shape == (self.N, self.C):
+        if x.ndim != 2:
+            raise ValueError(f"x must be 2D, got {x.shape}")
+        if x.shape[0] > x.shape[1]:
             x = x.T
-        elif x.shape == (self.C, self.N):
-            pass  # already (C,N)
-        elif x.shape[0] == self.N and x.shape[1] >= 3:
-            x = x.T
-        elif x.shape[1] == self.N and x.shape[0] >= 3:
-            pass  # treat as (C,N) even if通道数与self.C不同
-        assert x.shape[0] >= 3 and x.shape[1] == self.N, f"x shape bad: {x.shape}"
+        if x.shape[0] < 3:
+            raise ValueError(f"x must have >=3 channels, got {x.shape}")
+        if x.shape[1] != self.N:
+            # Allow variable N (e.g. legacy samples) when batch_size=1.
+            self.N = x.shape[1]
 
         # 选择特征通道
         x = x[self._use_channels, :]  # (C_use, N)
