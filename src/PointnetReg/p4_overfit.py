@@ -42,6 +42,8 @@ def heatmap_expectation(logits: torch.Tensor, pos: torch.Tensor, temperature: fl
     if temperature <= 0:
         temperature = 1.0
     weights = F.softmax(logits * (1.0 / temperature), dim=-1)  # (B,L,N)
+    if pos.dtype != weights.dtype:
+        pos = pos.to(dtype=weights.dtype)
     coords = torch.matmul(weights, pos.transpose(1, 2))        # (B,L,3)
     return coords
 
