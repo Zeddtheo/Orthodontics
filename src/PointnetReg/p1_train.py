@@ -3,6 +3,7 @@ import argparse, random, time
 from typing import Optional
 
 import torch
+import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, random_split
 
@@ -15,6 +16,14 @@ DEFAULT_TOOTH_IDS = [
     "t31","t32","t33","t34","t35","t36","t37",
     "t41","t42","t43","t44","t45","t46","t47",
 ]
+
+
+def heatmap_expectation(logits: torch.Tensor, pos: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+    if temperature <= 0:
+        temperature = 1.0
+    weights = F.softmax(logits * (1.0 / temperature), dim=-1)  # (B,L,N)
+    coords = torch.matmul(weights, pos.transpose(1, 2))        # (B,L,3)
+    return coords
 
 
 def set_seed(seed: int) -> None:
@@ -177,6 +186,9 @@ def train_all_teeth(args, device: torch.device) -> None:
             hit05 = 0
             hit10 = 0
             margin_sum = 0.0
+            refined_sum = 0.0
+            refined_hit05 = 0
+            refined_hit10 = 0
             for batch in train_loader:
                 x = batch["x"].to(device, non_blocking=True)
                 y = batch["y"].to(device, non_blocking=True)
@@ -186,6 +198,15 @@ def train_all_teeth(args, device: torch.device) -> None:
                 else:
                     mask = torch.ones(y.shape[0], y.shape[1], device=device)
                 mask_exp = mask.unsqueeze(-1)
+                pos = batch.get("pos")
+                if pos is not None:
+                    pos = pos.to(device, non_blocking=True)
+                else:
+                    pos = x[:, :3, :]
+                landmarks_gt = batch.get("landmarks")
+                if landmarks_gt is not None:
+                    landmarks_gt = landmarks_gt.to(device, non_blocking=True)
+                    landmarks_gt = torch.nan_to_num(landmarks_gt, nan=0.0)
                 optim.zero_grad(set_to_none=True)
                 with autocast(device.type, enabled=device.type == "cuda"):
                     logits = model(x, tooth_id=tooth)
@@ -198,6 +219,13 @@ def train_all_teeth(args, device: torch.device) -> None:
                     loss_map = mse_loss(probs, loss_target)
                     denom = torch.clamp(weight.sum(), min=1e-12)
                     loss = (loss_map * weight).sum() / denom
+
+                    coord_loss_val = torch.tensor(0.0, device=device)
+                    if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                        pred_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                        coord_diff = pred_coords - landmarks_gt
+                        coord_loss_val = (coord_diff.abs() * mask_exp).sum() / torch.clamp(mask_exp.sum(), min=1e-12)
+                        loss = loss + args.coord_loss_weight * coord_loss_val
 
                     if args.peak_ce > 0.0:
                         active_flat = mask_exp.view(-1) > 0.5
@@ -231,17 +259,32 @@ def train_all_teeth(args, device: torch.device) -> None:
                         margin_vals = torch.sigmoid(topk_logits[..., 0] - topk_logits[..., 1])
                         margin_sum += float(margin_vals[active].sum().item())
                         active_total += int(active.sum().item())
+                        if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                            refined_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                            coord_errors = torch.norm(refined_coords - landmarks_gt, dim=-1)
+                            coord_active = coord_errors[active]
+                            refined_sum += float(coord_active.sum().item())
+                            refined_hit05 += int(((coord_errors <= 0.5) & active).sum().item())
+                            refined_hit10 += int(((coord_errors <= 1.0) & active).sum().item())
+                        else:
+                            refined_sum += float(errors_active.sum().item())
+                            refined_hit05 += int(((errors <= 0.5) & active).sum().item())
+                            refined_hit10 += int(((errors <= 1.0) & active).sum().item())
             train_losses[tooth] = running / max(1, len(train_loader))
             train_stats[tooth] = {
                 "mae": (mae_sum / mae_count) if mae_count > 0 else 0.0,
+                "refined_mae": (refined_sum / mae_count) if mae_count > 0 else 0.0,
                 "matches": match_count,
                 "count": active_total,
                 "hit05": hit05,
                 "hit10": hit10,
+                "refined_hit05": refined_hit05,
+                "refined_hit10": refined_hit10,
                 "margin": (margin_sum / active_total) if active_total > 0 else 0.0,
             }
 
         mean_train = sum(train_losses.values()) / max(1, len(train_losses))
+        mean_train_refined = sum(stat["refined_mae"] for stat in train_stats.values()) / max(1, len(train_stats))
 
         model.eval()
         val_losses = {}
@@ -261,6 +304,9 @@ def train_all_teeth(args, device: torch.device) -> None:
                 hit05 = 0
                 hit10 = 0
                 margin_sum = 0.0
+                refined_sum = 0.0
+                refined_hit05 = 0
+                refined_hit10 = 0
                 for batch in val_loader:
                     x = batch["x"].to(device, non_blocking=True)
                     y = batch["y"].to(device, non_blocking=True)
@@ -270,6 +316,15 @@ def train_all_teeth(args, device: torch.device) -> None:
                     else:
                         mask = torch.ones(y.shape[0], y.shape[1], device=device)
                     mask_exp = mask.unsqueeze(-1)
+                    pos = batch.get("pos")
+                    if pos is not None:
+                        pos = pos.to(device, non_blocking=True)
+                    else:
+                        pos = x[:, :3, :]
+                    landmarks_gt = batch.get("landmarks")
+                    if landmarks_gt is not None:
+                        landmarks_gt = landmarks_gt.to(device, non_blocking=True)
+                        landmarks_gt = torch.nan_to_num(landmarks_gt, nan=0.0)
                     logits = model(x, tooth_id=tooth)
                     probs = torch.sigmoid(logits)
                     loss_target = y
@@ -298,18 +353,33 @@ def train_all_teeth(args, device: torch.device) -> None:
                         margin_vals = torch.sigmoid(topk_logits[..., 0] - topk_logits[..., 1])
                         margin_sum += float(margin_vals[active].sum().item())
                         active_total += int(active.sum().item())
+                        if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                            refined_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                            coord_errors = torch.norm(refined_coords - landmarks_gt, dim=-1)
+                            coord_active = coord_errors[active]
+                            refined_sum += float(coord_active.sum().item())
+                            refined_hit05 += int(((coord_errors <= 0.5) & active).sum().item())
+                            refined_hit10 += int(((coord_errors <= 1.0) & active).sum().item())
+                        else:
+                            refined_sum += float(errors_active.sum().item())
+                            refined_hit05 += int(((errors <= 0.5) & active).sum().item())
+                            refined_hit10 += int(((errors <= 1.0) & active).sum().item())
                 val_losses[tooth] = running / max(1, len(val_loader))
                 val_stats[tooth] = {
                     "mae": (mae_sum / mae_count) if mae_count > 0 else 0.0,
+                    "refined_mae": (refined_sum / mae_count) if mae_count > 0 else 0.0,
                     "matches": match_count,
                     "count": active_total,
                     "hit05": hit05,
                     "hit10": hit10,
+                    "refined_hit05": refined_hit05,
+                    "refined_hit10": refined_hit10,
                     "margin": (margin_sum / active_total) if active_total > 0 else 0.0,
                 }
 
         mean_val = sum(val_losses.values()) / max(1, len(val_losses))
         mean_mae = sum(stat["mae"] for stat in val_stats.values()) / max(1, len(val_stats))
+        mean_refined_mae = sum(stat["refined_mae"] for stat in val_stats.values()) / max(1, len(val_stats))
         scheduler.step(mean_mae)
 
         if mean_val < best_loss:
@@ -322,6 +392,8 @@ def train_all_teeth(args, device: torch.device) -> None:
                     "heads_config": heads_config,
                     "features": args.features,
                     "use_tnet": args.use_tnet,
+                    "coord_loss_weight": args.coord_loss_weight,
+                    "coord_temperature": args.coord_temperature,
                 },
                 out_dir / "best_mse.pt",
             )
@@ -336,6 +408,8 @@ def train_all_teeth(args, device: torch.device) -> None:
                     "heads_config": heads_config,
                     "features": args.features,
                     "use_tnet": args.use_tnet,
+                    "coord_loss_weight": args.coord_loss_weight,
+                    "coord_temperature": args.coord_temperature,
                 },
                 out_dir / "best_mae.pt",
             )
@@ -343,7 +417,8 @@ def train_all_teeth(args, device: torch.device) -> None:
         if epoch % args.log_every == 0 or epoch in (1, args.epochs):
             parts = [
                 f"[epoch {epoch:03d}/{args.epochs}] train {mean_train:.6f} val {mean_val:.6f} "
-                f"mean_mae {mean_mae:.6f} best_mse {best_loss:.6f} (ep {best_loss_epoch}) "
+                f"mean_mae {mean_mae:.6f} refined {mean_refined_mae:.6f} train_refined {mean_train_refined:.6f} "
+                f"best_mse {best_loss:.6f} (ep {best_loss_epoch}) "
                 f"best_mae {best_mae_metric:.6f} (ep {best_mae_epoch})"
             ]
             for tooth in tooth_list:
@@ -352,8 +427,10 @@ def train_all_teeth(args, device: torch.device) -> None:
                 stat_tr = train_stats[tooth]
                 stat_vl = val_stats.get(tooth, stat_tr)
                 parts.append(
-                    f"{tooth}:trn={tr:.6f}(mae={stat_tr['mae']:.4f}mm match={stat_tr['matches']}/{stat_tr['count']} hit05={stat_tr['hit05']} hit10={stat_tr['hit10']} margin={stat_tr['margin']:.6f})"
-                    f"/val={vl:.6f}(mae={stat_vl['mae']:.4f}mm match={stat_vl['matches']}/{stat_vl['count']} hit05={stat_vl['hit05']} hit10={stat_vl['hit10']} margin={stat_vl['margin']:.6f})"
+                    f"{tooth}:trn={tr:.6f}(mae={stat_tr['mae']:.4f}mm refined={stat_tr['refined_mae']:.4f}mm match={stat_tr['matches']}/{stat_tr['count']} "
+                    f"hit05={stat_tr['hit05']} hit10={stat_tr['hit10']} margin={stat_tr['margin']:.6f})"
+                    f"/val={vl:.6f}(mae={stat_vl['mae']:.4f}mm refined={stat_vl['refined_mae']:.4f}mm match={stat_vl['matches']}/{stat_vl['count']} "
+                    f"hit05={stat_vl['hit05']} hit10={stat_vl['hit10']} margin={stat_vl['margin']:.6f})"
                 )
             msg = " | ".join(parts)
             print(msg)
@@ -374,6 +451,8 @@ def train_all_teeth(args, device: torch.device) -> None:
             "heads_config": heads_config,
             "features": args.features,
             "use_tnet": args.use_tnet,
+            "coord_loss_weight": args.coord_loss_weight,
+            "coord_temperature": args.coord_temperature,
         },
         out_dir / "last.pt",
     )
@@ -408,10 +487,14 @@ def parse_args():
     parser.add_argument("--loss_power", type=float, default=2.0, help="Exponent applied to target heatmaps for weighted MSE (>=0).")
     parser.add_argument("--loss_eps", type=float, default=1e-3, help="Stability term added to the weighted MSE denominator.")
     parser.add_argument("--peak_ce", type=float, default=0.0, help="Weight for auxiliary peak classification CE loss.")
+    parser.add_argument("--coord_loss_weight", type=float, default=0.0, help="Weight for soft-argmax coordinate L1 loss.")
+    parser.add_argument("--coord_temperature", type=float, default=1.0, help="Temperature for soft-argmax expectation (<=0 defaults to 1.0).")
     args = parser.parse_args()
     args.tooth = DEFAULT_TOOTH_IDS if args.tooth.strip().lower() == "all" else [t.strip() for t in args.tooth.split(",") if t.strip()]
     args.use_tnet = not args.disable_tnet
     args.case_filter = args.case.strip() if args.case and args.case.strip() else None
+    if args.coord_temperature <= 0:
+        args.coord_temperature = 1.0
     return args
 
 

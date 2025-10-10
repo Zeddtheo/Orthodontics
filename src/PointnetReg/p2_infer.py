@@ -97,9 +97,7 @@ def infer_one_tooth(
     )
     dataset = P0PointNetRegDataset(cfg)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_p0)
-
-    sample = dataset[0]
-    names = _load_landmark_names(landmark_json, tooth_id, sample["y"].shape[0])
+    sample = None
     ckpt_root = Path(ckpt_root)
     ckpt_path = (
         ckpt_root / "best.pt"
@@ -113,8 +111,36 @@ def infer_one_tooth(
     payload = state if isinstance(state, dict) else {"model": state}
 
     heads_config = payload.get("heads_config")
-    in_channels = payload.get("in_channels", sample["x"].shape[0])
-    num_landmarks = payload.get("num_landmarks", sample["y"].shape[0])
+    in_channels = payload.get("in_channels")
+    num_landmarks = payload.get("num_landmarks")
+
+    if isinstance(heads_config, dict):
+        resolved_heads: dict[str, int] = {}
+        for key, value in heads_config.items():
+            try:
+                norm_key = PointNetReg._normalize_head_key(key)
+            except Exception:
+                norm_key = str(key).strip().lower()
+            resolved_heads[norm_key] = int(value)
+        try:
+            tooth_key = PointNetReg._normalize_head_key(tooth_id)
+        except Exception:
+            tooth_key = str(tooth_id).strip().lower()
+        num_landmarks = resolved_heads.get(tooth_key, num_landmarks)
+
+    if in_channels is None or num_landmarks is None:
+        sample = dataset[0]
+        if in_channels is None:
+            in_channels = int(sample["x"].shape[0])
+        if num_landmarks is None:
+            num_landmarks = int(sample["y"].shape[0])
+
+    if num_landmarks is None:
+        raise RuntimeError(f"Unable to resolve landmark count for tooth '{tooth_id}'.")
+
+    in_channels = int(in_channels)
+    num_landmarks = int(num_landmarks)
+    names = _load_landmark_names(landmark_json, tooth_id, num_landmarks)
 
     ckpt_use_tnet = payload.get("use_tnet", use_tnet)
 

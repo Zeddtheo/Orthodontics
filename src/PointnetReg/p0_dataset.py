@@ -7,6 +7,7 @@ import math
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
 
 Tensor = torch.Tensor
 Array = np.ndarray
@@ -120,6 +121,8 @@ class P0PointNetRegDataset(Dataset):
             x = Z["x"]  # (N, C) or (C, N)  —— 我们统一成 (C,N)
             y = Z["y"]  # (Lmax, N)
             mask = Z.get("loss_mask", Z.get("mask", None))  # (Lmax,)
+            landmarks = Z.get("landmarks", None)
+            pos = Z.get("pos", None)
             meta = Z.get("meta", {}).item() if "meta" in Z else {}
 
         # 统一形状
@@ -163,6 +166,15 @@ class P0PointNetRegDataset(Dataset):
         }
         if mask_out is not None:
             sample["mask"] = _to_tensor(mask_out.astype(np.float32), self.cfg.dtype)  # (L_all,)
+        if landmarks is not None:
+            sample["landmarks"] = _to_tensor(landmarks.astype(np.float32), self.cfg.dtype)  # (L_max,3)
+        if pos is not None:
+            pos_arr = pos.astype(np.float32)
+            if pos_arr.ndim == 2 and pos_arr.shape[1] == 3:
+                pos_arr = pos_arr.T  # (3,N)
+            if pos_arr.shape[0] != 3 and pos_arr.shape[1] == 3:
+                pos_arr = pos_arr.T
+            sample["pos"] = _to_tensor(pos_arr, self.cfg.dtype)  # (3,N)
         # 附带元信息（字符串保持 Python 对象）
         sample["meta"] = {"path": str(path), **(meta if isinstance(meta, dict) else {})}
         return sample
@@ -192,12 +204,26 @@ def collate_p0(batch: List[Dict[str, Tensor]]) -> Dict[str, Tensor]:
     返回：
       x: (B,C,N), y: (B,L,N), mask: (B,L) [可选], meta: list[dict]
     """
-    xs = torch.stack([b["x"] for b in batch], dim=0)              # (B,C,N)
-    ys = torch.stack([b["y"] for b in batch], dim=0)              # (B,L,N)
+    max_n = max(b["x"].shape[-1] for b in batch)
+
+    def _pad_feat(t: Tensor, target_n: int) -> Tensor:
+        diff = target_n - t.shape[-1]
+        if diff <= 0:
+            return t
+        return F.pad(t, (0, diff))
+
+    xs = torch.stack([_pad_feat(b["x"], max_n) for b in batch], dim=0)              # (B,C,N)
+    ys = torch.stack([_pad_feat(b["y"], max_n) for b in batch], dim=0)              # (B,L,N)
     out = {"x": xs, "y": ys, "meta": [b["meta"] for b in batch]}
     if "mask" in batch[0]:
         ms = torch.stack([b["mask"] for b in batch], dim=0)       # (B,L_all)
         out["mask"] = ms
+    if "landmarks" in batch[0]:
+        lms = torch.stack([b["landmarks"] for b in batch], dim=0)  # (B,L_max,3)
+        out["landmarks"] = lms
+    if "pos" in batch[0]:
+        poss = torch.stack([_pad_feat(b["pos"], max_n) for b in batch], dim=0)       # (B,3,N)
+        out["pos"] = poss
     return out
 
 

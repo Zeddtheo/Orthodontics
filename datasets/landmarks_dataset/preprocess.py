@@ -23,12 +23,20 @@ LM_DEF   = json.loads(landmarkdef_path.read_text(encoding="utf-8"))
 TEMPLATES = LM_DEF["templates"]; PER_TOOTH = LM_DEF["per_tooth"]
 L_MAX = int(LM_DEF.get("L_max", 12))
 SIGMA_MM = 5.0
+CUTOFF_SIGMA = 3.0
 N_PRIME = 3000
 MIN_FACES = 800
 
 # ---------- 工具 ----------
 def tooth_names(tooth_key:str):
     return TEMPLATES[PER_TOOTH[tooth_key]]
+
+def _case_dir_name(case_id) -> str:
+    case_str = str(case_id).strip()
+    try:
+        return str(int(case_str))
+    except (ValueError, TypeError):
+        return case_str
 
 def parse_markups_json(json_path:Path):
     """只取 label/position，返回 dict: {'t37':{'db':xyz,...}, ...}, unit"""
@@ -153,9 +161,9 @@ def detect_arches(raw_dir: Path) -> List[str]:
                     arches.add(arch)
     return sorted(a for a in arches if a in TOOTHMAP)
 
-def process_arch(case_id="001", arch="L"):
+def process_arch(case_id="001", arch="L", for_infer: bool = False):
     arch = arch.upper()
-    raw_dir = RAW_BASE/str(int(case_id))
+    raw_dir = RAW_BASE / _case_dir_name(case_id)
     if not raw_dir.exists():
         raise FileNotFoundError(f"raw case dir not found: {raw_dir}")
     mesh_path = next(raw_dir.glob(f"*_{arch}.vtp"), None)
@@ -165,7 +173,7 @@ def process_arch(case_id="001", arch="L"):
         print(f"[skip] {case_id} arch={arch} missing mesh file (.vtp/.stl) in {raw_dir}")
         return 0
     jsn = next(raw_dir.glob(f"*_{arch}.json"), None)
-    if jsn is None:
+    if jsn is None and not for_infer:
         print(f"[skip] {case_id} arch={arch} missing landmark json in {raw_dir}")
         return 0
 
@@ -179,12 +187,15 @@ def process_arch(case_id="001", arch="L"):
     b = np.array(mesh.bounds()).reshape(3,2)
     unit_scale = 1000.0 if np.linalg.norm(b[:,1]-b[:,0]) < 1.0 else 1.0
 
-    # 读 JSON（只用 label/position）
-    lm_all, unit_json = parse_markups_json(jsn)
-    if unit_json == "m":  # 一般不会发生
-        for t in lm_all:
-            for k in lm_all[t]:
-                lm_all[t][k] = lm_all[t][k]*1000.0
+    # 读 JSON（只用 label/position）；推理模式下跳过 GT，写占位
+    if not for_infer and jsn is not None:
+        lm_all, unit_json = parse_markups_json(jsn)
+        if unit_json == "m":  # 一般不会发生
+            for t in lm_all:
+                for k in lm_all[t]:
+                    lm_all[t][k] = lm_all[t][k]*1000.0
+    else:
+        lm_all = {}
 
     # arch 的 FDI -> tooth_id 映射，及忽略集
     arch_map = {int(k):int(v) for k,v in TOOTHMAP[arch].items()}
@@ -222,7 +233,7 @@ def process_arch(case_id="001", arch="L"):
         tooth_key = f"t{fdi}"
         names = tooth_names(tooth_key)
         L_t = len(names)
-        lm_dict = lm_all.get(tooth_key, {})
+        lm_dict = {} if for_infer else lm_all.get(tooth_key, {})
         lm_xyz = np.full((L_t,3), np.nan, dtype=np.float32)
         valid  = np.zeros((L_t,), dtype=np.float32)
         for i, nm in enumerate(names):
@@ -231,9 +242,13 @@ def process_arch(case_id="001", arch="L"):
                 lm_xyz[i] = p*unit_scale - center.squeeze(0)
                 valid[i]  = 1.0
 
-        # 热图 + mask
-        # 与论文一致：σ=5mm，默认不截断；若想稳定一些可把 cutoff_sigma 设回 3.0
-        y_full, mask = make_heatmaps(pos, lm_xyz, valid, sigma_mm=SIGMA_MM, cutoff_sigma=0.0)
+          # 热图 + mask
+          # 与论文一致：σ=5mm，默认截断 3σ；可通过 CLI 调整。
+        if for_infer:
+            y_full = np.zeros((L_t, pos.shape[0]), dtype=np.float32)
+            mask = np.zeros((L_t,), dtype=np.float32)
+        else:
+            y_full, mask = make_heatmaps(pos, lm_xyz, valid, sigma_mm=SIGMA_MM, cutoff_sigma=CUTOFF_SIGMA)
 
         # 采样 N'
         sel = fps(pos, N_PRIME, start_idx=0)
@@ -253,7 +268,8 @@ def process_arch(case_id="001", arch="L"):
             landmarks=lm_pad.astype(np.float32),
             sample_indices=sel.astype(np.int64),
             meta=dict(case_id=case_id, arch=arch, fdi=int(fdi), tooth_id=int(tid),
-                      L_t=int(L_t), L_max=int(L_MAX), sigma_mm=float(SIGMA_MM), unit="mm",
+                      L_t=int(L_t), L_max=int(L_MAX), sigma_mm=float(SIGMA_MM), cutoff_sigma=float(CUTOFF_SIGMA), unit="mm",
+                      has_gt=not for_infer,
                       center_mm=center_vec.tolist(),
                       bounds_mm=roi_bounds.astype(np.float32).tolist())
         )
@@ -262,8 +278,8 @@ def process_arch(case_id="001", arch="L"):
     return made
 
 
-def process_case(case_id="001", arches: Optional[List[str]] = None):
-    raw_dir = RAW_BASE/str(int(case_id))
+def process_case(case_id="001", arches: Optional[List[str]] = None, for_infer: bool = False):
+    raw_dir = RAW_BASE / _case_dir_name(case_id)
     if not raw_dir.exists():
         raise FileNotFoundError(f"raw case dir not found: {raw_dir}")
 
@@ -284,7 +300,7 @@ def process_case(case_id="001", arches: Optional[List[str]] = None):
     total_made = 0
     processed_arches: List[str] = []
     for arch in arch_candidates:
-        made = process_arch(case_id=case_id, arch=arch)
+        made = process_arch(case_id=case_id, arch=arch, for_infer=for_infer)
         upsert_manifest(case_id=case_id, arch=arch)
         print(f"[case] {case_id} arch={arch} -> {made} samples")
         total_made += made
@@ -321,6 +337,12 @@ if __name__ == "__main__":
                         help="Subset of arches to process (e.g. L U). Default: auto-detect from raw data.")
     parser.add_argument("--all", action="store_true",
                         help="Process every case discovered under the raw directory (same as --cases ALL).")
+    parser.add_argument("--for-infer", action="store_true",
+                        help="Skip landmark markups and emit zeroed y/mask placeholders for inference.")
+    parser.add_argument("--sigma-mm", type=float, default=5.0,
+                        help="Gaussian sigma in mm for heatmap generation (default: 5.0).")
+    parser.add_argument("--cutoff-sigma", type=float, default=3.0,
+                        help="Cutoff radius in multiples of sigma; 0 disables truncation (default: 3.0).")
     args = parser.parse_args()
 
     case_args = args.cases or []
@@ -354,9 +376,12 @@ if __name__ == "__main__":
         print("No valid case IDs to process.")
         raise SystemExit(0)
 
+    SIGMA_MM = float(max(1e-6, args.sigma_mm))
+    CUTOFF_SIGMA = float(max(0.0, args.cutoff_sigma))
+
     total_samples = 0
     for case_str in ordered_case_ids:
-        made, processed_arches = process_case(case_id=case_str, arches=args.arches)
+        made, processed_arches = process_case(case_id=case_str, arches=args.arches, for_infer=args.for_infer)
         arch_desc = ",".join(processed_arches) if processed_arches else "(none)"
         print(f"[summary] case {case_str} arches={arch_desc} samples={made}")
         total_samples += made

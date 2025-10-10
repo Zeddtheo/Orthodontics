@@ -8,6 +8,7 @@ import random
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
@@ -30,6 +31,19 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def heatmap_expectation(logits: torch.Tensor, pos: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+    """
+    logits: (B, L, N)
+    pos: (B, 3, N)
+    returns: (B, L, 3) soft-argmax坐标
+    """
+    if temperature <= 0:
+        temperature = 1.0
+    weights = F.softmax(logits * (1.0 / temperature), dim=-1)  # (B,L,N)
+    coords = torch.matmul(weights, pos.transpose(1, 2))        # (B,L,3)
+    return coords
 
 
 def get_single_sample_loader(root: str, tooth_id: str, features: str, sample_idx: int):
@@ -104,6 +118,10 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
     print(f" Starting training for {args.epochs} epochs...")
 
     best_mae = float("inf")
+    best_metric = float("inf")
+    best_metric_label = "mae"
+    best_metric = float("inf")
+    best_metric_label = "mae"
     best_path = None
     if args.save_model:
         ckpt_dir = Path(args.out_dir) / tooth_id
@@ -122,6 +140,15 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                 mask = torch.ones(y.shape[0], y.shape[1], device=device)
             mask_exp = mask.unsqueeze(-1)
             xyz = x[:, :3, :]  # ROI 局部 (B,3,N)
+            pos = batch.get("pos")
+            landmarks_gt = batch.get("landmarks")
+            if pos is not None:
+                pos = pos.to(device, non_blocking=True)
+            else:
+                pos = xyz
+            if landmarks_gt is not None:
+                landmarks_gt = landmarks_gt.to(device, non_blocking=True)
+                landmarks_gt = torch.nan_to_num(landmarks_gt, nan=0.0)
 
             optim.zero_grad(set_to_none=True)
             with autocast(device_type, enabled=False):  # 全精度，确保单样本稳定收敛
@@ -135,6 +162,14 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                 loss_map = mse_loss(probs, loss_target)
                 denom = torch.clamp(weight.sum(), min=1e-12)
                 loss = (loss_map * weight).sum() / denom
+
+                coord_loss_val = torch.tensor(0.0, device=device)
+                if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                    pred_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                    coord_mask = mask_exp
+                    coord_diff = pred_coords - landmarks_gt
+                    coord_loss_val = (coord_diff.abs() * coord_mask).sum() / torch.clamp(coord_mask.sum(), min=1e-12)
+                    loss = loss + args.coord_loss_weight * coord_loss_val
 
                 peak_ce_val = torch.tensor(0.0, device=device)
                 if args.peak_ce > 0.0:
@@ -154,6 +189,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
             scaler.update()
             train_loss = loss.item()
             peak_ce_item = float(peak_ce_val.detach().cpu().item())
+            coord_loss_item = float(coord_loss_val.detach().cpu().item())
 
             with torch.no_grad():
                 mask_bool = mask > 0.5
@@ -179,7 +215,27 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                 margin_active = margin_vals[mask_bool]
                 mean_margin = float(margin_active.mean().item()) if margin_active.numel() > 0 else 0.0
 
-            if args.save_model and mae_mm < best_mae:
+                if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                    pred_coords_refined = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                    coord_errors = torch.norm(pred_coords_refined - landmarks_gt, dim=-1)
+                    coord_errors_active = coord_errors[mask_bool]
+                    refined_mae = float(coord_errors_active.mean().item()) if coord_errors_active.numel() > 0 else mae_mm
+                    refined_hit05 = int(((coord_errors <= 0.5) & mask_bool).sum().item())
+                    refined_hit10 = int(((coord_errors <= 1.0) & mask_bool).sum().item())
+                else:
+                    refined_mae = mae_mm
+                    refined_hit05 = hit05
+                    refined_hit10 = hit10
+
+            if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                metric_to_compare = refined_mae
+                metric_label = "refined_mae"
+            else:
+                metric_to_compare = mae_mm
+                metric_label = "mae"
+            if args.save_model and metric_to_compare < best_metric:
+                best_metric = metric_to_compare
+                best_metric_label = metric_label
                 best_mae = mae_mm
                 torch.save(
                     {
@@ -198,6 +254,12 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                         "hit@0.5mm": hit05,
                         "hit@1.0mm": hit10,
                         "mean_margin": mean_margin,
+                        "coord_loss": coord_loss_item,
+                        "refined_mae": refined_mae,
+                        "refined_hit@0.5mm": refined_hit05,
+                        "refined_hit@1.0mm": refined_hit10,
+                        "selection_metric": best_metric_label,
+                        "selection_value": metric_to_compare,
                     },
                     best_path,
                 )
@@ -212,11 +274,12 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                 f"[{tooth_id}] epoch {epoch:03d}/{args.epochs} "
                 f"train_loss {train_loss:.8f} | mae {mae_mm:.6f}mm | "
                 f"matches {matches}/{total} | hit@0.5 {hit05}/{total} | "
-                f"hit@1.0 {hit10}/{total} | margin {mean_margin:.6f} | peak_ce {peak_ce_item:.6f}"
+                f"hit@1.0 {hit10}/{total} | margin {mean_margin:.6f} | peak_ce {peak_ce_item:.6f} "
+                f"| coord_loss {coord_loss_item:.6f} | refined_mae {refined_mae:.6f}mm"
             )
 
     print(f"[{tooth_id}] Overfitting test finished. Final loss: {train_loss:.8f}")
-    if args.save_model and best_mae == float("inf"):
+    if args.save_model and best_metric == float("inf"):
         # 没有触发保存（例如训练早停前失败），兜底写一次
         torch.save(
             {
@@ -227,6 +290,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                 "heads_config": model.heads_config if model.multi_head else None,
                 "in_channels": sample["x"].shape[0],
                 "num_landmarks": sample["y"].shape[0],
+                "selection_metric": best_metric_label,
             },
             best_path,
         )
@@ -293,80 +357,116 @@ def overfit_shared(args, device: torch.device):
         total_weight = 0.0
         accum_mae = 0.0
         accum_peak = 0.0
+        accum_refined_mae = 0.0
+        for tooth, loader in loaders.items():
+            sample = samples[tooth]
+            for batch in loader:
+                x = batch["x"].to(device, non_blocking=True)
+                y = batch["y"].to(device, non_blocking=True)
+                mask = batch.get("mask")
+                if mask is not None:
+                    mask = mask.to(device, non_blocking=True).float()
+                else:
+                    mask = torch.ones(y.shape[0], y.shape[1], device=device)
+                mask_exp = mask.unsqueeze(-1)
+                pos = batch.get("pos")
+                if pos is not None:
+                    pos = pos.to(device, non_blocking=True)
+                else:
+                    pos = x[:, :3, :]
+                landmarks_gt = batch.get("landmarks")
+                if landmarks_gt is not None:
+                    landmarks_gt = landmarks_gt.to(device, non_blocking=True)
+                    landmarks_gt = torch.nan_to_num(landmarks_gt, nan=0.0)
 
-    for tooth, loader in loaders.items():
-        sample = samples[tooth]
-        for batch in loader:
-            x = batch["x"].to(device, non_blocking=True)
-            y = batch["y"].to(device, non_blocking=True)
-            mask = batch.get("mask")
-            if mask is not None:
-                mask = mask.to(device, non_blocking=True).float()
-            else:
-                mask = torch.ones(y.shape[0], y.shape[1], device=device)
-            mask_exp = mask.unsqueeze(-1)
+                optim.zero_grad(set_to_none=True)
+                with autocast(device_type, enabled=False):
+                    logits = model(x, tooth_id=tooth)
+                    probs = torch.sigmoid(logits)
+                    loss_target = y
+                    if args.label_gamma != 1.0:
+                        loss_target = torch.clamp(y.pow(args.label_gamma), 0.0, 1.0)
+                    weight = torch.pow(loss_target, args.loss_power) + args.loss_eps
+                    weight = weight * mask_exp
+                    loss_map = mse_loss(probs, loss_target)
+                    denom = torch.clamp(weight.sum(), min=1e-12)
+                    loss = (loss_map * weight).sum() / denom
 
-            optim.zero_grad(set_to_none=True)
-            with autocast(device_type, enabled=False):
-                logits = model(x, tooth_id=tooth)
-                probs = torch.sigmoid(logits)
-                loss_target = y
-                if args.label_gamma != 1.0:
-                    loss_target = torch.clamp(y.pow(args.label_gamma), 0.0, 1.0)
-                weight = torch.pow(loss_target, args.loss_power) + args.loss_eps
-                weight = weight * mask_exp
-                loss_map = mse_loss(probs, loss_target)
-                denom = torch.clamp(weight.sum(), min=1e-12)
-                loss = (loss_map * weight).sum() / denom
+                    coord_loss_val = torch.tensor(0.0, device=device)
+                    if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                        pred_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                        coord_diff = pred_coords - landmarks_gt
+                        coord_loss_val = (coord_diff.abs() * mask_exp).sum() / torch.clamp(mask_exp.sum(), min=1e-12)
+                        loss = loss + args.coord_loss_weight * coord_loss_val
 
-                peak_ce_val = torch.tensor(0.0, device=device)
-                if args.peak_ce > 0.0:
-                    active_flat = mask_exp.view(-1) > 0.5
-                    if active_flat.any():
-                        logits_flat = logits.view(-1, logits.shape[-1])[active_flat]
-                        gt_flat = torch.argmax(y, dim=-1).view(-1)[active_flat]
-                        peak_ce_val = torch.nn.functional.cross_entropy(logits_flat, gt_flat)
-                        loss = loss + args.peak_ce * peak_ce_val
+                    peak_ce_val = torch.tensor(0.0, device=device)
+                    if args.peak_ce > 0.0:
+                        active_flat = mask_exp.view(-1) > 0.5
+                        if active_flat.any():
+                            logits_flat = logits.view(-1, logits.shape[-1])[active_flat]
+                            gt_flat = torch.argmax(y, dim=-1).view(-1)[active_flat]
+                            peak_ce_val = torch.nn.functional.cross_entropy(logits_flat, gt_flat)
+                            loss = loss + args.peak_ce * peak_ce_val
 
-            scaler.scale(loss).backward()
-            scaler.unscale_(optim)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            scaler.step(optim)
-            scaler.update()
+                scaler.scale(loss).backward()
+                scaler.unscale_(optim)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                scaler.step(optim)
+                scaler.update()
 
-            with torch.no_grad():
-                mask_bool = mask > 0.5
-                pred_idx = torch.argmax(probs, dim=-1)
-                gt_idx = torch.argmax(y, dim=-1)
-                pred_pts = _gather_points(x[:, :3, :], pred_idx)
-                gt_pts = _gather_points(x[:, :3, :], gt_idx)
-                errors = torch.norm(pred_pts - gt_pts, dim=-1)
+                with torch.no_grad():
+                    mask_bool = mask > 0.5
+                    pred_idx = torch.argmax(probs, dim=-1)
+                    gt_idx = torch.argmax(y, dim=-1)
+                    pred_pts = _gather_points(x[:, :3, :], pred_idx)
+                    gt_pts = _gather_points(x[:, :3, :], gt_idx)
+                    errors = torch.norm(pred_pts - gt_pts, dim=-1)
 
-                errors_active = errors[mask_bool]
-                mae_mm = float(errors_active.mean().item()) if errors_active.numel() > 0 else 0.0
-                matches = int(((pred_idx == gt_idx) & mask_bool).sum().item())
-                active_count = int(mask_bool.sum().item())
-                peak_ce_item = float(peak_ce_val.detach().cpu().item())
-                topk_vals = probs.topk(2, dim=-1).values
-                margin_vals = topk_vals[..., 0] - topk_vals[..., 1]
-                margin_active = margin_vals[mask_bool]
-                mean_margin = float(margin_active.mean().item()) if margin_active.numel() > 0 else 0.0
+                    errors_active = errors[mask_bool]
+                    mae_mm = float(errors_active.mean().item()) if errors_active.numel() > 0 else 0.0
+                    matches = int(((pred_idx == gt_idx) & mask_bool).sum().item())
+                    active_count = int(mask_bool.sum().item())
+                    peak_ce_item = float(peak_ce_val.detach().cpu().item())
+                    topk_vals = probs.topk(2, dim=-1).values
+                    margin_vals = topk_vals[..., 0] - topk_vals[..., 1]
+                    margin_active = margin_vals[mask_bool]
+                    mean_margin = float(margin_active.mean().item()) if margin_active.numel() > 0 else 0.0
 
-                epoch_metrics[tooth] = {
-                    "mae": mae_mm,
-                    "matches": matches,
-                    "count": active_count,
-                    "margin": mean_margin,
-                    "peak_ce": peak_ce_item,
-                }
-                accum_mae += mae_mm * active_count
-                total_weight += active_count
-                accum_peak += peak_ce_item
+                    if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                        refined_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                        refined_errors = torch.norm(refined_coords - landmarks_gt, dim=-1)
+                        refined_errors_active = refined_errors[mask_bool]
+                        refined_mae = float(refined_errors_active.mean().item()) if refined_errors_active.numel() > 0 else mae_mm
+                    else:
+                        refined_mae = mae_mm
+
+                    epoch_metrics[tooth] = {
+                        "mae": mae_mm,
+                        "matches": matches,
+                        "count": active_count,
+                        "margin": mean_margin,
+                        "peak_ce": peak_ce_item,
+                        "refined_mae": refined_mae,
+                    }
+                    accum_mae += mae_mm * active_count
+                    accum_refined_mae += refined_mae * active_count
+                    total_weight += active_count
+                    accum_peak += peak_ce_item
 
         mean_mae = accum_mae / total_weight if total_weight > 0 else 0.0
+        mean_refined = accum_refined_mae / total_weight if total_weight > 0 else mean_mae
         mean_peak = accum_peak / max(1, len(epoch_metrics))
 
-        if args.save_model and best_path and mean_mae < best_mae:
+        if args.coord_loss_weight > 0.0:
+            metric_to_compare = mean_refined
+            metric_label = "refined_mae"
+        else:
+            metric_to_compare = mean_mae
+            metric_label = "mae"
+
+        if args.save_model and best_path and metric_to_compare < best_metric:
+            best_metric = metric_to_compare
+            best_metric_label = metric_label
             best_mae = mean_mae
             torch.save(
                 {
@@ -377,22 +477,25 @@ def overfit_shared(args, device: torch.device):
                     "heads_config": heads_config,
                     "in_channels": in_channels,
                     "metrics": epoch_metrics,
+                    "mean_refined_mae": mean_refined,
+                    "selection_metric": metric_label,
+                    "selection_value": metric_to_compare,
                 },
                 best_path,
             )
-            print(f"[shared] ★ best checkpoint | epoch {epoch} mean_mae {mean_mae:.6f} mean_peak {mean_peak:.6f}")
+            print(f"[shared] ★ best checkpoint | epoch {epoch} mean_mae {mean_mae:.6f} mean_refined {mean_refined:.6f} mean_peak {mean_peak:.6f}")
 
         if epoch % args.log_every == 0 or epoch == 1 or epoch == args.epochs:
-            parts = [f"[shared] epoch {epoch:03d}/{args.epochs} mean_mae {mean_mae:.6f} mean_peak {mean_peak:.6f}"]
+            parts = [f"[shared] epoch {epoch:03d}/{args.epochs} mean_mae {mean_mae:.6f} refined {mean_refined:.6f} mean_peak {mean_peak:.6f}"]
             parts.extend(
-                f"{tooth}: mae={m['mae']:.6f} matches={m['matches']}/{m['count']} margin={m['margin']:.6f}"
+                f"{tooth}: mae={m['mae']:.6f} refined={m['refined_mae']:.6f} matches={m['matches']}/{m['count']} margin={m['margin']:.6f}"
                 for tooth, m in epoch_metrics.items()
             )
             print(" | ".join(parts))
 
     print(f"[shared] Overfitting finished. Best mean_mae: {best_mae:.6f}")
 
-    if args.save_model and best_mae == float("inf") and best_path:
+    if args.save_model and best_metric == float("inf") and best_path:
         torch.save(
             {
                 "model": model.state_dict(),
@@ -401,6 +504,7 @@ def overfit_shared(args, device: torch.device):
                 "use_tnet": model.use_tnet,
                 "heads_config": heads_config,
                 "in_channels": in_channels,
+                "selection_metric": best_metric_label,
             },
             best_path,
         )
@@ -431,6 +535,8 @@ def parse_args():
     parser.add_argument("--loss_eps", type=float, default=1e-3, help="Stability term added to the weighted MSE denominator.")
     parser.add_argument("--label_gamma", type=float, default=1.0, help="Optional sharpening factor for targets (y^gamma).")
     parser.add_argument("--peak_ce", type=float, default=0.0, help="Weight for auxiliary peak classification CE loss.")
+    parser.add_argument("--coord_loss_weight", type=float, default=0.0, help="Weight for soft-argmax coordinate L1 loss.")
+    parser.add_argument("--coord_temperature", type=float, default=1.0, help="Temperature for soft-argmax expectation (<=0 defaults to 1.0).")
     parser.add_argument("--shared_model", action="store_true", help="Overfit all specified teeth with a shared backbone + multiple heads.")
 
     args = parser.parse_args()
