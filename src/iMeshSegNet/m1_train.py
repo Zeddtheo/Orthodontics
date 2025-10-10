@@ -191,7 +191,7 @@ class Trainer:
             "train_ids_path": None,
             "train_arrays_path": None,
             "decim_cache_vtp": None,
-            "knn_k": {"to10k": 3, "tofull": 3},
+            "knn_k": {"to10k": 5, "tofull": 7},
             "diag_mode": "cells",
             "seed": 42,
         }

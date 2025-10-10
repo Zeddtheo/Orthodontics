@@ -330,8 +330,9 @@ def _infer_one(
         cfg.gc_beta = 1.0
         cfg.gc_k = 4
         cfg.gc_iterations = 1
-        cfg.knn_10k = 3
-        cfg.knn_full = 3
+        kk = meta.get("knn_k", {"to10k": 3, "tofull": 3})
+        cfg.knn_10k = int(kk.get("to10k", 3))
+        cfg.knn_full = int(kk.get("tofull", 3))
         cfg.min_component_size = 80
         cfg.min_component_size_full = 200
         cfg.fill_radius = 0.0
@@ -355,6 +356,18 @@ def _infer_one(
         cfg=cfg,
     )
     print(f"[Post] conf10_mean={logs.get('conf10_mean', -1):.3f}, seed_ratio={logs.get('seed_ratio', 0.0):.3f}")
+    if exact_replay:
+        assign_path = None
+        hint = meta.get("decim_cache_vtp")
+        if hint:
+            assign_path = Path(hint).with_suffix(".assign.npy")
+        if assign_path is None or not assign_path.exists():
+            assign_path = _decim_cache_path(inp_path, int(meta["target_cells"])).with_suffix(".assign.npy")
+        if assign_path.exists():
+            assign_ids = np.load(str(assign_path)).astype(np.int64, copy=False)
+            if assign_ids.shape[0] == pos_full_mm.shape[0]:
+                lab_full = lab10k[assign_ids]
+
     # 保存着色
     out_10k = out_dir / f"{stem}_10k_colored.vtp"
     out_full = out_dir / f"{stem}_full_colored.vtp"
