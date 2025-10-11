@@ -30,12 +30,16 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from m0_dataset import (
     DECIM_CACHE,
-    SEG_NUM_CLASSES,
+    FDI_LABELS,
     LABEL_REMAP,
+    SEG_NUM_CLASSES,
+    SINGLE_ARCH_NUM_CLASSES,
+    _build_single_arch_label_maps,
     _load_or_build_decimated_mm,
     extract_features,
-    normalize_mesh_units,
     find_label_array,
+    normalize_mesh_units,
+    remap_labels_single_arch,
     remap_segmentation_labels,
 )
 from m1_train import GeneralizedDiceLoss
@@ -84,10 +88,28 @@ def calculate_metrics(preds: torch.Tensor, labels: torch.Tensor, num_classes: in
     )
 
 
+DEFAULT_LABEL_MODE = "single_arch_16"
+DEFAULT_GINGIVA_SRC = 0
+DEFAULT_GINGIVA_CLASS_ID = 15
+DEFAULT_KEEP_VOID_ZERO = True
+FDI_LABEL_SET = set(FDI_LABELS)
+INV_LABEL_REMAP = {v: k for k, v in LABEL_REMAP.items()}
+
+
 class SingleSampleDataset(Dataset):
     """单样本数据集 - 生成一次样本后反复返回"""
 
-    def __init__(self, sample_file: str, mean: np.ndarray, std: np.ndarray):
+    def __init__(
+        self,
+        sample_file: str,
+        mean: np.ndarray,
+        std: np.ndarray,
+        *,
+        label_mode: str = DEFAULT_LABEL_MODE,
+        gingiva_src_label: int = DEFAULT_GINGIVA_SRC,
+        gingiva_class_id: int = DEFAULT_GINGIVA_CLASS_ID,
+        keep_void_zero: bool = DEFAULT_KEEP_VOID_ZERO,
+    ):
         target_cells = 10000
         sample_cells = 6000
         sample_path = Path(sample_file)
@@ -103,20 +125,51 @@ class SingleSampleDataset(Dataset):
             raise RuntimeError(f"{sample_file} 缺失 Label 数组")
         _, raw_labels = label_info
         labels = np.asarray(raw_labels, dtype=np.int64)
-        known_label_values = np.array(list(LABEL_REMAP.keys()), dtype=np.int64)
-        if labels.size > 0 and np.all(np.isin(labels, known_label_values)):
+
+        self.label_mode = label_mode
+        self._label_kwargs = {
+            "gingiva_src_label": gingiva_src_label,
+            "gingiva_class_id": gingiva_class_id,
+            "keep_void_zero": keep_void_zero,
+        }
+        debug_info = {
+            "raw_unique": np.unique(labels).astype(int).tolist(),
+            "intermediate_unique": None,
+            "fallback_values": [],
+        }
+        if label_mode == "single_arch_16":
+            raw_unique = np.unique(labels)
+            needs_inverse = any(
+                (val not in FDI_LABEL_SET) and (val != gingiva_src_label) and (val != 0)
+                for val in raw_unique
+            )
+            if needs_inverse:
+                labels = np.asarray(
+                    [INV_LABEL_REMAP.get(int(v), 0) for v in labels],
+                    dtype=np.int64,
+                )
+            debug_info["intermediate_unique"] = np.unique(labels).astype(int).tolist()
+        if label_mode == "single_arch_16":
+            single_arch_maps = _build_single_arch_label_maps(
+                gingiva_src_label,
+                gingiva_class_id,
+                keep_void_zero,
+            )
+            labels = remap_labels_single_arch(labels, sample_path, single_arch_maps)
+            self.num_classes_full = SINGLE_ARCH_NUM_CLASSES
+            debug_info["post_unique"] = np.unique(labels).astype(int).tolist()
+        elif label_mode == "full_fdi":
             labels = remap_segmentation_labels(labels)
+            self.num_classes_full = SEG_NUM_CLASSES
+            debug_info["post_unique"] = np.unique(labels).astype(int).tolist()
+        else:
+            raise ValueError(f"Unsupported label_mode: {label_mode}")
 
         mesh, _, _, diag_after = normalize_mesh_units(mesh)
         mesh = mesh.triangulate()
 
         labels_full_unique = np.unique(labels).astype(np.int64, copy=False)
         self.labels_full_unique = labels_full_unique
-        if labels_full_unique.size > 0:
-            max_label = int(labels_full_unique.max())
-            self.num_classes_full = max(max_label + 1, int(SEG_NUM_CLASSES))
-        else:
-            self.num_classes_full = int(SEG_NUM_CLASSES)
 
         feats = extract_features(mesh).astype(np.float32, copy=False)
         pos_mm = mesh.cell_centers().points.astype(np.float32)
@@ -143,6 +196,7 @@ class SingleSampleDataset(Dataset):
         labels_tensor = torch.from_numpy(labels.astype(np.int64))
 
         self.sample_data = ((features_tensor, pos_tensor, pos_mm_tensor, pos_scale_tensor), labels_tensor)
+        self.remap_debug = debug_info
 
     def __len__(self) -> int:
         return 10
@@ -191,8 +245,17 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
         print(f"[overfit] built sample stats -> {stats_path}")
 
     # 创建单样本数据集
-    single_dataset = SingleSampleDataset(str(sample_file), mean, std)
-    
+    single_dataset = SingleSampleDataset(
+        str(sample_file),
+        mean,
+        std,
+        label_mode=DEFAULT_LABEL_MODE,
+        gingiva_src_label=DEFAULT_GINGIVA_SRC,
+        gingiva_class_id=DEFAULT_GINGIVA_CLASS_ID,
+        keep_void_zero=DEFAULT_KEEP_VOID_ZERO,
+    )
+    remap_debug = getattr(single_dataset, "remap_debug", None)
+
     # 获取一个样本来确定类别数
     sample_data = single_dataset[0]
     # 数据格式: ((features, pos, pos_mm, pos_scale), labels)
@@ -216,9 +279,10 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
         single_dataset.train_ids_path = train_ids_path.resolve()
     
     unique_labels = torch.unique(labels)
-    num_classes = int(getattr(single_dataset, "num_classes_full", SEG_NUM_CLASSES))
+    default_classes = SINGLE_ARCH_NUM_CLASSES if single_dataset.label_mode == "single_arch_16" else SEG_NUM_CLASSES
+    num_classes = int(getattr(single_dataset, "num_classes_full", default_classes))
     labels_full_unique = getattr(single_dataset, "labels_full_unique", None)
-    
+
     # 创建DataLoader
     # ⚡ 优化：batch_size=2 避免 BatchNorm batch_size=1 问题，同时加速训练
     dataloader = DataLoader(
@@ -231,6 +295,11 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     
     print(f"✅ 单样本数据集设置完成")
     print(f"   - 样本形状: features={features.shape}, pos={pos.shape}, labels={labels.shape}")
+    print(f"   - 标签模式: {single_dataset.label_mode}")
+    if remap_debug is not None:
+        print(f"   - 原始标签 unique: {remap_debug.get('raw_unique')}")
+        if remap_debug.get('intermediate_unique') is not None:
+            print(f"   - 转换后标签 unique: {remap_debug.get('intermediate_unique')}")
     if labels_full_unique is not None:
         print(f"   - 全10k唯一标签: {labels_full_unique.tolist()}")
     print(f"   - 6k唯一标签: {unique_labels.tolist()}")
