@@ -57,6 +57,7 @@ def get_single_sample_loader(root: str, tooth_id: str, features: str, sample_idx
         select_landmarks="all",
         augment=False,
         ensure_constant_L=False,
+        tooth_id=tooth_id,
     )
     dataset = P0PointNetRegDataset(cfg)
     if not dataset:

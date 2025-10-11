@@ -207,6 +207,7 @@ def process_arch(case_id="001", arch="L", for_infer: bool = False):
         fdi = inv_map.get(tid)
         if fdi is None or fdi in ignore:
             continue
+        npz_name = COOK/"samples"/f"{case_id}_{arch}_t{fdi}.npz"
 
         # 裁 ROI（按 Label==FDI）
         sub = mesh.clone().threshold(scalars="Label", above=fdi-0.5, below=fdi+0.5, on="cells")
@@ -225,7 +226,8 @@ def process_arch(case_id="001", arch="L", for_infer: bool = False):
         # 零均值平移到 ROI 局部
         center = pos.mean(axis=0, keepdims=True)
         center_vec = center.squeeze(0).astype(np.float32)
-        roi_bounds = np.asarray(sub.bounds(), dtype=np.float32)
+        raw_bounds = np.asarray(sub.bounds(), dtype=np.float32)
+        extent_vec = (raw_bounds[1::2] - raw_bounds[0::2]).astype(np.float32)
         pos = (pos - center).astype(np.float32)
         x15[:, -3:] = (x15[:, -3:] - x15[:, -3:].mean(axis=0, keepdims=True)).astype(np.float32)
 
@@ -249,9 +251,24 @@ def process_arch(case_id="001", arch="L", for_infer: bool = False):
             mask = np.zeros((L_t,), dtype=np.float32)
         else:
             y_full, mask = make_heatmaps(pos, lm_xyz, valid, sigma_mm=SIGMA_MM, cutoff_sigma=CUTOFF_SIGMA)
+            if np.count_nonzero(mask) != L_t:
+                missing = L_t - int(np.count_nonzero(mask))
+                print(f"[skip] {case_id} arch={arch} FDI={fdi} 缺少 {missing} 个 landmark (期望 {L_t})")
+                if npz_name.exists():
+                    npz_name.unlink(missing_ok=True)
+                continue
 
         # 采样 N'
         sel = fps(pos, N_PRIME, start_idx=0)
+        if sel.shape[0] < N_PRIME:
+            need = N_PRIME - sel.shape[0]
+            if sel.shape[0] == 0:
+                print(f"[skip] {case_id} arch={arch} FDI={fdi} 无有效点")
+                if npz_name.exists():
+                    npz_name.unlink(missing_ok=True)
+                continue
+            extra = np.random.choice(sel, size=need, replace=True)
+            sel = np.concatenate([sel, extra])
         x_s, pos_s, y_s = x15[sel], pos[sel], y_full[:, sel]
 
         # pad 到 L_max
@@ -271,7 +288,7 @@ def process_arch(case_id="001", arch="L", for_infer: bool = False):
                       L_t=int(L_t), L_max=int(L_MAX), sigma_mm=float(SIGMA_MM), cutoff_sigma=float(CUTOFF_SIGMA), unit="mm",
                       has_gt=not for_infer,
                       center_mm=center_vec.tolist(),
-                      bounds_mm=roi_bounds.astype(np.float32).tolist())
+                      bounds_mm=extent_vec.tolist())
         )
         made += 1
         print(f"[ok] -> {npz_name.name}  x:{x_s.shape}  y:{y_pad.shape}  mask:{mask_pad.shape}")
@@ -311,22 +328,23 @@ def upsert_manifest(case_id="001", arch="L"):
     man = COOK/"manifest.csv"
     rows = []
     if man.exists():
-        rows = list(csv.DictReader(man.read_text(encoding="utf-8").splitlines()))
-    existing = {(r["case_id"], r["arch"], r.get("fdi","")) for r in rows}
-    for f in sorted((COOK/"samples").glob(f"{case_id}_{arch}_t*.npz")):
+        reader = csv.DictReader(man.read_text(encoding="utf-8").splitlines())
+        rows = [r for r in reader if not (r["case_id"] == case_id and r["arch"] == arch)]
+    samples = sorted((COOK/"samples").glob(f"{case_id}_{arch}_t*.npz"))
+    for f in samples:
         fdi = f.stem.split("_t")[-1]
-        key = (case_id, arch, fdi)
-        if key in existing:
-            continue
         rows.append({
             "case_id": case_id, "arch": arch, "fdi": fdi,
             "tooth_id": TOOTHMAP[arch].get(fdi, ""),
             "npz_path": str(f.relative_to(COOK)),
             "split": "train"
         })
+    fieldnames = ["case_id","arch","fdi","tooth_id","npz_path","split"]
     with man.open("w", newline="", encoding="utf-8") as fw:
-        w = csv.DictWriter(fw, fieldnames=["case_id","arch","fdi","tooth_id","npz_path","split"])
-        w.writeheader(); w.writerows(rows)
+        w = csv.DictWriter(fw, fieldnames=fieldnames)
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
     print(f"[manifest] {man}  total={len(rows)}")
 
 if __name__ == "__main__":

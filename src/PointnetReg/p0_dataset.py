@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+import json
 import math
 import numpy as np
 import torch
@@ -11,6 +12,19 @@ import torch.nn.functional as F
 
 Tensor = torch.Tensor
 Array = np.ndarray
+
+DEFAULT_TOOTH_IDS = [
+    "t11","t12","t13","t14","t15","t16","t17",
+    "t21","t22","t23","t24","t25","t26","t27",
+    "t31","t32","t33","t34","t35","t36","t37",
+    "t41","t42","t43","t44","t45","t46","t47",
+]
+DEFAULT_LANDMARK_COUNTS: Dict[str, int] = {
+    "t11": 7, "t12": 7, "t13": 5, "t14": 9, "t15": 9, "t16": 12, "t17": 12,
+    "t21": 7, "t22": 7, "t23": 5, "t24": 9, "t25": 9, "t26": 12, "t27": 12,
+    "t31": 7, "t32": 7, "t33": 5, "t34": 9, "t35": 9, "t36": 12, "t37": 12,
+    "t41": 7, "t42": 7, "t43": 5, "t44": 9, "t45": 9, "t46": 12, "t47": 12,
+}
 
 
 # --------------------------- utils ---------------------------
@@ -59,6 +73,11 @@ class DatasetConfig:
     trans_mm: float = 0.5                      # 增强平移幅度（各轴均匀±）
     ensure_constant_L: bool = True             # 同一数据集内 L 必须一致（建议“每牙一个数据集”）
     dtype: torch.dtype = torch.float32
+    tooth_id: Optional[str] = None             # 牙位编号（如 "t11"），用于健康检查
+    expected_points: Optional[int] = 3000      # 期望点数 N
+    expected_landmarks: Optional[int] = None   # 期望 landmarks 数，默认按字典
+    landmark_def_path: Optional[Union[str, Path]] = None  # 自定义 landmark 定义文件
+    health_check: bool = True                  # 是否启用关卡 0 检查
 
 
 # --------------------------- dataset ---------------------------
@@ -80,6 +99,15 @@ class P0PointNetRegDataset(Dataset):
         if not files:
             raise FileNotFoundError(f"No .npz found under {root} with {cfg.file_patterns}")
         self.files = files
+
+        self._landmark_counts = self._resolve_landmark_counts(cfg.landmark_def_path, root)
+        self._tooth_id = self._normalize_tooth(cfg.tooth_id)
+        if cfg.expected_landmarks is not None:
+            self._expected_landmarks = cfg.expected_landmarks
+        elif self._tooth_id:
+            self._expected_landmarks = self._landmark_counts.get(self._tooth_id)
+        else:
+            self._expected_landmarks = None
 
         # 确认通道与 L（第一次样本为基准）
         # 约定：npz 至少包含 x(N,C)、y(Lmax,N) 与 loss_mask(Lmax,)（或 mask）
@@ -111,6 +139,12 @@ class P0PointNetRegDataset(Dataset):
                 got = L_act if cfg.select_landmarks == "active" else L_all
                 if got != tgt:
                     raise ValueError(f"Inconsistent L in {f.name}: expect {tgt}, got {got}")
+
+        if cfg.health_check:
+            issues = self._run_health_check()
+            if issues:
+                message = "关卡 0｜数据与形状体检未通过：\n" + "\n".join(issues)
+                raise ValueError(message)
 
     def __len__(self) -> int:
         return len(self.files)
@@ -194,6 +228,212 @@ class P0PointNetRegDataset(Dataset):
         if y.ndim != 2:
             raise ValueError(f"bad y ndim in {path.name}: {y.shape}")
         return x if x.shape[0] < x.shape[1] else x.T, y, mask, meta
+
+    @staticmethod
+    def _normalize_tooth(tooth_id: Optional[str]) -> Optional[str]:
+        if tooth_id is None:
+            return None
+        key = str(tooth_id).strip()
+        if not key:
+            return None
+        if key[0].lower() == "t":
+            return key.lower()
+        if key.isdigit():
+            return f"t{key}"
+        return key.lower()
+
+    @staticmethod
+    def _ensure_channels_first(x: Array) -> Array:
+        if x.ndim != 2:
+            raise ValueError(f"x must be 2D, got shape {x.shape}")
+        return x if x.shape[0] <= x.shape[1] else x.T
+
+    @staticmethod
+    def _ensure_pos_shape(pos: Array, target_N: Optional[int]) -> Array:
+        if pos.ndim != 2:
+            raise ValueError(f"pos must be 2D, got shape {pos.shape}")
+        if pos.shape[0] == 3:
+            out = pos
+        elif pos.shape[1] == 3:
+            out = pos.T
+        else:
+            raise ValueError(f"pos must be (3,N) or (N,3), got {pos.shape}")
+        if target_N is not None and out.shape[1] != target_N:
+            raise ValueError(f"pos expects N={target_N}, got {out.shape[1]}")
+        return out
+
+    def _resolve_landmark_counts(
+        self,
+        explicit_path: Optional[Union[str, Path]],
+        root: Path,
+    ) -> Dict[str, int]:
+        counts = dict(DEFAULT_LANDMARK_COUNTS)
+        candidate: Optional[Path] = None
+        if explicit_path:
+            p = Path(explicit_path)
+            if p.exists():
+                candidate = p
+        if candidate is None:
+            for base in [root, *root.parents]:
+                test = base / "landmark_def.json"
+                if test.exists():
+                    candidate = test
+                    break
+        if candidate is None:
+            return counts
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            templates = payload.get("templates", {})
+            per_tooth = payload.get("per_tooth", {})
+            for key, tpl_name in per_tooth.items():
+                try:
+                    norm_key = self._normalize_tooth(key)
+                except ValueError:
+                    continue
+                names = templates.get(tpl_name)
+                if isinstance(names, list) and names:
+                    counts[norm_key] = len(names)
+        except Exception as exc:
+            print(f"[warn] failed to load landmark_def.json from {candidate}: {exc}")
+        return counts
+
+    def _infer_tooth_from_path(self, path: Path) -> Optional[str]:
+        parts = path.stem.split("_")
+        for part in reversed(parts):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                return self._normalize_tooth(part)
+            except ValueError:
+                continue
+        return self._tooth_id
+
+    def _run_health_check(self) -> List[str]:
+        issues: List[str] = []
+        expected_N = self.cfg.expected_points
+        expected_C = 9 if self.cfg.features == "pn" else (3 if self.cfg.features == "xyz" else None)
+        for path in self.files:
+            try:
+                with np.load(path, allow_pickle=True) as Z:
+                    tooth_key = self._infer_tooth_from_path(path)
+                    expected_landmarks = self._expected_landmarks
+                    if expected_landmarks is None and tooth_key is not None:
+                        expected_landmarks = self._landmark_counts.get(tooth_key)
+                    file_issues = self._inspect_npz(path, Z, expected_C, expected_N, expected_landmarks)
+            except Exception as exc:
+                issues.append(f"{path.name}: 无法读取（{exc}）")
+            else:
+                if file_issues:
+                    issues.extend(file_issues)
+        return issues
+
+    def _inspect_npz(
+        self,
+        path: Path,
+        Z: np.lib.npyio.NpzFile,
+        expected_C: Optional[int],
+        expected_N: Optional[int],
+        expected_landmarks: Optional[int],
+    ) -> List[str]:
+        problems: List[str] = []
+        required_keys = {"x", "y", "pos"}
+        missing = [k for k in required_keys if k not in Z]
+        if missing:
+            problems.append(f"{path.name}: 缺少字段 {missing}")
+            return problems
+
+        mask_key = "loss_mask" if "loss_mask" in Z else ("mask" if "mask" in Z else None)
+        if mask_key is None:
+            problems.append(f"{path.name}: 缺少 loss_mask/mask 字段")
+            return problems
+
+        meta_raw = Z.get("meta", None)
+        if meta_raw is None:
+            problems.append(f"{path.name}: 缺少 meta 字段")
+            return problems
+
+        x = np.asarray(Z["x"])
+        y = np.asarray(Z["y"])
+        mask = np.asarray(Z[mask_key])
+        pos = np.asarray(Z["pos"])
+
+        try:
+            x_cf = self._ensure_channels_first(x)
+        except ValueError as exc:
+            problems.append(f"{path.name}: {exc}")
+            x_cf = None
+        else:
+            if expected_C is not None and x_cf.shape[0] != expected_C:
+                problems.append(
+                    f"{path.name}: x 通道数 {x_cf.shape[0]} 与期望 {expected_C} 不符（特征='{self.cfg.features}'）"
+                )
+            if expected_N is not None and x_cf.shape[1] != expected_N:
+                problems.append(f"{path.name}: 点数 N={x_cf.shape[1]} 与期望 {expected_N} 不符")
+
+        if y.ndim != 2:
+            problems.append(f"{path.name}: y 维度异常 {y.shape}")
+        elif expected_N is not None and y.shape[1] != expected_N:
+            problems.append(f"{path.name}: y 的 N={y.shape[1]} 与期望 {expected_N} 不符")
+
+        if mask.ndim != 1:
+            problems.append(f"{path.name}: mask 应为 1D，当前 {mask.shape}")
+        elif y.ndim == 2 and mask.shape[0] != y.shape[0]:
+            problems.append(f"{path.name}: mask 长度 {mask.shape[0]} 与 y 的 L {y.shape[0]} 不符")
+
+        try:
+            pos_cf = self._ensure_pos_shape(pos, expected_N if expected_N is not None else (x_cf.shape[1] if x_cf is not None else None))
+        except ValueError as exc:
+            problems.append(f"{path.name}: {exc}")
+        else:
+            if not np.isfinite(pos_cf).all():
+                problems.append(f"{path.name}: pos 含 NaN/Inf")
+
+        if x_cf is not None and not np.isfinite(x_cf).all():
+            problems.append(f"{path.name}: x 含 NaN/Inf")
+        if y.ndim == 2 and not np.isfinite(y).all():
+            problems.append(f"{path.name}: y 含 NaN/Inf")
+        if mask.ndim == 1 and not np.isfinite(mask).all():
+            problems.append(f"{path.name}: mask 含 NaN/Inf")
+
+        if mask.ndim == 1:
+            rounded = np.round(mask)
+            if not np.allclose(mask, rounded, atol=1e-4):
+                problems.append(f"{path.name}: mask 非 0/1 值")
+            mask_sum = float(mask.sum())
+            if not np.isclose(mask_sum, round(mask_sum), atol=1e-3):
+                problems.append(f"{path.name}: mask.sum()={mask_sum:.3f} 不是整数")
+            else:
+                active_landmarks = int(round(mask_sum))
+                if expected_landmarks is not None and active_landmarks != expected_landmarks:
+                    problems.append(
+                        f"{path.name}: mask.sum()={active_landmarks} 与期望 landmarks {expected_landmarks} 不符"
+                    )
+                if y.ndim == 2 and expected_landmarks is not None and y.shape[0] < expected_landmarks:
+                    problems.append(
+                        f"{path.name}: y 的 L={y.shape[0]} 少于期望 {expected_landmarks}"
+                    )
+
+        meta = meta_raw
+        if isinstance(meta_raw, np.ndarray):
+            try:
+                meta = meta_raw.item()
+            except ValueError:
+                meta = meta_raw.tolist()
+        if not isinstance(meta, dict):
+            problems.append(f"{path.name}: meta 不是 dict（实际类型 {type(meta)}）")
+        else:
+            for key in ("center_mm", "bounds_mm"):
+                if key not in meta:
+                    problems.append(f"{path.name}: meta 缺少 {key}")
+                    continue
+                arr = np.asarray(meta[key], dtype=np.float32)
+                if arr.size != 3:
+                    problems.append(f"{path.name}: meta.{key} 期望长度 3，当前 {arr.shape}")
+                elif not np.isfinite(arr).all():
+                    problems.append(f"{path.name}: meta.{key} 含 NaN/Inf")
+
+        return problems
 
 
 # ------------------------- collate & loader -------------------------

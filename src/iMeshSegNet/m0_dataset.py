@@ -47,8 +47,21 @@ for idx, tooth in enumerate(FDI_LABELS, start=1):
 # 乳牙或未定义标签：默认为背景（或后续可按需改成 ignore_index）
 LABEL_REMAP[65] = 0
 
-# 供各模块共享的类别数
+# 供各模块共享的类别数（全口设置）
 SEG_NUM_CLASSES = 1 + len(FDI_LABELS)
+
+# 单弓 14 牙 + 牙龈（16 类）设置
+ARCH_LABEL_ORDERS: Dict[str, Tuple[int, ...]] = {
+    "U": (
+        21, 22, 23, 24, 25, 26, 27,
+        11, 12, 13, 14, 15, 16, 17,
+    ),
+    "L": (
+        31, 32, 33, 34, 35, 36, 37,
+        41, 42, 43, 44, 45, 46, 47,
+    ),
+}
+SINGLE_ARCH_NUM_CLASSES = 16
 
 
 def _remap_value(v: int) -> int:
@@ -63,6 +76,53 @@ def remap_segmentation_labels(arr: np.ndarray) -> np.ndarray:
     if arr.size == 0:
         return arr.astype(np.int64, copy=False)
     return _vectorized_remap(arr)
+
+
+def _infer_jaw_from_stem(stem: str) -> str:
+    if "_" in stem:
+        suffix = stem.rsplit("_", 1)[-1].upper()
+        if suffix in ARCH_LABEL_ORDERS:
+            return suffix
+    return "U"
+
+
+def _build_single_arch_label_maps(
+    gingiva_src: int,
+    gingiva_class: int,
+    keep_void_zero: bool,
+) -> Dict[str, Dict[int, int]]:
+    maps: Dict[str, Dict[int, int]] = {}
+    for jaw, order in ARCH_LABEL_ORDERS.items():
+        mapping: Dict[int, int] = {}
+        if keep_void_zero:
+            mapping[0] = 0
+        for idx, tooth in enumerate(order, start=1):
+            mapping[tooth] = idx
+        mapping[gingiva_src] = gingiva_class
+        maps[jaw] = mapping
+    return maps
+
+
+def _apply_label_mapping(labels: np.ndarray, mapping: Dict[int, int]) -> np.ndarray:
+    if labels.size == 0:
+        return labels.astype(np.int64, copy=False)
+    mapped = np.empty_like(labels, dtype=np.int64)
+    uniq = np.unique(labels)
+    for raw in uniq:
+        mapped[labels == raw] = mapping.get(int(raw), 0)
+    return mapped
+
+
+def remap_labels_single_arch(
+    labels: np.ndarray,
+    file_path: Path,
+    single_arch_maps: Dict[str, Dict[int, int]],
+) -> np.ndarray:
+    jaw = _infer_jaw_from_stem(file_path.stem)
+    mapping = single_arch_maps.get(jaw)
+    if mapping is None:
+        raise KeyError(f"No label mapping found for jaw: {jaw}")
+    return _apply_label_mapping(labels, mapping)
 
 
 def _decim_cache_path(src: Path, target_cells: int) -> Path:
@@ -314,6 +374,10 @@ class DataConfig:
     pin_memory: bool = True
     drop_last: bool = False
     shuffle: bool = True
+    label_mode: str = "single_arch_16"  # "single_arch_16" | "full_fdi"
+    gingiva_src_label: int = 0
+    gingiva_class_id: int = 15
+    keep_void_zero: bool = True
 
 
 # =============================================================================
@@ -372,8 +436,24 @@ def load_split_lists(split_path: Path) -> Tuple[List[str], List[str]]:
     return train_files, val_files
 
 
-def compute_label_histogram(file_paths: Sequence[str]) -> np.ndarray:
-    counts = np.zeros(SEG_NUM_CLASSES, dtype=np.int64)
+def compute_label_histogram(
+    file_paths: Sequence[str],
+    *,
+    label_mode: str = "full_fdi",
+    gingiva_src_label: int = 0,
+    gingiva_class_id: int = 15,
+    keep_void_zero: bool = True,
+) -> np.ndarray:
+    if label_mode == "single_arch_16":
+        counts = np.zeros(SINGLE_ARCH_NUM_CLASSES, dtype=np.int64)
+        single_arch_maps = _build_single_arch_label_maps(
+            gingiva_src_label,
+            gingiva_class_id,
+            keep_void_zero,
+        )
+    else:
+        counts = np.zeros(SEG_NUM_CLASSES, dtype=np.int64)
+        single_arch_maps = None
     for path_str in file_paths:
         file_path = Path(path_str)
         try:
@@ -385,7 +465,13 @@ def compute_label_histogram(file_paths: Sequence[str]) -> np.ndarray:
         if result is None:
             continue
         _, raw_labels = result
-        remapped = remap_segmentation_labels(np.asarray(raw_labels))
+        raw_arr = np.asarray(raw_labels, dtype=np.int64)
+        if label_mode == "single_arch_16":
+            if single_arch_maps is None:
+                raise RuntimeError("Single-arch label maps not initialised")
+            remapped = remap_labels_single_arch(raw_arr, file_path, single_arch_maps)
+        else:
+            remapped = remap_segmentation_labels(raw_arr)
         uniq, freq = np.unique(remapped, return_counts=True)
         counts[uniq] += freq
     return counts
@@ -449,6 +535,11 @@ class SegmentationDataset(Dataset):
         target_cells: int,
         sample_cells: int,
         augment: bool,
+        *,
+        label_mode: str,
+        gingiva_src_label: int,
+        gingiva_class_id: int,
+        keep_void_zero: bool,
     ):
         self.file_paths = file_paths
         self.mean = torch.from_numpy(mean).float()
@@ -458,6 +549,17 @@ class SegmentationDataset(Dataset):
         self.sample_cells = sample_cells
         self.augment = augment
         self._unit_warned = False
+        self.label_mode = label_mode
+        self.gingiva_src_label = gingiva_src_label
+        self.gingiva_class_id = gingiva_class_id
+        self.keep_void_zero = keep_void_zero
+        self._single_arch_maps: Optional[Dict[str, Dict[int, int]]] = None
+        if self.label_mode == "single_arch_16":
+            self._single_arch_maps = _build_single_arch_label_maps(
+                self.gingiva_src_label,
+                self.gingiva_class_id,
+                self.keep_void_zero,
+            )
 
     def __len__(self) -> int:
         return len(self.file_paths)
@@ -467,6 +569,15 @@ class SegmentationDataset(Dataset):
             return self.arch_frames[stem]
         base = stem.split("_")[0]
         return self.arch_frames.get(base)
+
+    def _remap_labels(self, labels: np.ndarray, file_path: Path) -> np.ndarray:
+        if self.label_mode == "single_arch_16":
+            if self._single_arch_maps is None:
+                raise RuntimeError("Single-arch label maps not initialised.")
+            return remap_labels_single_arch(labels, file_path, self._single_arch_maps)
+        if self.label_mode == "full_fdi":
+            return remap_segmentation_labels(labels)
+        raise ValueError(f"Unsupported label_mode: {self.label_mode}")
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         file_path = Path(self.file_paths[idx])
@@ -478,8 +589,8 @@ class SegmentationDataset(Dataset):
             raise RuntimeError(f"File {file_path} is missing a label array.")
         _, raw_labels = result
         labels = np.asarray(raw_labels, dtype=np.int64)
-        if labels.size > 0 and np.all(np.isin(labels, list(LABEL_REMAP.keys()))):
-            labels = remap_segmentation_labels(labels)
+        if labels.size > 0:
+            labels = self._remap_labels(labels, file_path)
 
         mesh, scale_factor, diag_before, diag_after = normalize_mesh_units(mesh)
         if scale_factor != 1.0 and not self._unit_warned:
@@ -547,6 +658,10 @@ def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         target_cells=config.target_cells,
         sample_cells=config.sample_cells,
         augment=config.augment,
+        label_mode=config.label_mode,
+        gingiva_src_label=config.gingiva_src_label,
+        gingiva_class_id=config.gingiva_class_id,
+        keep_void_zero=config.keep_void_zero,
     )
 
     val_dataset = SegmentationDataset(
@@ -557,6 +672,10 @@ def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         target_cells=config.target_cells,
         sample_cells=config.sample_cells,
         augment=False,
+        label_mode=config.label_mode,
+        gingiva_src_label=config.gingiva_src_label,
+        gingiva_class_id=config.gingiva_class_id,
+        keep_void_zero=config.keep_void_zero,
     )
 
     train_loader = DataLoader(

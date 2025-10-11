@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -27,6 +28,7 @@ from tqdm import tqdm
 from m0_dataset import (
     DataConfig,
     SEG_NUM_CLASSES,
+    SINGLE_ARCH_NUM_CLASSES,
     compute_label_histogram,
     get_dataloaders,
     load_split_lists,
@@ -34,6 +36,11 @@ from m0_dataset import (
     set_seed,
 )
 from imeshsegnet import iMeshSegNet
+
+try:
+    from scipy.optimize import linear_sum_assignment
+except Exception:
+    linear_sum_assignment = None
 
 
 # =============================================================================
@@ -89,7 +96,11 @@ def build_ce_class_weights(hist: np.ndarray, clip_min: float = 0.3, clip_max: fl
     return weights.astype(np.float32)
 
 
-def calculate_metrics(preds: torch.Tensor, targets: torch.Tensor, num_classes: int) -> Tuple[float, float, float]:
+def calculate_metrics(
+    preds: torch.Tensor,
+    targets: torch.Tensor,
+    num_classes: int,
+) -> Tuple[float, float, float, np.ndarray]:
     preds_flat = preds.cpu().numpy().flatten()
     targets_flat = targets.cpu().numpy().flatten()
 
@@ -114,7 +125,7 @@ def calculate_metrics(preds: torch.Tensor, targets: torch.Tensor, num_classes: i
     mean_dsc = float(np.mean(dsc[foreground_mask])) if np.any(foreground_mask) else 0.0
     mean_sen = float(np.mean(sen[foreground_mask])) if np.any(foreground_mask) else 0.0
     mean_ppv = float(np.mean(ppv[foreground_mask])) if np.any(foreground_mask) else 0.0
-    return mean_dsc, mean_sen, mean_ppv
+    return mean_dsc, mean_sen, mean_ppv, cm
 
 
 # =============================================================================
@@ -218,7 +229,11 @@ class Trainer:
         payload = self._build_checkpoint_payload()
         torch.save(payload, path)
 
-    def _run_epoch(self, loader: DataLoader, is_train: bool) -> Tuple[float, float, float, float, float, float]:
+    def _run_epoch(
+        self,
+        loader: DataLoader,
+        is_train: bool,
+    ) -> Tuple[float, float, float, float, float, float, float, List[Tuple[int, int, int]]]:
         self.model.train(mode=is_train)
         total_loss = 0.0
         preds_all = []
@@ -246,8 +261,8 @@ class Trainer:
                         logits = self.model(x, pos)
                         loss_dice = self.dice_loss(logits, y)
                         loss_ce = self.ce_loss(logits, y)
-                        # ← 改4：降低 Dice 主导性，先用 0.5 * Dice + 1.0 * CE
-                        loss = 0.5 * loss_dice + 1.0 * loss_ce
+                        # ← 改4：降低 Dice 主导性，使用 0.3 * Dice + 1.0 * CE
+                        loss = 0.3 * loss_dice + 1.0 * loss_ce
             else:
                 # 训练阶段保持原有逻辑
                 with autocast(self.device.type, enabled=self.amp_enabled):
@@ -264,8 +279,8 @@ class Trainer:
                         I = torch.eye(trans.size(1), device=trans.device).unsqueeze(0).expand_as(trans)
                         stn_reg = ((trans @ trans.transpose(1, 2) - I) ** 2).sum(dim=(1, 2)).mean()
                     
-                    # ← 改4：降低 Dice 主导性，先用 0.5 * Dice + 1.0 * CE + 极轻 STN 正则
-                    loss = 0.5 * loss_dice + 1.0 * loss_ce + 1e-3 * stn_reg
+                    # ← 改4：降低 Dice 主导性，使用 0.3 * Dice + 1.0 * CE + 极轻 STN 正则
+                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 1e-3 * stn_reg
 
                 # ========== 修复4: NaN/Inf 哨兵（防飙车）==========
                 if not torch.isfinite(loss):
@@ -320,51 +335,90 @@ class Trainer:
         if isinstance(num_classes, torch.Tensor):
             num_classes = num_classes.item()
         num_classes = int(num_classes)
-        dsc, sen, ppv = calculate_metrics(preds_tensor, targets_tensor, num_classes)
-        
+        dsc, sen, ppv, cm = calculate_metrics(preds_tensor, targets_tensor, num_classes)
+
+        perm_dsc = float("nan")
+        top_confusions: List[Tuple[int, int, int]] = []
+        if not is_train and cm.size > 0:
+            cm_float = cm.astype(np.float64)
+            tp_vec = np.diag(cm_float)
+            fp_vec = cm_float.sum(axis=0) - tp_vec
+            fn_vec = cm_float.sum(axis=1) - tp_vec
+            with np.errstate(divide="ignore", invalid="ignore"):
+                denom = 2 * tp_vec[:, None] + fp_vec[None, :] + fn_vec[:, None]
+                dice_matrix = np.where(denom > 0, 2 * cm_float / denom, 0.0)
+            if linear_sum_assignment is not None:
+                row_idx, col_idx = linear_sum_assignment(-dice_matrix)
+                perm_dsc = float(np.mean(dice_matrix[row_idx, col_idx]))
+            else:
+                perm_dsc = dsc
+
+            confusion_view = cm.copy()
+            np.fill_diagonal(confusion_view, 0)
+            flat = confusion_view.reshape(-1)
+            order = np.argsort(flat)[::-1]
+            width = confusion_view.shape[1]
+            for flat_idx in order[:5]:
+                count = int(flat[flat_idx])
+                if count <= 0:
+                    break
+                i = flat_idx // width
+                j = flat_idx % width
+                top_confusions.append((i, j, count))
+
         # 计算诊断指标的平均值
         avg_bg_ratio = float(np.mean(bg_ratios)) if bg_ratios else 0.0
         avg_entropy = float(np.mean(entropies)) if entropies else 0.0
-        
-        return avg_loss, dsc, sen, ppv, avg_bg_ratio, avg_entropy
+
+        return avg_loss, dsc, sen, ppv, avg_bg_ratio, avg_entropy, perm_dsc, top_confusions
 
     def train(self) -> None:
         with open(self.log_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             # 简化CSV头：
-            writer.writerow(["epoch", "train_loss", "val_loss", "val_dsc", "lr"])
+            writer.writerow(["epoch", "train_loss", "val_loss", "val_dsc", "val_dsc_perm", "lr"])
 
         for epoch in range(1, self.config.epochs + 1):
             if self.amp_enabled:
                 torch.cuda.reset_peak_memory_stats(self.device)
             epoch_start = time.time()
-            train_loss, train_dsc, train_sen, train_ppv, train_bg, train_ent = self._run_epoch(self.train_loader, is_train=True)
+            train_loss, train_dsc, train_sen, train_ppv, train_bg, train_ent, train_perm_dsc, _ = self._run_epoch(self.train_loader, is_train=True)
             epoch_time = time.time() - epoch_start
             train_peak_mem = (
                 torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)
                 if self.amp_enabled
                 else 0.0
             )
-            val_loss, val_dsc, val_sen, val_ppv, val_bg, val_ent = self._run_epoch(self.val_loader, is_train=False)
+            val_loss, val_dsc, val_sen, val_ppv, val_bg, val_ent, val_perm_dsc, val_confusions = self._run_epoch(self.val_loader, is_train=False)
             current_lr = self.optimizer.param_groups[0]["lr"]
+            perm_display = "nan" if math.isnan(val_perm_dsc) else f"{val_perm_dsc:.4f}"
 
             print(
                 f"Epoch {epoch}/{self.config.epochs} | "
                 f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                f"Val DSC: {val_dsc:.4f} | Val SEN: {val_sen:.4f} | Val PPV: {val_ppv:.4f} | "
+                f"Val DSC: {val_dsc:.4f} | Val DSC_perm: {perm_display} | "
+                f"Val SEN: {val_sen:.4f} | Val PPV: {val_ppv:.4f} | "
                 f"Val BG%: {val_bg:.3f} | Val Ent: {val_ent:.3f} | "
                 f"Time: {epoch_time:.1f}s | PeakMem: {train_peak_mem:.1f}MB | LR: {current_lr:.6f}"
             )
+            if val_confusions:
+                conf_preview = ", ".join(
+                    f"{src}->{dst}:{cnt}"
+                    for src, dst, cnt in val_confusions[:3]
+                )
+                print(f"    Top confusions: {conf_preview}")
 
             with open(self.log_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 # 简化记录内容：
-                writer.writerow([epoch, train_loss, val_loss, val_dsc, current_lr])
+                writer.writerow([epoch, train_loss, val_loss, val_dsc, val_perm_dsc, current_lr])
 
             if self.writer is not None:
                 self.writer.add_scalar("loss/train", train_loss, epoch)
                 self.writer.add_scalar("loss/val", val_loss, epoch)
                 self.writer.add_scalar("metrics/dsc", val_dsc, epoch)
+                if not math.isnan(val_perm_dsc):
+                    self.writer.add_scalar("metrics/dsc_perm", val_perm_dsc, epoch)
                 self.writer.add_scalar("metrics/sensitivity", val_sen, epoch)
                 self.writer.add_scalar("metrics/ppv", val_ppv, epoch)
                 # ========== 新增：诊断指标日志 ==========
@@ -376,6 +430,12 @@ class Trainer:
                 self.writer.add_scalar("time/epoch_seconds", epoch_time, epoch)
                 if self.amp_enabled:
                     self.writer.add_scalar("gpu/peak_mem_mb", train_peak_mem, epoch)
+                if val_confusions:
+                    preview = ", ".join(
+                        f"{src}->{dst}:{cnt}"
+                        for src, dst, cnt in val_confusions[:5]
+                    )
+                    self.writer.add_text("diagnostics/top_confusions", preview, epoch)
 
             self._save_checkpoint(self.config.checkpoint_dir / "last.pt")
             # 简化保存最佳模型的逻辑：
@@ -477,7 +537,12 @@ def main() -> None:
     config.data_config.persistent_workers = True
     # ========== 快改开关2：关闭增强做"冷启" ==========
     config.data_config.augment = False  # ← 改3：先关闭增强，待 DSC 抬头后再逐步打开
-    
+    config.data_config.label_mode = "single_arch_16"
+    config.data_config.gingiva_src_label = 0
+    config.data_config.gingiva_class_id = 15
+    config.data_config.keep_void_zero = True
+    config.num_classes = SINGLE_ARCH_NUM_CLASSES
+
     # TODO 优化5：增强 Warmup（待 DSC 稳定后启用）
     # 实现方案：在 Trainer.train() 里动态调整
     # if epoch <= 10:
@@ -488,13 +553,19 @@ def main() -> None:
     # ========== 快改开关3：CE 类别权重 ==========
     # 选项 A：使用均匀权重（排查是否"重加权过度"）
     # config.ce_class_weights = [1.0] * config.num_classes
-    
+    train_files, _ = load_split_lists(config.data_config.split_path)
+    class_hist = compute_label_histogram(
+        train_files,
+        label_mode=config.data_config.label_mode,
+        gingiva_src_label=config.data_config.gingiva_src_label,
+        gingiva_class_id=config.data_config.gingiva_class_id,
+        keep_void_zero=config.data_config.keep_void_zero,
+    )
+
     # 选项 B：使用更温和的加权（改 build_ce_class_weights 的 clip 范围）
     if config.ce_class_weights is None:
         print("Estimating class frequencies for CE weights...")
-        train_files, _ = load_split_lists(config.data_config.split_path)
-        class_hist = compute_label_histogram(train_files)
-        ce_weights = build_ce_class_weights(class_hist)
+        ce_weights = build_ce_class_weights(class_hist, clip_min=0.3, clip_max=3.0)
         config.ce_class_weights = ce_weights.tolist()
         print(
             f"CrossEntropy class weights prepared: min={ce_weights.min():.3f}, "

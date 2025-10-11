@@ -94,6 +94,8 @@ def infer_one_tooth(
         features=features,
         select_landmarks="all",
         ensure_constant_L=False,
+        tooth_id=tooth_id,
+        health_check=False,
     )
     dataset = P0PointNetRegDataset(cfg)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_p0)
