@@ -83,7 +83,9 @@ def _infer_jaw_from_stem(stem: str) -> str:
         suffix = stem.rsplit("_", 1)[-1].upper()
         if suffix in ARCH_LABEL_ORDERS:
             return suffix
-    return "U"
+    raise ValueError(
+        f"无法从文件名推断颌侧: {stem}. 需要 '_U' 或 '_L' 后缀以确保标签映射正确"
+    )
 
 
 def _build_single_arch_label_maps(
@@ -91,6 +93,10 @@ def _build_single_arch_label_maps(
     gingiva_class: int,
     keep_void_zero: bool,
 ) -> Dict[str, Dict[int, int]]:
+    if keep_void_zero and gingiva_src == 0:
+        raise ValueError(
+            "gingiva_src_label=0 与 keep_void_zero=True 冲突：0 不能同时代表背景和牙龈"
+        )
     maps: Dict[str, Dict[int, int]] = {}
     for jaw, order in ARCH_LABEL_ORDERS.items():
         mapping: Dict[int, int] = {}
@@ -554,6 +560,7 @@ class SegmentationDataset(Dataset):
         self.gingiva_class_id = gingiva_class_id
         self.keep_void_zero = keep_void_zero
         self._single_arch_maps: Optional[Dict[str, Dict[int, int]]] = None
+        self.min_samples_per_class = 80  # 小类保底采样数量
         if self.label_mode == "single_arch_16":
             self._single_arch_maps = _build_single_arch_label_maps(
                 self.gingiva_src_label,
@@ -624,7 +631,41 @@ class SegmentationDataset(Dataset):
         pos_raw = pos_raw / scale_pos
 
         if features.shape[0] > self.sample_cells:
-            indices = np.random.permutation(features.shape[0])[: self.sample_cells]
+            total_cells = features.shape[0]
+            required_indices: List[int] = []
+            for cls in np.unique(labels):
+                if cls == 0:
+                    continue
+                cls_indices = np.where(labels == cls)[0]
+                quota = min(self.min_samples_per_class, self.sample_cells)
+                if cls_indices.size == 0 or quota == 0:
+                    continue
+                replace = cls_indices.size < quota
+                chosen = np.random.choice(cls_indices, size=quota, replace=replace)
+                required_indices.extend(chosen.tolist())
+
+            if required_indices:
+                required_array = np.unique(np.asarray(required_indices, dtype=np.int64))
+            else:
+                required_array = np.empty(0, dtype=np.int64)
+
+            slots_left = self.sample_cells - required_array.size
+            if slots_left < 0:
+                indices = np.random.choice(required_array, size=self.sample_cells, replace=False)
+            else:
+                mask = np.ones(total_cells, dtype=bool)
+                if required_array.size > 0:
+                    mask[required_array] = False
+                pool = np.nonzero(mask)[0]
+                extra_take = min(slots_left, pool.size)
+                extra = np.random.choice(pool, size=extra_take, replace=False) if extra_take > 0 else np.empty(0, dtype=np.int64)
+                indices = np.concatenate([required_array, extra]) if required_array.size > 0 else extra
+                if indices.size < self.sample_cells:
+                    deficit = self.sample_cells - indices.size
+                    fallback = np.random.choice(total_cells, size=deficit, replace=True)
+                    indices = np.concatenate([indices, fallback])
+            indices = indices[: self.sample_cells]
+            np.random.shuffle(indices)
             features = features[indices]
             pos_raw = pos_raw[indices]
             labels = labels[indices]

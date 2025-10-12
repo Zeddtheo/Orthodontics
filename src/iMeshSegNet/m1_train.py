@@ -69,6 +69,25 @@ class GeneralizedDiceLoss(nn.Module):
         return 1 - dice
 
 
+class FocalTverskyLoss(nn.Module):
+    def __init__(self, alpha: float = 0.7, beta: float = 0.3, gamma: float = 0.75, eps: float = 1e-6):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.eps = eps
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = F.softmax(logits, dim=1)
+        onehot = F.one_hot(targets, num_classes=probs.size(1)).permute(0, 2, 1).float()
+        tp = (probs * onehot).sum(dim=(0, 2))
+        fp = (probs * (1 - onehot)).sum(dim=(0, 2))
+        fn = ((1 - probs) * onehot).sum(dim=(0, 2))
+        tversky = (tp + self.eps) / (tp + self.alpha * fp + self.beta * fn + self.eps)
+        focal_tversky = torch.pow(1 - tversky.mean(), self.gamma)
+        return focal_tversky
+
+
 def build_ce_class_weights(hist: np.ndarray, clip_min: float = 0.3, clip_max: float = 3.0) -> np.ndarray:
     """Compute inverse-frequency CE weights with clipping & mean normalisation.
     
@@ -168,12 +187,15 @@ class Trainer:
         self._checked_shapes = False
         self.stats_mean = np.asarray(stats_mean, dtype=np.float32)
         self.stats_std = np.asarray(stats_std, dtype=np.float32)
+        self.epochs_since_best = 0
+        self.best_epoch = 0
 
         self.dice_loss = GeneralizedDiceLoss().to(self.device)
         weight_tensor = None
         if self.config.ce_class_weights is not None:
             weight_tensor = torch.tensor(self.config.ce_class_weights, dtype=torch.float32)
         self.ce_loss = nn.CrossEntropyLoss(weight=weight_tensor).to(self.device)
+        self.focal_tversky_loss = FocalTverskyLoss().to(self.device)
 
     def _build_checkpoint_payload(self) -> dict:
         mean = np.asarray(self.stats_mean, dtype=np.float32)
@@ -261,14 +283,15 @@ class Trainer:
                         logits = self.model(x, pos)
                         loss_dice = self.dice_loss(logits, y)
                         loss_ce = self.ce_loss(logits, y)
-                        # ← 改4：降低 Dice 主导性，使用 0.3 * Dice + 1.0 * CE
-                        loss = 0.3 * loss_dice + 1.0 * loss_ce
+                        loss_ft = self.focal_tversky_loss(logits, y)
+                        loss = 0.2 * loss_dice + 0.8 * loss_ce + 0.5 * loss_ft
             else:
                 # 训练阶段保持原有逻辑
                 with autocast(self.device.type, enabled=self.amp_enabled):
                     logits = self.model(x, pos)
                     loss_dice = self.dice_loss(logits, y)
                     loss_ce = self.ce_loss(logits, y)
+                    loss_ft = self.focal_tversky_loss(logits, y)
                     
                     # ========== 修复2: STN 正交正则（防止越位变形）==========
                     stn_reg = 0.0
@@ -279,8 +302,8 @@ class Trainer:
                         I = torch.eye(trans.size(1), device=trans.device).unsqueeze(0).expand_as(trans)
                         stn_reg = ((trans @ trans.transpose(1, 2) - I) ** 2).sum(dim=(1, 2)).mean()
                     
-                    # ← 改4：降低 Dice 主导性，使用 0.3 * Dice + 1.0 * CE + 极轻 STN 正则
-                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 1e-3 * stn_reg
+                    # ← 更新：加入 Focal Tversky 提升召回
+                    loss = 0.2 * loss_dice + 0.8 * loss_ce + 0.5 * loss_ft + 1e-3 * stn_reg
 
                 # ========== 修复4: NaN/Inf 哨兵（防飙车）==========
                 if not torch.isfinite(loss):
@@ -381,6 +404,16 @@ class Trainer:
         for epoch in range(1, self.config.epochs + 1):
             if self.amp_enabled:
                 torch.cuda.reset_peak_memory_stats(self.device)
+
+            dataset_obj = getattr(self.train_loader, "dataset", None)
+            if dataset_obj is not None and hasattr(dataset_obj, "augment"):
+                enable_aug = epoch > self.config.augment_warmup_epochs
+                current_aug = bool(getattr(dataset_obj, "augment"))
+                if current_aug != enable_aug:
+                    setattr(dataset_obj, "augment", enable_aug)
+                    state = "enabled" if enable_aug else "disabled"
+                    print(f"[Data] Augmentation {state} at epoch {epoch}")
+
             epoch_start = time.time()
             train_loss, train_dsc, train_sen, train_ppv, train_bg, train_ent, train_perm_dsc, _ = self._run_epoch(self.train_loader, is_train=True)
             epoch_time = time.time() - epoch_start
@@ -441,10 +474,20 @@ class Trainer:
             # 简化保存最佳模型的逻辑：
             if val_dsc > self.best_val_dsc:
                 self.best_val_dsc = val_dsc
+                self.best_epoch = epoch
+                self.epochs_since_best = 0
                 print(f"✨ New best model found! DSC: {val_dsc:.4f}. Saving to best.pt")
                 self._save_checkpoint(self.config.checkpoint_dir / "best.pt")
+            else:
+                self.epochs_since_best += 1
 
             self.scheduler.step()
+
+            if self.epochs_since_best >= self.config.early_stop_patience:
+                print(
+                    f"Early stopping at epoch {epoch}: no improvement for {self.epochs_since_best} epochs."
+                )
+                break
 
         if self.writer is not None:
             self.writer.flush()
@@ -471,6 +514,8 @@ class TrainConfig:
     num_classes: int = SEG_NUM_CLASSES
     ce_class_weights: Optional[Sequence[float]] = None
     enable_amp: bool = True
+    augment_warmup_epochs: int = 12
+    early_stop_patience: int = 18
 
     log_dir: Path = field(init=False)
     checkpoint_dir: Path = field(init=False)
@@ -540,7 +585,7 @@ def main() -> None:
     config.data_config.label_mode = "single_arch_16"
     config.data_config.gingiva_src_label = 0
     config.data_config.gingiva_class_id = 15
-    config.data_config.keep_void_zero = True
+    config.data_config.keep_void_zero = False  # 0 表示牙龈时禁止保留为背景
     config.num_classes = SINGLE_ARCH_NUM_CLASSES
 
     # TODO 优化5：增强 Warmup（待 DSC 稳定后启用）
@@ -590,13 +635,17 @@ def main() -> None:
         use_feature_stn=True,      # ← 改2：开启特征 STN，抵消增强带来的旋转
     ).to(device)
 
-    # ========== 修复3: 初始化 classifier 最后一层 bias 为 log-先验（抑制背景偏好）==========
+    # ========== 调整 classifier bias：使用零均值 log-先验，避免偏向牙龈 ==========
     priors = np.maximum(class_hist, 1) / max(class_hist.sum(), 1)   # 平滑一下，避免 0
     logit_bias = torch.log(torch.tensor(priors, dtype=torch.float32, device=device))
+    logit_bias = logit_bias - logit_bias.mean()
     with torch.no_grad():
         # classifier 的最后一层是 Sequential 的倒数第一项 Conv1d
-        model.classifier[-1].bias.copy_(logit_bias)
-    print(f"✨ Initialized classifier bias with log-priors: min={logit_bias.min():.3f}, max={logit_bias.max():.3f}")
+        model.classifier[-1].bias = nn.Parameter(logit_bias.clone())
+    print(
+        "✨ Initialized classifier bias with zero-mean log priors: "
+        f"min={logit_bias.min():.3f}, max={logit_bias.max():.3f}"
+    )
 
     optimizer = Adam(
         model.parameters(),

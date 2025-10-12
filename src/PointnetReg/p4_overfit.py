@@ -196,8 +196,8 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
 
             with torch.no_grad():
                 mask_bool = mask > 0.5
-                # `probs` 已经在前向中计算；若 autocast 关闭，其仍可复用
-                pred_idx = torch.argmax(probs, dim=-1)  # (B,L)
+                # 评估阶段改用 logits 避免 Sigmoid 饱和导致的并列峰值
+                pred_idx = torch.argmax(logits, dim=-1)  # (B,L)
                 gt_idx = torch.argmax(y, dim=-1)       # (B,L)
                 pred_pts = _gather_points(xyz, pred_idx)
                 gt_pts = _gather_points(xyz, gt_idx)
@@ -213,10 +213,15 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                 total = int(mask_bool.sum().item())
                 hit05 = int(((errors <= 0.5) & mask_bool).sum().item())
                 hit10 = int(((errors <= 1.0) & mask_bool).sum().item())
-                topk_vals = probs.topk(2, dim=-1).values
-                margin_vals = topk_vals[..., 0] - topk_vals[..., 1]
+                topk_logits = logits.topk(2, dim=-1).values
+                margin_vals = torch.sigmoid(topk_logits[..., 0] - topk_logits[..., 1])
                 margin_active = margin_vals[mask_bool]
                 mean_margin = float(margin_active.mean().item()) if margin_active.numel() > 0 else 0.0
+                soft_probs = F.softmax(logits, dim=-1)
+                soft_topk_vals = soft_probs.topk(2, dim=-1).values
+                soft_margin_vals = soft_topk_vals[..., 0] - soft_topk_vals[..., 1]
+                soft_margin_active = soft_margin_vals[mask_bool]
+                mean_soft_margin = float(soft_margin_active.mean().item()) if soft_margin_active.numel() > 0 else 0.0
 
                 if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
                     pred_coords_refined = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
@@ -261,6 +266,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                         "refined_mae": refined_mae,
                         "refined_hit@0.5mm": refined_hit05,
                         "refined_hit@1.0mm": refined_hit10,
+                        "mean_soft_margin": mean_soft_margin,
                         "selection_metric": best_metric_label,
                         "selection_value": metric_to_compare,
                     },
@@ -277,8 +283,8 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                 f"[{tooth_id}] epoch {epoch:03d}/{args.epochs} "
                 f"train_loss {train_loss:.8f} | mae {mae_mm:.6f}mm | "
                 f"matches {matches}/{total} | hit@0.5 {hit05}/{total} | "
-                f"hit@1.0 {hit10}/{total} | margin {mean_margin:.6f} | peak_ce {peak_ce_item:.6f} "
-                f"| coord_loss {coord_loss_item:.6f} | refined_mae {refined_mae:.6f}mm"
+                f"hit@1.0 {hit10}/{total} | margin {mean_margin:.6f} | soft_margin {mean_soft_margin:.6f} "
+                f"| peak_ce {peak_ce_item:.6f} | coord_loss {coord_loss_item:.6f} | refined_mae {refined_mae:.6f}mm"
             )
 
     print(f"[{tooth_id}] Overfitting test finished. Final loss: {train_loss:.8f}")
@@ -419,7 +425,7 @@ def overfit_shared(args, device: torch.device):
 
                 with torch.no_grad():
                     mask_bool = mask > 0.5
-                    pred_idx = torch.argmax(probs, dim=-1)
+                    pred_idx = torch.argmax(logits, dim=-1)
                     gt_idx = torch.argmax(y, dim=-1)
                     pred_pts = _gather_points(x[:, :3, :], pred_idx)
                     gt_pts = _gather_points(x[:, :3, :], gt_idx)
@@ -430,10 +436,15 @@ def overfit_shared(args, device: torch.device):
                     matches = int(((pred_idx == gt_idx) & mask_bool).sum().item())
                     active_count = int(mask_bool.sum().item())
                     peak_ce_item = float(peak_ce_val.detach().cpu().item())
-                    topk_vals = probs.topk(2, dim=-1).values
-                    margin_vals = topk_vals[..., 0] - topk_vals[..., 1]
+                    topk_logits = logits.topk(2, dim=-1).values
+                    margin_vals = torch.sigmoid(topk_logits[..., 0] - topk_logits[..., 1])
                     margin_active = margin_vals[mask_bool]
                     mean_margin = float(margin_active.mean().item()) if margin_active.numel() > 0 else 0.0
+                    soft_probs = F.softmax(logits, dim=-1)
+                    soft_topk_vals = soft_probs.topk(2, dim=-1).values
+                    soft_margin_vals = soft_topk_vals[..., 0] - soft_topk_vals[..., 1]
+                    soft_margin_active = soft_margin_vals[mask_bool]
+                    mean_soft_margin = float(soft_margin_active.mean().item()) if soft_margin_active.numel() > 0 else 0.0
 
                     if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
                         refined_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
@@ -448,6 +459,7 @@ def overfit_shared(args, device: torch.device):
                         "matches": matches,
                         "count": active_count,
                         "margin": mean_margin,
+                        "soft_margin": mean_soft_margin,
                         "peak_ce": peak_ce_item,
                         "refined_mae": refined_mae,
                     }
@@ -481,6 +493,8 @@ def overfit_shared(args, device: torch.device):
                     "in_channels": in_channels,
                     "metrics": epoch_metrics,
                     "mean_refined_mae": mean_refined,
+                    "mean_margin": float(sum(m["margin"] for m in epoch_metrics.values()) / max(1, len(epoch_metrics))),
+                    "mean_soft_margin": float(sum(m["soft_margin"] for m in epoch_metrics.values()) / max(1, len(epoch_metrics))),
                     "selection_metric": metric_label,
                     "selection_value": metric_to_compare,
                 },
@@ -491,7 +505,7 @@ def overfit_shared(args, device: torch.device):
         if epoch % args.log_every == 0 or epoch == 1 or epoch == args.epochs:
             parts = [f"[shared] epoch {epoch:03d}/{args.epochs} mean_mae {mean_mae:.6f} refined {mean_refined:.6f} mean_peak {mean_peak:.6f}"]
             parts.extend(
-                f"{tooth}: mae={m['mae']:.6f} refined={m['refined_mae']:.6f} matches={m['matches']}/{m['count']} margin={m['margin']:.6f}"
+                f"{tooth}: mae={m['mae']:.6f} refined={m['refined_mae']:.6f} matches={m['matches']}/{m['count']} margin={m['margin']:.6f} soft_margin={m['soft_margin']:.6f}"
                 for tooth, m in epoch_metrics.items()
             )
             print(" | ".join(parts))
