@@ -346,6 +346,22 @@ def _infer_one(
     if orig_ids is None:
         print("[Warn] 10k 网格缺少 vtkOriginalCellIds / orig_cell_ids，Full 阶段将无种子，可能出现边界侵蚀")
 
+    assign_ids = None
+    assign_path = None
+    hint = meta.get("decim_cache_vtp")
+    if hint:
+        assign_path = Path(hint).with_suffix(".assign.npy")
+    if assign_path is None or not assign_path.exists():
+        assign_path = _decim_cache_path(inp_path, int(meta["target_cells"])).with_suffix(".assign.npy")
+    if assign_path.exists():
+        try:
+            assign_ids = np.load(str(assign_path)).astype(np.int64, copy=False)
+        except Exception as exc:  # noqa: BLE001
+            assign_ids = None
+            print(f"[Warn] 读取 assign 映射失败: {assign_path.name} ({exc})")
+    else:
+        print("[Warn] assign.npy 缓存缺失，播种阶段将退化为纯 KNN")
+
     lab10k, lab_full, logs = postprocess_6k_10k_full(
         pos6=pos6_mm,
         logits6=logits6_np,
@@ -353,20 +369,13 @@ def _infer_one(
         pos_full=pos_full_mm,
         normals6=normals6,
         orig_cell_ids=orig_ids,
+        assign_ids=assign_ids,
         cfg=cfg,
     )
     print(f"[Post] conf10_mean={logs.get('conf10_mean', -1):.3f}, seed_ratio={logs.get('seed_ratio', 0.0):.3f}")
     if exact_replay:
-        assign_path = None
-        hint = meta.get("decim_cache_vtp")
-        if hint:
-            assign_path = Path(hint).with_suffix(".assign.npy")
-        if assign_path is None or not assign_path.exists():
-            assign_path = _decim_cache_path(inp_path, int(meta["target_cells"])).with_suffix(".assign.npy")
-        if assign_path.exists():
-            assign_ids = np.load(str(assign_path)).astype(np.int64, copy=False)
-            if assign_ids.shape[0] == pos_full_mm.shape[0]:
-                lab_full = lab10k[assign_ids]
+        if assign_ids is not None and assign_ids.shape[0] == pos_full_mm.shape[0]:
+            lab_full = lab10k[assign_ids]
 
     # 保存着色
     out_10k = out_dir / f"{stem}_10k_colored.vtp"

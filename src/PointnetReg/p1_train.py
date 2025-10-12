@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse, random, time
+from shutil import copy2
 from typing import Optional
 
 import torch
@@ -9,6 +10,10 @@ from torch.utils.data import DataLoader, random_split
 
 from p0_dataset import DatasetConfig, P0PointNetRegDataset, collate_p0
 from pointnetreg import PointNetReg
+
+POINTNETREG_ROOT = Path("outputs/pointnetreg")
+DEFAULT_CHECKPOINT_ROOT = POINTNETREG_ROOT / "checkpoints"
+FINAL_PT_DIR = POINTNETREG_ROOT / "final_pt"
 
 DEFAULT_TOOTH_IDS = [
     "t11","t12","t13","t14","t15","t16","t17",
@@ -210,38 +215,39 @@ def train_all_teeth(args, device: torch.device) -> None:
                 landmarks_gt = batch.get("landmarks")
                 if landmarks_gt is not None:
                     landmarks_gt = landmarks_gt.to(device, non_blocking=True)
-                landmarks_gt = torch.nan_to_num(landmarks_gt, nan=0.0)
-            optim.zero_grad(set_to_none=True)
-            with autocast(device.type, enabled=device.type == "cuda"):
-                logits = model(x, tooth_id=tooth)
-                probs = torch.sigmoid(logits)
-                loss_target = y
-                if args.label_gamma != 1.0:
-                    loss_target = torch.clamp(y.pow(args.label_gamma), 0.0, 1.0)
-                weight = torch.pow(loss_target, args.loss_power) + args.loss_eps
-                weight = weight * mask_exp
-                loss_map = mse_loss(probs, loss_target)
-                denom = torch.clamp(weight.sum(), min=1e-12)
-                heatmap_loss = (loss_map * weight).sum() / denom
-                loss = args.heatmap_loss_weight * heatmap_loss
-                gt_idx = torch.argmax(y, dim=-1)
-                if landmarks_gt is None:
-                    src_pos = pos if pos is not None else x[:, :3, :]
-                    landmarks_gt = _gather_points(src_pos, gt_idx)
+                    landmarks_gt = torch.nan_to_num(landmarks_gt, nan=0.0)
 
-                coord_loss_val = torch.tensor(0.0, device=device)
-                if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
-                    pred_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
-                    coord_diff = pred_coords - landmarks_gt
-                    coord_loss_val = (coord_diff.abs() * mask_exp).sum() / torch.clamp(mask_exp.sum(), min=1e-12)
-                    loss = loss + args.coord_loss_weight * coord_loss_val
+                optim.zero_grad(set_to_none=True)
+                with autocast(device.type, enabled=device.type == "cuda"):
+                    logits = model(x, tooth_id=tooth)
+                    probs = torch.sigmoid(logits)
+                    loss_target = y
+                    if args.label_gamma != 1.0:
+                        loss_target = torch.clamp(y.pow(args.label_gamma), 0.0, 1.0)
+                    weight = torch.pow(loss_target, args.loss_power) + args.loss_eps
+                    weight = weight * mask_exp
+                    loss_map = mse_loss(probs, loss_target)
+                    denom = torch.clamp(weight.sum(), min=1e-12)
+                    heatmap_loss = (loss_map * weight).sum() / denom
+                    loss = args.heatmap_loss_weight * heatmap_loss
+                    gt_idx = torch.argmax(y, dim=-1)
+                    if landmarks_gt is None:
+                        src_pos = pos if pos is not None else x[:, :3, :]
+                        landmarks_gt = _gather_points(src_pos, gt_idx)
 
-                if args.peak_ce > 0.0:
-                    active_flat = mask_exp.view(-1) > 0.5
-                    if active_flat.any():
-                        logits_flat = logits.view(-1, logits.shape[-1])[active_flat]
-                        gt_flat = gt_idx.view(-1)[active_flat]
-                        loss = loss + args.peak_ce * torch.nn.functional.cross_entropy(logits_flat, gt_flat)
+                    coord_loss_val = torch.tensor(0.0, device=device)
+                    if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
+                        pred_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                        coord_diff = pred_coords - landmarks_gt
+                        coord_loss_val = (coord_diff.abs() * mask_exp).sum() / torch.clamp(mask_exp.sum(), min=1e-12)
+                        loss = loss + args.coord_loss_weight * coord_loss_val
+
+                    if args.peak_ce > 0.0:
+                        active_flat = mask_exp.view(-1) > 0.5
+                        if active_flat.any():
+                            logits_flat = logits.view(-1, logits.shape[-1])[active_flat]
+                            gt_flat = gt_idx.view(-1)[active_flat]
+                            loss = loss + args.peak_ce * torch.nn.functional.cross_entropy(logits_flat, gt_flat)
                 scaler.scale(loss).backward()
                 scaler.unscale_(optim)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -251,7 +257,7 @@ def train_all_teeth(args, device: torch.device) -> None:
 
                 with torch.no_grad():
                     mask_bool = mask > 0.5
-                    pred_idx = torch.argmax(probs, dim=-1)
+                    pred_idx = torch.argmax(logits, dim=-1)
                     gt_idx = torch.argmax(y, dim=-1)
                     pred_pts = _gather_points(x[:, :3, :], pred_idx)
                     gt_pts = _gather_points(x[:, :3, :], gt_idx)
@@ -275,8 +281,8 @@ def train_all_teeth(args, device: torch.device) -> None:
                         if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
                             refined_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
                             coord_errors = torch.norm(refined_coords - landmarks_gt, dim=-1)
-                            coord_active = coord_errors[active]
-                            refined_sum += float(coord_active.sum().item())
+                            refined_active = coord_errors[active]
+                            refined_sum += float(refined_active.sum().item())
                             refined_hit05 += int(((coord_errors <= 0.5) & active).sum().item())
                             refined_hit10 += int(((coord_errors <= 1.0) & active).sum().item())
                         else:
@@ -359,7 +365,7 @@ def train_all_teeth(args, device: torch.device) -> None:
                         landmarks_gt = _gather_points(src_pos, gt_idx)
 
                     mask_bool = mask > 0.5
-                    pred_idx = torch.argmax(probs, dim=-1)
+                    pred_idx = torch.argmax(logits, dim=-1)
                     pred_pts = _gather_points(x[:, :3, :], pred_idx)
                     gt_pts = _gather_points(x[:, :3, :], gt_idx)
                     errors = torch.norm(pred_pts - gt_pts, dim=-1)
@@ -490,6 +496,12 @@ def train_all_teeth(args, device: torch.device) -> None:
         f"last -> {out_dir/'last.pt'}"
     )
 
+    FINAL_PT_DIR.mkdir(parents=True, exist_ok=True)
+    for name in ("best_mse.pt", "best_mae.pt", "last.pt"):
+        src = out_dir / name
+        if src.exists():
+            copy2(src, FINAL_PT_DIR / name)
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -505,7 +517,7 @@ def parse_args():
     parser.add_argument("--max_val_samples", type=int, default=None, help="Limit number of validation samples per tooth.")
     parser.add_argument("--augment", action="store_true")
     parser.add_argument("--case", type=str, default=None, help="Restrict to a specific case ID (e.g. 001).")
-    parser.add_argument("--out_dir", type=str, default="runs_pointnetreg")
+    parser.add_argument("--out_dir", type=str, default=str(DEFAULT_CHECKPOINT_ROOT))
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--log_every", type=int, default=1)
     parser.add_argument("--disable_tnet", action="store_true", help="Disable TNet alignment.")

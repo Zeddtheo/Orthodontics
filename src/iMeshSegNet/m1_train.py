@@ -1,4 +1,4 @@
-﻿# module1_train.py
+# module1_train.py
 # 训练 iMeshSegNet（EdgeConv 版本）——显式位置输入、GDL+加权CE、AMP+clip、Cosine LR 与可重复追踪签名。
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ import argparse
 import csv
 import math
 import time
+from shutil import copy2
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -35,7 +36,10 @@ from m0_dataset import (
     load_stats,
     set_seed,
 )
-from imeshsegnet import iMeshSegNet
+from imeshsegnet import iMeshSegNet, index_points, knn_graph
+
+SEGMENTATION_ROOT = Path("outputs/segmentation")
+FINAL_SEG_PT_DIR = SEGMENTATION_ROOT / "final_pt"
 
 try:
     from scipy.optimize import linear_sum_assignment
@@ -76,18 +80,24 @@ class FocalTverskyLoss(nn.Module):
         self.beta = beta
         self.gamma = gamma
         self.eps = eps
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        weights: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         probs = F.softmax(logits, dim=1)
         onehot = F.one_hot(targets, num_classes=probs.size(1)).permute(0, 2, 1).float()
-        tp = (probs * onehot).sum(dim=(0, 2))
-        fp = (probs * (1 - onehot)).sum(dim=(0, 2))
-        fn = ((1 - probs) * onehot).sum(dim=(0, 2))
+        if weights is not None:
+            w = weights.unsqueeze(1).float()
+        else:
+            w = 1.0
+        tp = (w * probs * onehot).sum(dim=(0, 2))
+        fp = (w * probs * (1 - onehot)).sum(dim=(0, 2))
+        fn = (w * (1 - probs) * onehot).sum(dim=(0, 2))
         tversky = (tp + self.eps) / (tp + self.alpha * fp + self.beta * fn + self.eps)
         focal_tversky = torch.pow(1 - tversky.mean(), self.gamma)
         return focal_tversky
-
-
 def build_ce_class_weights(hist: np.ndarray, clip_min: float = 0.3, clip_max: float = 3.0) -> np.ndarray:
     """Compute inverse-frequency CE weights with clipping & mean normalisation.
     
@@ -191,11 +201,16 @@ class Trainer:
         self.best_epoch = 0
 
         self.dice_loss = GeneralizedDiceLoss().to(self.device)
-        weight_tensor = None
+        self.ce_weight_tensor: Optional[torch.Tensor] = None
         if self.config.ce_class_weights is not None:
-            weight_tensor = torch.tensor(self.config.ce_class_weights, dtype=torch.float32)
-        self.ce_loss = nn.CrossEntropyLoss(weight=weight_tensor).to(self.device)
+            self.ce_weight_tensor = torch.tensor(
+                self.config.ce_class_weights,
+                dtype=torch.float32,
+                device=self.device,
+            )
         self.focal_tversky_loss = FocalTverskyLoss().to(self.device)
+        self.boundary_lambda = float(getattr(self.config, "boundary_lambda", 0.0))
+        self.boundary_knn_k = int(getattr(self.config, "boundary_knn_k", 12))
 
     def _build_checkpoint_payload(self) -> dict:
         mean = np.asarray(self.stats_mean, dtype=np.float32)
@@ -251,11 +266,47 @@ class Trainer:
         payload = self._build_checkpoint_payload()
         torch.save(payload, path)
 
+    def _compute_ce_loss(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        point_weights: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        weight = self.ce_weight_tensor
+        loss_map = F.cross_entropy(
+            logits,
+            targets,
+            weight=weight,
+            reduction="none",
+        )
+        if point_weights is None:
+            return loss_map.mean()
+        weights = point_weights.float()
+        loss = torch.sum(loss_map * weights) / torch.clamp(weights.sum(), min=1e-6)
+        return loss
+
+    def _compute_boundary_weights(
+        self,
+        targets: torch.Tensor,
+        pos: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        if self.boundary_lambda <= 0:
+            return None
+        k = max(2, self.boundary_knn_k)
+        with torch.no_grad():
+            idx = knn_graph(pos, k)
+            target_float = targets.unsqueeze(1).float()
+            neighbors = index_points(target_float, idx).squeeze(1).long()
+            boundary_mask = neighbors.ne(targets.unsqueeze(-1)).any(dim=-1)
+            weights = torch.ones_like(targets, dtype=torch.float32)
+            weights += boundary_mask.float() * self.boundary_lambda
+        return weights
+
     def _run_epoch(
         self,
         loader: DataLoader,
         is_train: bool,
-    ) -> Tuple[float, float, float, float, float, float, float, List[Tuple[int, int, int]]]:
+    ) -> Tuple[float, float, float, float, float, float, float, List[Tuple[int, int, int]], Optional[List[float]]]:
         self.model.train(mode=is_train)
         total_loss = 0.0
         preds_all = []
@@ -275,14 +326,16 @@ class Trainer:
                 assert pos.dim() == 3 and pos.size(1) == 3, "pos must be (B,3,N) in arch frame"
                 self._checked_shapes = True
 
-            # **关键修改：验证阶段添加 no_grad() 优化**
-            # ========== 快改开关4：损失权重平衡 ==========
+            boundary_weights = None
+            if is_train and self.boundary_lambda > 0:
+                boundary_weights = self._compute_boundary_weights(y, pos)
+
             if not is_train:
                 with torch.no_grad():
                     with autocast(self.device.type, enabled=self.amp_enabled):
                         logits = self.model(x, pos)
                         loss_dice = self.dice_loss(logits, y)
-                        loss_ce = self.ce_loss(logits, y)
+                        loss_ce = self._compute_ce_loss(logits, y)
                         loss_ft = self.focal_tversky_loss(logits, y)
                         loss = 0.2 * loss_dice + 0.8 * loss_ce + 0.5 * loss_ft
             else:
@@ -290,8 +343,8 @@ class Trainer:
                 with autocast(self.device.type, enabled=self.amp_enabled):
                     logits = self.model(x, pos)
                     loss_dice = self.dice_loss(logits, y)
-                    loss_ce = self.ce_loss(logits, y)
-                    loss_ft = self.focal_tversky_loss(logits, y)
+                    loss_ce = self._compute_ce_loss(logits, y, boundary_weights)
+                    loss_ft = self.focal_tversky_loss(logits, y, weights=boundary_weights)
                     
                     # ========== 修复2: STN 正交正则（防止越位变形）==========
                     stn_reg = 0.0
@@ -360,16 +413,20 @@ class Trainer:
         num_classes = int(num_classes)
         dsc, sen, ppv, cm = calculate_metrics(preds_tensor, targets_tensor, num_classes)
 
+        cm_float = cm.astype(np.float64) if cm.size > 0 else np.zeros((num_classes, num_classes), dtype=np.float64)
+        tp_vec = np.diag(cm_float)
+        fp_vec = cm_float.sum(axis=0) - tp_vec
+        fn_vec = cm_float.sum(axis=1) - tp_vec
+        denom = 2 * tp_vec + fp_vec + fn_vec
+        with np.errstate(divide="ignore", invalid="ignore"):
+            per_class_dsc = np.where(denom > 0, (2 * tp_vec) / denom, np.nan)
+
         perm_dsc = float("nan")
         top_confusions: List[Tuple[int, int, int]] = []
         if not is_train and cm.size > 0:
-            cm_float = cm.astype(np.float64)
-            tp_vec = np.diag(cm_float)
-            fp_vec = cm_float.sum(axis=0) - tp_vec
-            fn_vec = cm_float.sum(axis=1) - tp_vec
             with np.errstate(divide="ignore", invalid="ignore"):
-                denom = 2 * tp_vec[:, None] + fp_vec[None, :] + fn_vec[:, None]
-                dice_matrix = np.where(denom > 0, 2 * cm_float / denom, 0.0)
+                denom_matrix = 2 * tp_vec[:, None] + fp_vec[None, :] + fn_vec[:, None]
+                dice_matrix = np.where(denom_matrix > 0, 2 * cm_float / denom_matrix, 0.0)
             if linear_sum_assignment is not None:
                 row_idx, col_idx = linear_sum_assignment(-dice_matrix)
                 perm_dsc = float(np.mean(dice_matrix[row_idx, col_idx]))
@@ -393,7 +450,9 @@ class Trainer:
         avg_bg_ratio = float(np.mean(bg_ratios)) if bg_ratios else 0.0
         avg_entropy = float(np.mean(entropies)) if entropies else 0.0
 
-        return avg_loss, dsc, sen, ppv, avg_bg_ratio, avg_entropy, perm_dsc, top_confusions
+        return avg_loss, dsc, sen, ppv, avg_bg_ratio, avg_entropy, perm_dsc, top_confusions, (
+            per_class_dsc.tolist() if cm.size > 0 else None
+        )
 
     def train(self) -> None:
         with open(self.log_path, "w", newline="", encoding="utf-8") as f:
@@ -406,25 +465,54 @@ class Trainer:
                 torch.cuda.reset_peak_memory_stats(self.device)
 
             dataset_obj = getattr(self.train_loader, "dataset", None)
-            if dataset_obj is not None and hasattr(dataset_obj, "augment"):
-                enable_aug = epoch > self.config.augment_warmup_epochs
-                current_aug = bool(getattr(dataset_obj, "augment"))
-                if current_aug != enable_aug:
-                    setattr(dataset_obj, "augment", enable_aug)
-                    state = "enabled" if enable_aug else "disabled"
-                    print(f"[Data] Augmentation {state} at epoch {epoch}")
+            aug_stage = None
+            if dataset_obj is not None and hasattr(dataset_obj, "set_augment_stage"):
+                warm = self.config.augment_warmup_epochs
+                light_span = max(0, getattr(self.config, "augment_light_epochs", 0))
+                aug_stage = "off"
+                if epoch > warm:
+                    if light_span > 0 and epoch <= warm + light_span:
+                        aug_stage = "light"
+                    else:
+                        aug_stage = "full"
+                changed = dataset_obj.set_augment_stage(aug_stage)
+                if changed:
+                    print(f"[Data] Augmentation stage -> {aug_stage} at epoch {epoch}")
 
             epoch_start = time.time()
-            train_loss, train_dsc, train_sen, train_ppv, train_bg, train_ent, train_perm_dsc, _ = self._run_epoch(self.train_loader, is_train=True)
+            train_metrics = self._run_epoch(self.train_loader, is_train=True)
+            (
+                train_loss,
+                train_dsc,
+                train_sen,
+                train_ppv,
+                train_bg,
+                train_ent,
+                train_perm_dsc,
+                _,
+                _,
+            ) = train_metrics
             epoch_time = time.time() - epoch_start
             train_peak_mem = (
                 torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)
                 if self.amp_enabled
                 else 0.0
             )
-            val_loss, val_dsc, val_sen, val_ppv, val_bg, val_ent, val_perm_dsc, val_confusions = self._run_epoch(self.val_loader, is_train=False)
+            val_metrics = self._run_epoch(self.val_loader, is_train=False)
+            (
+                val_loss,
+                val_dsc,
+                val_sen,
+                val_ppv,
+                val_bg,
+                val_ent,
+                val_perm_dsc,
+                val_confusions,
+                val_per_class,
+            ) = val_metrics
             current_lr = self.optimizer.param_groups[0]["lr"]
             perm_display = "nan" if math.isnan(val_perm_dsc) else f"{val_perm_dsc:.4f}"
+            aug_display = f" | Aug:{aug_stage}" if aug_stage is not None else ""
 
             print(
                 f"Epoch {epoch}/{self.config.epochs} | "
@@ -433,6 +521,7 @@ class Trainer:
                 f"Val SEN: {val_sen:.4f} | Val PPV: {val_ppv:.4f} | "
                 f"Val BG%: {val_bg:.3f} | Val Ent: {val_ent:.3f} | "
                 f"Time: {epoch_time:.1f}s | PeakMem: {train_peak_mem:.1f}MB | LR: {current_lr:.6f}"
+                f"{aug_display}"
             )
             if val_confusions:
                 conf_preview = ", ".join(
@@ -440,6 +529,13 @@ class Trainer:
                     for src, dst, cnt in val_confusions[:3]
                 )
                 print(f"    Top confusions: {conf_preview}")
+            if val_per_class:
+                arr = np.asarray(val_per_class, dtype=np.float64)
+                valid_idx = np.where(~np.isnan(arr))[0]
+                if valid_idx.size > 0:
+                    worst = valid_idx[np.argsort(arr[valid_idx])[:3]]
+                    worst_str = ", ".join(f"{idx}:{arr[idx]:.3f}" for idx in worst)
+                    print(f"    Per-class DSC (worst): {worst_str}")
 
             with open(self.log_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
@@ -459,6 +555,13 @@ class Trainer:
                 self.writer.add_scalar("diagnostics/train_entropy", train_ent, epoch)
                 self.writer.add_scalar("diagnostics/val_bg_ratio", val_bg, epoch)
                 self.writer.add_scalar("diagnostics/val_entropy", val_ent, epoch)
+                if val_per_class:
+                    for cls_idx, value in enumerate(val_per_class):
+                        if math.isnan(value):
+                            continue
+                        self.writer.add_scalar(f"metrics/per_class_dsc/{cls_idx}", float(value), epoch)
+                if aug_stage is not None:
+                    self.writer.add_text("data/augment_stage", aug_stage, epoch)
                 self.writer.add_scalar("lr", current_lr, epoch)
                 self.writer.add_scalar("time/epoch_seconds", epoch_time, epoch)
                 if self.amp_enabled:
@@ -514,7 +617,10 @@ class TrainConfig:
     num_classes: int = SEG_NUM_CLASSES
     ce_class_weights: Optional[Sequence[float]] = None
     enable_amp: bool = True
-    augment_warmup_epochs: int = 12
+    augment_warmup_epochs: int = 20
+    augment_light_epochs: int = 6
+    boundary_lambda: float = 0.6
+    boundary_knn_k: int = 12
     early_stop_patience: int = 18
 
     log_dir: Path = field(init=False)
@@ -538,6 +644,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-lr", type=float, help="Minimum learning rate for the cosine scheduler.")
     parser.add_argument("--weight-decay", type=float, help="Optimizer weight decay.")
     parser.add_argument("--disable-amp", action="store_true", help="Disable automatic mixed precision even when CUDA is available.")
+    parser.add_argument("--augment-warmup-epochs", type=int, help="Epochs to keep augmentation disabled (Gate-1 cold start).")
+    parser.add_argument("--augment-light-epochs", type=int, help="Epoch count for mirror+jitter light augmentation before full augment.")
+    parser.add_argument("--boundary-lambda", type=float, help="Extra loss multiplier (λ) for boundary cells.")
+    parser.add_argument("--boundary-knn", type=int, help="k used for boundary-aware neighborhood weighting.")
     return parser.parse_args()
 
 
@@ -562,6 +672,14 @@ def main() -> None:
         config.min_lr = args.min_lr
     if args.weight_decay is not None:
         config.weight_decay = args.weight_decay
+    if args.augment_warmup_epochs is not None:
+        config.augment_warmup_epochs = args.augment_warmup_epochs
+    if args.augment_light_epochs is not None:
+        config.augment_light_epochs = args.augment_light_epochs
+    if args.boundary_lambda is not None:
+        config.boundary_lambda = args.boundary_lambda
+    if args.boundary_knn is not None:
+        config.boundary_knn_k = args.boundary_knn
     if args.disable_amp:
         config.enable_amp = False
 
@@ -668,6 +786,11 @@ def main() -> None:
     )
     trainer.train()
 
+    FINAL_SEG_PT_DIR.mkdir(parents=True, exist_ok=True)
+    for name in ("best.pt", "last.pt"):
+        src = config.checkpoint_dir / name
+        if src.exists():
+            copy2(src, FINAL_SEG_PT_DIR / name)
 
 if __name__ == "__main__":
     main()

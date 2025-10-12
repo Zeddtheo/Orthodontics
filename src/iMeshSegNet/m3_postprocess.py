@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pyvista as pv
@@ -28,6 +28,7 @@ class PPConfig:
     min_component_size: int = 500
     clean_component_neighbors: int = 12
     min_component_size_full: int = 1200
+    enforce_single_component: bool = True
 
 
 def softmax_np(logits: np.ndarray) -> np.ndarray:
@@ -37,7 +38,6 @@ def softmax_np(logits: np.ndarray) -> np.ndarray:
 
 
 # ==== NEW: helper for kNN edge list (undirected, unique) ====
-from typing import List
 from sklearn.neighbors import NearestNeighbors
 
 def _knn_edges(pos_mm: np.ndarray, k: int) -> np.ndarray:
@@ -470,6 +470,69 @@ def _cleanup_small_components_full(
     return out
 
 
+def _enforce_single_component(
+    pos: np.ndarray,
+    labels: np.ndarray,
+    k: int = 12,
+    protect_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    if labels is None or labels.size == 0:
+        return labels
+    N = labels.shape[0]
+    if N == 0:
+        return labels
+    unique_classes = [int(cls) for cls in np.unique(labels) if int(cls) > 0]
+    if not unique_classes:
+        return labels
+    k_eff = max(2, min(k, N))
+    nn = NearestNeighbors(n_neighbors=k_eff, algorithm="auto")
+    nn.fit(pos)
+    neighbors = nn.kneighbors(return_distance=False)
+    out = labels.astype(np.int32, copy=True)
+    protect = None
+    if protect_mask is not None and protect_mask.shape[0] == N:
+        protect = protect_mask.astype(bool)
+
+    for cls in unique_classes:
+        idx_cls = np.where(out == cls)[0]
+        if idx_cls.size == 0:
+            continue
+        visited = np.zeros(N, dtype=bool)
+        components: List[np.ndarray] = []
+        for start in idx_cls:
+            if visited[start]:
+                continue
+            stack = [int(start)]
+            comp = []
+            visited[start] = True
+            while stack:
+                u = stack.pop()
+                comp.append(u)
+                for v in neighbors[u]:
+                    if not visited[v] and out[v] == cls:
+                        visited[v] = True
+                        stack.append(int(v))
+            components.append(np.asarray(comp, dtype=np.int64))
+        if len(components) <= 1:
+            continue
+        components.sort(key=lambda c: c.size, reverse=True)
+        for comp_arr in components[1:]:
+            if comp_arr.size == 0:
+                continue
+            if protect is not None and np.any(protect[comp_arr]):
+                continue
+            neigh_labels = out[neighbors[comp_arr].reshape(-1)]
+            neigh_labels = neigh_labels[neigh_labels != cls]
+            if neigh_labels.size == 0:
+                majority = 0
+            else:
+                majority = int(np.bincount(neigh_labels, minlength=int(out.max()) + 1).argmax())
+                if majority == cls:
+                    majority = 0
+            out[comp_arr] = majority
+    return out
+
+
 def postprocess_6k_10k_full(
     pos6: np.ndarray,
     logits6: np.ndarray,
@@ -478,6 +541,7 @@ def postprocess_6k_10k_full(
     *,
     normals6: Optional[np.ndarray] = None,
     orig_cell_ids: Optional[np.ndarray],
+    assign_ids: Optional[np.ndarray] = None,
     cfg: PPConfig,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
     logs: Dict[str, float] = {}
@@ -536,6 +600,21 @@ def postprocess_6k_10k_full(
     mask_knn = conf_knn >= float(cfg.seed_conf_th)
     seed_full[mask_knn] = labels_knn[mask_knn]
 
+    # (C) assign.npy 播种映射
+    if assign_ids is not None:
+        assign_arr = np.asarray(assign_ids, dtype=np.int64)
+        if assign_arr.shape[0] == N_full:
+            valid_assign = (assign_arr >= 0) & (assign_arr < labels10.shape[0])
+            if np.any(valid_assign):
+                conf_src = conf10 if conf10 is not None else np.ones(labels10.shape[0], dtype=np.float32)
+                assign_conf = np.zeros(N_full, dtype=np.float32)
+                assign_labels = np.full(N_full, -1, dtype=np.int32)
+                assign_conf[valid_assign] = conf_src[assign_arr[valid_assign]]
+                assign_labels[valid_assign] = labels10[assign_arr[valid_assign]]
+                mask_assign = (seed_full < 0) & (assign_conf >= float(cfg.seed_conf_th))
+                if np.any(mask_assign):
+                    seed_full[mask_assign] = assign_labels[mask_assign]
+
     seed_ratio = float(np.mean(seed_full >= 0)) if N_full > 0 else 0.0
     logs["seed_ratio"] = seed_ratio
 
@@ -579,5 +658,12 @@ def postprocess_6k_10k_full(
         k=int(cfg.clean_component_neighbors),
         protect_mask=(seed_full >= 0),
     )
+    if getattr(cfg, "enforce_single_component", True):
+        pred_full = _enforce_single_component(
+            pos=pos_full,
+            labels=pred_full,
+            k=int(cfg.clean_component_neighbors),
+            protect_mask=(seed_full >= 0),
+        )
 
     return labels10.astype(np.int32, copy=False), pred_full.astype(np.int32, copy=False), logs

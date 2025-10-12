@@ -123,8 +123,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
     best_mae = float("inf")
     best_metric = float("inf")
     best_metric_label = "mae"
-    best_metric = float("inf")
-    best_metric_label = "mae"
+    best_priority = 1  # 0 = perfect match/hit/margin, 1 = otherwise
     best_path = None
     if args.save_model:
         ckpt_dir = Path(args.out_dir) / tooth_id
@@ -241,10 +240,22 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
             else:
                 metric_to_compare = mae_mm
                 metric_label = "mae"
-            if args.save_model and metric_to_compare < best_metric:
+            refined_success = (refined_hit05 == total)
+            success = (
+                matches == total
+                and hit05 == total
+                and refined_success
+                and mean_margin >= args.margin_threshold
+            )
+            current_priority = 0 if success else 1
+            if args.save_model and (
+                current_priority < best_priority
+                or (current_priority == best_priority and metric_to_compare < best_metric)
+            ):
                 best_metric = metric_to_compare
                 best_metric_label = metric_label
                 best_mae = mae_mm
+                best_priority = current_priority
                 torch.save(
                     {
                         "model": model.state_dict(),
@@ -269,6 +280,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                         "mean_soft_margin": mean_soft_margin,
                         "selection_metric": best_metric_label,
                         "selection_value": metric_to_compare,
+                        "selection_priority": current_priority,
                     },
                     best_path,
                 )
@@ -300,6 +312,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
                 "in_channels": sample["x"].shape[0],
                 "num_landmarks": sample["y"].shape[0],
                 "selection_metric": best_metric_label,
+                "selection_priority": best_priority,
             },
             best_path,
         )
@@ -546,7 +559,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=2025, help="Random seed.")
     parser.add_argument("--log_every", type=int, default=10, help="Log frequency.")
     parser.add_argument("--save_model", action="store_true", help="Save the trained model.")
-    parser.add_argument("--out_dir", type=str, default="outputs/landmarks/overfit", help="Output directory for saving models.")
+    parser.add_argument("--out_dir", type=str, default="outputs/pointnetreg/overfit", help="Output directory for saving models.")
     parser.add_argument("--use_tnet", action="store_true", help="Enable TNet alignment (default disabled).")
     parser.add_argument("--loss_power", type=float, default=2.0, help="Exponent applied to target heatmaps for weighted MSE (>=0).")
     parser.add_argument("--loss_eps", type=float, default=1e-3, help="Stability term added to the weighted MSE denominator.")
@@ -555,6 +568,7 @@ def parse_args():
     parser.add_argument("--coord_loss_weight", type=float, default=0.0, help="Weight for soft-argmax coordinate L1 loss.")
     parser.add_argument("--coord_temperature", type=float, default=1.0, help="Temperature for soft-argmax expectation (<=0 defaults to 1.0).")
     parser.add_argument("--shared_model", action="store_true", help="Overfit all specified teeth with a shared backbone + multiple heads.")
+    parser.add_argument("--margin_threshold", type=float, default=0.6, help="Margin (logit space) threshold treated as perfect match when saving best checkpoint.")
 
     args = parser.parse_args()
     tokens: list[str] = []

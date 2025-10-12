@@ -9,6 +9,10 @@ from torch.utils.data import DataLoader
 from p0_dataset import DatasetConfig, P0PointNetRegDataset, collate_p0
 from pointnetreg import PointNetReg
 
+_POINTNETREG_ROOT = Path("outputs/pointnetreg")
+DEFAULT_CKPT_ROOT = _POINTNETREG_ROOT / "checkpoints"
+DEFAULT_INFER_OUT = _POINTNETREG_ROOT / "infer"
+
 DEFAULT_TOOTH_IDS = [
     "t11","t12","t13","t14","t15","t16","t17",
     "t21","t22","t23","t24","t25","t26","t27",
@@ -81,7 +85,7 @@ def infer_one_tooth(
     features="pn",
     batch_size=8,
     workers=2,
-    out_dir="runs_infer",
+    out_dir=DEFAULT_INFER_OUT,
     landmark_json=None,
     use_tnet=False,
     export_roi_ply=False,
@@ -283,12 +287,12 @@ def infer_one_tooth(
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=str, default="datasets/p0_npz")
-    parser.add_argument("--ckpt_root", type=str, default="outputs/landmarks/overfit")
+    parser.add_argument("--ckpt_root", type=str, default=str(DEFAULT_CKPT_ROOT))
     parser.add_argument("--tooth", type=str, default="t31")
     parser.add_argument("--features", type=str, choices=["pn", "xyz"], default="pn")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=2)
-    parser.add_argument("--out_dir", type=str, default="runs_infer")
+    parser.add_argument("--out_dir", type=str, default=str(DEFAULT_INFER_OUT))
     parser.add_argument("--landmark_json", type=str, default="landmark_def.json")
     parser.add_argument(
         "--use_tnet",

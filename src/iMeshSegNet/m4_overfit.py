@@ -224,7 +224,7 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
         raise FileNotFoundError(f"样本文件不存在: {sample_file}")
     
     # 加载统计信息（优先复用缓存，缺失则就地计算）
-    stats_path = Path("outputs/overfit/_stats_sample.npz")
+    stats_path = Path("outputs/segmentation/overfit/_stats_sample.npz")
     if stats_path.exists():
         with np.load(stats_path) as stats:
             mean = stats["mean"].astype(np.float32, copy=False)
@@ -263,7 +263,7 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     
     # 💾 保存训练侧数组（用于与推理对比）
     # 注意：features 和 pos 格式是 (C, N)，需要转置为 (N, C) 以便对比
-    train_arrays_path = Path("outputs/overfit/_train_arrays.npz")
+    train_arrays_path = Path("outputs/segmentation/overfit/_train_arrays.npz")
     train_arrays_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(str(train_arrays_path),
              feats=features.transpose(0, 1).numpy(),  # (15, N) -> (N, 15)
@@ -273,7 +273,7 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     
     # 🔬 保存训练时的采样索引（用于推理端复用）
     if hasattr(single_dataset, "sample_indices"):
-        train_ids_path = Path("outputs/overfit/_train_ids.npy")
+        train_ids_path = Path("outputs/segmentation/overfit/_train_ids.npy")
         np.save(str(train_ids_path), np.asarray(single_dataset.sample_indices, dtype=np.int64))
         print(f"💾 保存训练采样索引: {train_ids_path} (shape: {np.asarray(single_dataset.sample_indices).shape})")
         single_dataset.train_ids_path = train_ids_path.resolve()
@@ -605,7 +605,7 @@ class OverfitTrainer:
         # 构建完整的 checkpoint
         single_dataset = getattr(self.dataloader, "dataset", None)
         train_ids_path_attr = getattr(single_dataset, "train_ids_path", None) if single_dataset is not None else None
-        train_ids_path = Path(train_ids_path_attr) if train_ids_path_attr else Path("outputs/overfit/_train_ids.npy")
+        train_ids_path = Path(train_ids_path_attr) if train_ids_path_attr else Path("outputs/segmentation/overfit/_train_ids.npy")
         train_arrays_attr = getattr(single_dataset, "train_arrays_path", None) if single_dataset is not None else None
         train_arrays_path = Path(train_arrays_attr) if train_arrays_attr else None
         decim_hint = getattr(single_dataset, "decim_cache_vtp", None) if single_dataset is not None else None
@@ -990,7 +990,7 @@ def main():
     trainer = OverfitTrainer(model, dataloader, num_classes, device, mean, std)
     
     # 输出目录
-    output_dir = Path("outputs/overfit") / args.sample
+    output_dir = Path("outputs/segmentation/overfit") / args.sample
     
     # 开始训练
     start_time = time.time()

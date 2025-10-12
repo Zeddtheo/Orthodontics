@@ -282,8 +282,14 @@ def random_transform(points: np.ndarray) -> np.ndarray:
 
     rot = _rot("z", psi) @ _rot("y", phi) @ _rot("x", theta)
     scale = random.uniform(0.95, 1.05)
-    jitter = np.random.normal(0.0, 0.005, size=points.shape)
+    jitter = np.random.normal(0.0, 0.005, size=points.shape).astype(np.float32, copy=False)
     return (points @ rot.T) * scale + jitter
+
+
+def light_jitter(points: np.ndarray, sigma: float = 0.002) -> np.ndarray:
+    """Apply light Gaussian jitter without rotation/scaling."""
+    jitter = np.random.normal(0.0, sigma, size=points.shape).astype(np.float32, copy=False)
+    return points + jitter
 
 
 # =============================================================================
@@ -553,20 +559,37 @@ class SegmentationDataset(Dataset):
         self.arch_frames = arch_frames
         self.target_cells = target_cells
         self.sample_cells = sample_cells
-        self.augment = augment
+        self._augment_stage = "full" if augment else "off"
         self._unit_warned = False
         self.label_mode = label_mode
         self.gingiva_src_label = gingiva_src_label
         self.gingiva_class_id = gingiva_class_id
         self.keep_void_zero = keep_void_zero
         self._single_arch_maps: Optional[Dict[str, Dict[int, int]]] = None
-        self.min_samples_per_class = 80  # 小类保底采样数量
+        self.min_samples_per_class = 160  # 小类保底采样数量（侧重边界牙）
         if self.label_mode == "single_arch_16":
             self._single_arch_maps = _build_single_arch_label_maps(
                 self.gingiva_src_label,
                 self.gingiva_class_id,
                 self.keep_void_zero,
             )
+
+    @property
+    def augment(self) -> bool:
+        return self._augment_stage != "off"
+
+    @property
+    def augment_stage(self) -> str:
+        return self._augment_stage
+
+    def set_augment_stage(self, stage: str) -> bool:
+        stage_lc = stage.lower()
+        if stage_lc not in {"off", "light", "full"}:
+            raise ValueError(f"Unsupported augment stage: {stage}")
+        if stage_lc == self._augment_stage:
+            return False
+        self._augment_stage = stage_lc
+        return True
 
     def __len__(self) -> int:
         return len(self.file_paths)
@@ -610,11 +633,14 @@ class SegmentationDataset(Dataset):
 
         mesh = mesh.triangulate()
 
-        if self.augment:
+        if self._augment_stage != "off":
             if random.random() > 0.5:
                 mesh.points[:, 0] *= -1
                 mesh = mesh.flip_faces()
-            mesh.points = random_transform(mesh.points)
+            if self._augment_stage == "light":
+                mesh.points = light_jitter(mesh.points)
+            else:
+                mesh.points = random_transform(mesh.points)
 
         if mesh.n_cells > self.target_cells:
             reduction = 1.0 - (self.target_cells / mesh.n_cells)

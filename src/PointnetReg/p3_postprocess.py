@@ -13,6 +13,10 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
+POINTNETREG_ROOT = Path("outputs/pointnetreg")
+DEFAULT_INFER_ROOT = POINTNETREG_ROOT / "infer"
+DEFAULT_POST_ROOT = POINTNETREG_ROOT / "postprocess"
+
 
 VALID_TOOTH_IDS = [
     "t11","t12","t13","t14","t15","t16","t17",
@@ -648,9 +652,9 @@ def export_case_mrk(case: CaseAggregate, out_dir: Path, split_by_arch: bool = Tr
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Aggregate PointNetReg inference outputs into case-level files.")
-    parser.add_argument("--infer-root", type=Path, default=Path("runs_infer"))
+    parser.add_argument("--infer-root", type=Path, default=DEFAULT_INFER_ROOT)
     parser.add_argument("--landmark-def", type=Path, default=Path("datasets/landmarks_dataset/cooked/landmark_def.json"))
-    parser.add_argument("--out-dir", type=Path, default=Path("runs_postprocess"))
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_POST_ROOT)
     parser.add_argument("--export-csv", action="store_true")
     parser.add_argument("--export-ply", action="store_true")
     parser.add_argument("--export-mrk", action="store_true")
