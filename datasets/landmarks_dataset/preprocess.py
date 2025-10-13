@@ -246,17 +246,24 @@ def process_arch(case_id="001", arch="L", for_infer: bool = False):
 
           # 热图 + mask
           # 与论文一致：σ=5mm，默认截断 3σ；可通过 CLI 调整。
+        missing_idx = []
         if for_infer:
             y_full = np.zeros((L_t, pos.shape[0]), dtype=np.float32)
             mask = np.zeros((L_t,), dtype=np.float32)
         else:
             y_full, mask = make_heatmaps(pos, lm_xyz, valid, sigma_mm=SIGMA_MM, cutoff_sigma=CUTOFF_SIGMA)
-            if np.count_nonzero(mask) != L_t:
-                missing = L_t - int(np.count_nonzero(mask))
-                print(f"[skip] {case_id} arch={arch} FDI={fdi} 缺少 {missing} 个 landmark (期望 {L_t})")
+            valid_cnt = int(np.count_nonzero(mask))
+            if valid_cnt == 0:
+                print(f"[skip] {case_id} arch={arch} FDI={fdi} 全部 landmark 缺失，样本舍弃")
                 if npz_name.exists():
                     npz_name.unlink(missing_ok=True)
                 continue
+            if valid_cnt != L_t:
+                missing_idx = [i for i, v in enumerate(mask) if v < 0.5]
+                missing_names = [names[i] for i in missing_idx]
+                print(f"[warn] {case_id} arch={arch} FDI={fdi} 缺少 {L_t - valid_cnt} 个 landmark: {missing_names}；将用 mask=0 保留样本")
+            else:
+                missing_idx = []
 
         # 采样 N'
         sel = fps(pos, N_PRIME, start_idx=0)
@@ -288,7 +295,8 @@ def process_arch(case_id="001", arch="L", for_infer: bool = False):
                       L_t=int(L_t), L_max=int(L_MAX), sigma_mm=float(SIGMA_MM), cutoff_sigma=float(CUTOFF_SIGMA), unit="mm",
                       has_gt=not for_infer,
                       center_mm=center_vec.tolist(),
-                      bounds_mm=extent_vec.tolist())
+                      bounds_mm=extent_vec.tolist(),
+                      missing_landmarks=[names[i] for i in missing_idx] if not for_infer and missing_idx else [])
         )
         made += 1
         print(f"[ok] -> {npz_name.name}  x:{x_s.shape}  y:{y_pad.shape}  mask:{mask_pad.shape}")

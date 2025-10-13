@@ -398,12 +398,23 @@ def load_arch_frames(path: Optional[Path]) -> Dict[str, torch.Tensor]:
     return frames
 
 
-def segmentation_collate(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
-    xs, poss, ys = zip(*batch)
+def segmentation_collate(
+    batch: List[Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]]
+):
+    xs: List[torch.Tensor] = []
+    poss: List[torch.Tensor] = []
+    boundaries: List[torch.Tensor] = []
+    ys: List[torch.Tensor] = []
+    for (x, pos, boundary), y in batch:
+        xs.append(x)
+        poss.append(pos)
+        boundaries.append(boundary)
+        ys.append(y)
     x = torch.stack(xs, dim=0)
     pos = torch.stack(poss, dim=0)
+    boundary = torch.stack(boundaries, dim=0)
     y = torch.stack(ys, dim=0)
-    return (x, pos), y
+    return (x, pos, boundary), y
 
 
 @dataclass
@@ -601,6 +612,7 @@ class SegmentationDataset(Dataset):
         self.keep_void_zero = keep_void_zero
         self._single_arch_maps: Optional[Dict[str, Dict[int, int]]] = None
         self.min_samples_per_class = 160  # 小类保底采样数量（侧重边界牙）
+        self.boundary_focus_fraction = 0.4  # 采样时优先保留的边界占比
         self._mirror_pairs_single_arch: Dict[str, List[Tuple[int, int]]] = {}
         self._mirror_pairs_full: List[Tuple[int, int]] = []
         if self.label_mode == "single_arch_16":
@@ -694,7 +706,7 @@ class SegmentationDataset(Dataset):
                 swapped[right_mask] = left_cls
         return swapped if updated else labels
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
         file_path = Path(self.file_paths[idx])
         mesh = pv.read(str(file_path))
         mesh.points -= mesh.center
@@ -737,6 +749,8 @@ class SegmentationDataset(Dataset):
                 mesh = decimated
                 labels = labels[original_ids]
 
+        boundary_flags = self._compute_boundary_flags(mesh, labels)
+
         if frame_tensor is not None:
             frame_np = frame_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
             rotated_points = mesh.points.astype(np.float32, copy=False) @ frame_np.T
@@ -761,6 +775,19 @@ class SegmentationDataset(Dataset):
                 replace = cls_indices.size < quota
                 chosen = np.random.choice(cls_indices, size=quota, replace=replace)
                 required_indices.extend(chosen.tolist())
+
+            boundary_indices = np.where(boundary_flags)[0]
+            if boundary_indices.size > 0:
+                boundary_quota = int(self.sample_cells * self.boundary_focus_fraction)
+                boundary_take = min(boundary_indices.size, boundary_quota)
+                if boundary_take > 0:
+                    replace_boundary = boundary_indices.size < boundary_take
+                    boundary_choice = np.random.choice(
+                        boundary_indices,
+                        size=boundary_take,
+                        replace=replace_boundary,
+                    )
+                    required_indices.extend(boundary_choice.tolist())
 
             if required_indices:
                 required_array = np.unique(np.asarray(required_indices, dtype=np.int64))
@@ -787,6 +814,9 @@ class SegmentationDataset(Dataset):
             features = features[indices]
             pos_raw = pos_raw[indices]
             labels = labels[indices]
+            boundary_flags = boundary_flags[indices]
+        else:
+            indices = np.arange(features.shape[0], dtype=np.int64)
 
         features_tensor = torch.from_numpy(features)
         features_tensor = (features_tensor - self.mean) / self.std
@@ -795,8 +825,32 @@ class SegmentationDataset(Dataset):
         pos_tensor = torch.from_numpy(pos_raw).transpose(0, 1).contiguous()  # (3, N)
 
         labels_tensor = torch.from_numpy(labels.astype(np.int64))
+        boundary_tensor = torch.from_numpy(boundary_flags.astype(np.float32, copy=False))
 
-        return features_tensor, pos_tensor, labels_tensor
+        return (features_tensor, pos_tensor, boundary_tensor), labels_tensor
+
+    @staticmethod
+    def _compute_boundary_flags(mesh: pv.PolyData, labels: np.ndarray) -> np.ndarray:
+        faces = mesh.faces.reshape(-1, 4)[:, 1:]
+        n_cells = faces.shape[0]
+        boundary = np.zeros(n_cells, dtype=bool)
+        edge_map: Dict[Tuple[int, int], List[int]] = {}
+        for cid, tri in enumerate(faces):
+            v0, v1, v2 = map(int, tri)
+            edges = ((v0, v1), (v1, v2), (v2, v0))
+            for a, b in edges:
+                key = (a, b) if a <= b else (b, a)
+                edge_map.setdefault(key, []).append(cid)
+        for cells in edge_map.values():
+            if len(cells) == 1:
+                boundary[cells[0]] = True
+                continue
+            base_lbl = labels[cells[0]]
+            for cid in cells[1:]:
+                if labels[cid] != base_lbl:
+                    boundary[cells[0]] = True
+                    boundary[cid] = True
+        return boundary
 
 
 def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:

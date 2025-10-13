@@ -37,7 +37,7 @@ from m0_dataset import (
     load_stats,
     set_seed,
 )
-from imeshsegnet import iMeshSegNet, index_points, knn_graph
+from imeshsegnet import iMeshSegNet
 
 SEGMENTATION_ROOT = Path("outputs/segmentation")
 FINAL_SEG_PT_DIR = SEGMENTATION_ROOT / "final_pt"
@@ -296,23 +296,6 @@ class Trainer:
         loss = torch.sum(loss_map * weights) / torch.clamp(weights.sum(), min=1e-6)
         return loss
 
-    def _compute_boundary_weights(
-        self,
-        targets: torch.Tensor,
-        pos: torch.Tensor,
-    ) -> Optional[torch.Tensor]:
-        if self.boundary_lambda <= 0:
-            return None
-        k = max(2, self.boundary_knn_k)
-        with torch.no_grad():
-            idx = knn_graph(pos, k)
-            target_float = targets.unsqueeze(1).float()
-            neighbors = index_points(target_float, idx).squeeze(1).long()
-            boundary_mask = neighbors.ne(targets.unsqueeze(-1)).any(dim=-1)
-            weights = torch.ones_like(targets, dtype=torch.float32)
-            weights += boundary_mask.float() * self.boundary_lambda
-        return weights
-
     def _run_epoch(
         self,
         loader: DataLoader,
@@ -327,19 +310,21 @@ class Trainer:
         entropies = []  # ← 新增：记录预测熵
         desc = "Training" if is_train else "Validation"
 
-        for (x, pos), y in tqdm(loader, desc=desc):
+        for (x, pos, boundary), y in tqdm(loader, desc=desc):
             x = x.to(self.device, non_blocking=True)
             pos = pos.to(self.device, non_blocking=True)
             y = y.to(self.device, non_blocking=True)
+            boundary = boundary.to(self.device, non_blocking=True)
 
             if not self._checked_shapes:
                 assert x.dim() == 3 and x.size(1) == 15, "x must be (B,15,N) with z-scored features"
                 assert pos.dim() == 3 and pos.size(1) == 3, "pos must be (B,3,N) in arch frame"
+                assert boundary.shape == y.shape, "boundary mask must match label shape"
                 self._checked_shapes = True
 
             boundary_weights = None
             if is_train and self.boundary_lambda > 0:
-                boundary_weights = self._compute_boundary_weights(y, pos)
+                boundary_weights = 1.0 + boundary.float() * self.boundary_lambda
 
             if not is_train:
                 with torch.no_grad():
