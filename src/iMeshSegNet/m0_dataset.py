@@ -288,6 +288,35 @@ def _load_or_build_decimated_mm(raw_path: Path, target_cells: int) -> pv.PolyDat
             nn = NearestNeighbors(n_neighbors=1, algorithm="auto")
             nn.fit(orig_centers)
             orig_ids = nn.kneighbors(dec_centers, return_distance=False).reshape(-1).astype(np.int64)
+
+        # 二级减面：若 decimate_pro 未达到目标，追加一次非拓扑约束的减面
+        max_iter = 3
+        iter_count = 0
+        while mesh_mm.n_cells > target_cells * 1.2 and iter_count < max_iter:
+            reduction_step = 1.0 - (target_cells / float(mesh_mm.n_cells))
+            reduction_step = float(np.clip(reduction_step, 0.2, 0.95))
+            try:
+                mesh_tmp = mesh_mm.decimate_pro(
+                    reduction_step,
+                    feature_angle=30,
+                    preserve_topology=False,
+                )
+                if mesh_tmp.n_cells < mesh_mm.n_cells:
+                    mesh_mm = mesh_tmp
+                    vtk_ids = mesh_mm.cell_data.get("vtkOriginalCellIds")
+                    if vtk_ids is not None:
+                        orig_ids = np.asarray(vtk_ids, dtype=np.int64)
+                else:
+                    break
+            except Exception:
+                break
+            iter_count += 1
+
+        # 兜底：仍然过大时随机抽取 target_cells 个三角面
+        if mesh_mm.n_cells > target_cells:
+            keep = np.linspace(0, mesh_mm.n_cells - 1, target_cells, dtype=np.int64)
+            mesh_mm = mesh_mm.extract_cells(keep)
+            orig_ids = orig_ids[keep]
         if labels is not None and orig_ids.max() < labels.shape[0]:
             labels = labels[orig_ids]
         else:
@@ -975,6 +1004,9 @@ class SegmentationDataset(Dataset):
     def _compute_boundary_flags(mesh: pv.PolyData, labels: np.ndarray) -> np.ndarray:
         faces = mesh.faces.reshape(-1, 4)[:, 1:]
         n_cells = faces.shape[0]
+        labels_np = np.asarray(labels, dtype=np.int64, copy=False)
+        if labels_np.shape[0] != n_cells:
+            labels_np = np.resize(labels_np, n_cells)
         boundary = np.zeros(n_cells, dtype=bool)
         edge_map: Dict[Tuple[int, int], List[int]] = {}
         for cid, tri in enumerate(faces):
@@ -987,9 +1019,9 @@ class SegmentationDataset(Dataset):
             if len(cells) == 1:
                 boundary[cells[0]] = True
                 continue
-            base_lbl = labels[cells[0]]
+            base_lbl = labels_np[cells[0]]
             for cid in cells[1:]:
-                if labels[cid] != base_lbl:
+                if labels_np[cid] != base_lbl:
                     boundary[cells[0]] = True
                     boundary[cid] = True
         return boundary
