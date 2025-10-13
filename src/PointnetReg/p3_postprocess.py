@@ -26,10 +26,10 @@ VALID_TOOTH_IDS = [
 ]
 
 DEFAULT_THRESHOLD_TABLE: Dict[str, Dict[str, Any]] = {
-    "default": {"margin_floor": 0.55, "min_valid": 6, "presence_floor": 0.25},
-    "t27": {"margin_floor": 0.50, "min_valid": 4},
-    "t37": {"margin_floor": 0.50, "min_valid": 4},
-    "t47": {"margin_floor": 0.50, "min_valid": 4},
+    "default": {"margin_floor": 0.55, "ratio": 0.7, "presence_floor": 0.25},
+    "t27": {"margin_floor": 0.48, "ratio": 0.6},
+    "t37": {"margin_floor": 0.48, "ratio": 0.6},
+    "t47": {"margin_floor": 0.48, "ratio": 0.6},
 }
 
 DEBUG_METRIC_FIELDS = [
@@ -37,9 +37,10 @@ DEBUG_METRIC_FIELDS = [
     "tooth_id",
     "total_expected",
     "total_present",
-    "min_valid",
+    "ratio",
+    "ratio_floor",
     "margin_floor",
-    "margin_min",
+    "margin_p20",
     "margin_mean",
     "presence_floor",
     "presence_prob",
@@ -91,9 +92,9 @@ def _normalise_threshold_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
                 out["margin_floor"] = float(value)
             except (TypeError, ValueError):
                 continue
-        elif key_l in {"min_valid", "min_present", "min_count"}:
+        elif key_l in {"ratio", "min_ratio", "coverage", "coverage_ratio"}:
             try:
-                out["min_valid"] = int(value)
+                out["ratio"] = float(value)
             except (TypeError, ValueError):
                 continue
         elif key_l in {"presence_floor", "presence", "presence_min"}:
@@ -135,15 +136,19 @@ def resolve_threshold(tooth_id: str, table: Dict[str, Dict[str, Any]]) -> Dict[s
             break
     result = {
         "margin_floor": float(base.get("margin_floor", 0.0)),
-        "min_valid": int(base.get("min_valid", 0)),
+        "ratio": float(base.get("ratio", 0.7)),
         "presence_floor": float(base.get("presence_floor", 0.0)),
     }
-    if result["min_valid"] < 0:
-        result["min_valid"] = 0
     if result["margin_floor"] < 0.0:
         result["margin_floor"] = 0.0
     if result["presence_floor"] < 0.0:
         result["presence_floor"] = 0.0
+    if result["presence_floor"] > 1.0:
+        result["presence_floor"] = 1.0
+    if result["ratio"] < 0.0:
+        result["ratio"] = 0.0
+    if result["ratio"] > 1.0:
+        result["ratio"] = 1.0
     return result
 
 
@@ -185,32 +190,52 @@ def apply_quality_policy(
 ) -> Dict[str, Any]:
     thresholds = resolve_threshold(tooth_id, thresholds_table)
     margin_floor = thresholds.get("margin_floor", 0.0)
-    min_valid = thresholds.get("min_valid", 0)
+    ratio_floor = thresholds.get("ratio", 0.7)
     presence_floor = thresholds.get("presence_floor", 0.0)
 
-    present_cnt = int(tooth_flags.get("total_present", 0))
-    expected = int(tooth_flags.get("total_expected", present_cnt))
+    finite_landmarks = [
+        lm for lm in landmarks.values()
+        if lm.coord is not None and np.all(np.isfinite(lm.coord))
+    ]
+    present_cnt = len(finite_landmarks)
+    tooth_flags["total_present"] = present_cnt
+    expected = max(1, int(tooth_flags.get("total_expected", len(landmarks))))
+    coverage_ratio = float(present_cnt) / float(expected)
 
     margin_values: List[float] = []
-    for landmark in landmarks.values():
-        if landmark.margin is not None and not landmark.flags.get("missing", False):
-            margin_values.append(float(landmark.margin))
-            if margin_floor > 0.0 and float(landmark.margin) < margin_floor:
-                landmark.flags["low_margin"] = True
-    min_margin = min(margin_values) if margin_values else None
-    mean_margin = float(sum(margin_values) / len(margin_values)) if margin_values else None
+    for landmark in finite_landmarks:
+        if landmark.margin is None:
+            continue
+        margin_val = float(landmark.margin)
+        margin_values.append(margin_val)
+        if margin_floor > 0.0 and margin_val < margin_floor:
+            landmark.flags["low_margin"] = True
+    if margin_values:
+        margin_array = np.asarray(margin_values, dtype=np.float32)
+        margin_p20 = float(np.percentile(margin_array, 20))
+        mean_margin = float(margin_array.mean())
+    else:
+        margin_array = np.asarray([], dtype=np.float32)
+        margin_p20 = None
+        mean_margin = None
 
     presence_prob = extract_presence_prob(tooth_record)
     fail_reasons: List[str] = []
-    if present_cnt < min_valid:
-        fail_reasons.append("valid")
+
+    presence_fail = (
+        presence_prob is not None and presence_floor > 0.0 and presence_prob < presence_floor
+    )
+    if presence_fail:
+        fail_reasons.append("presence")
+
+    if coverage_ratio < max(0.0, ratio_floor):
+        fail_reasons.append("ratio")
+
     if margin_floor > 0.0:
         if not margin_values:
             fail_reasons.append("margin_missing")
-        elif min_margin is not None and min_margin < margin_floor:
+        elif not presence_fail and margin_p20 is not None and margin_p20 < margin_floor:
             fail_reasons.append("margin")
-    if presence_prob is not None and presence_floor > 0.0 and presence_prob < presence_floor:
-        fail_reasons.append("presence")
 
     forced = bool(fail_reasons) and force_keep
     missing = bool(fail_reasons) and not force_keep
@@ -220,6 +245,10 @@ def apply_quality_policy(
     tooth_flags["policy_failures"] = list(fail_reasons)
     tooth_flags["presence_prob"] = presence_prob
     tooth_flags["thresholds"] = thresholds
+    tooth_flags["coverage_ratio"] = coverage_ratio
+    tooth_flags["ratio_floor"] = ratio_floor
+    tooth_flags["margin_p20"] = margin_p20
+    tooth_flags["margin_mean"] = mean_margin
     if missing:
         for landmark in landmarks.values():
             landmark.coord = None
@@ -233,9 +262,10 @@ def apply_quality_policy(
         "tooth_id": tooth_id,
         "total_expected": expected,
         "total_present": tooth_flags.get("total_present", 0),
-        "min_valid": min_valid,
+        "ratio": coverage_ratio,
+        "ratio_floor": ratio_floor,
         "margin_floor": margin_floor,
-        "margin_min": min_margin,
+        "margin_p20": margin_p20,
         "margin_mean": mean_margin,
         "presence_floor": presence_floor,
         "presence_prob": presence_prob,
@@ -576,9 +606,10 @@ def aggregate_case(
                         "tooth_id": tooth_id,
                         "total_expected": len(names),
                         "total_present": 0,
-                        "min_valid": thresh.get("min_valid", 0),
+                        "ratio": 0.0,
+                        "ratio_floor": thresh.get("ratio", 0.7),
                         "margin_floor": thresh.get("margin_floor", 0.0),
-                        "margin_min": None,
+                        "margin_p20": None,
                         "margin_mean": None,
                         "presence_floor": thresh.get("presence_floor", 0.0),
                         "presence_prob": None,

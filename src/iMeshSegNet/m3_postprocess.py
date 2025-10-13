@@ -764,22 +764,15 @@ def postprocess_6k_10k_full(
     )
 
     N_full = int(pos_full.shape[0])
-    seed_full = np.full(N_full, -1, dtype=np.int32)
-    seed_conf = np.zeros(N_full, dtype=np.float32)
-
-    # (A) 直接映射种子
+    orig_ids_valid = orig_labs_valid = orig_conf_valid = None
     if orig_cell_ids is not None and orig_cell_ids.size > 0 and N_full > 0:
         mapped = np.asarray(orig_cell_ids, dtype=np.int64)
         valid = (mapped >= 0) & (mapped < N_full)
         if np.any(valid):
             idx_valid = np.nonzero(valid)[0]
-            labs_valid = labels10[idx_valid]
-            conf_valid = conf10[idx_valid] if conf10 is not None else np.ones(idx_valid.size, dtype=np.float32)
-            ids_valid = mapped[idx_valid].astype(np.int64, copy=False)
-            for oid, lab, cf in zip(ids_valid, labs_valid, conf_valid):
-                if cf > seed_conf[oid]:
-                    seed_full[oid] = int(lab)
-                    seed_conf[oid] = float(cf)
+            orig_ids_valid = mapped[idx_valid].astype(np.int64, copy=False)
+            orig_labs_valid = labels10[idx_valid]
+            orig_conf_valid = conf10[idx_valid] if conf10 is not None else np.ones(idx_valid.size, dtype=np.float32)
 
     # (B) 10k -> full 加权 KNN 种子
     labels_knn, conf_knn = knn_transfer(
@@ -794,30 +787,44 @@ def postprocess_6k_10k_full(
 
     prob_full_knn = _soft_assign_probabilities(prob10, assign_indices, assign_weights)
     used_soft = False
-    if prob_full_knn is not None and prob_full_knn.shape[0] == N_full:
+    if (
+        assign_indices is not None
+        and assign_weights is not None
+        and assign_indices.shape[0] == N_full
+        and assign_indices.shape == assign_weights.shape
+    ):
         used_soft = True
-        temp = float(getattr(cfg, 'softmax_temp_full', 1.0))
-        if abs(temp - 1.0) > 1e-3 and temp > 0.0:
-            logits_full = np.log(np.clip(prob_full_knn, 1e-6, None)) / temp
-            prob_full_knn = np.exp(logits_full)
-            prob_full_knn /= np.clip(prob_full_knn.sum(axis=1, keepdims=True), 1e-8, None)
-        knn_labels = np.argmax(prob_full_knn, axis=1).astype(np.int32)
-        knn_conf = prob_full_knn[np.arange(N_full), knn_labels].astype(np.float32)
+        vote_bins = np.zeros((N_full, num_classes), dtype=np.float32)
+        idx_range = np.arange(N_full, dtype=np.int32)
+        for k in range(assign_indices.shape[1]):
+            lbl = labels10[assign_indices[:, k]]
+            np.add.at(vote_bins, (idx_range, lbl), assign_weights[:, k])
+        knn_labels = np.argmax(vote_bins, axis=1).astype(np.int32)
+        weight_sum = vote_bins.sum(axis=1, keepdims=True)
+        knn_conf = vote_bins[np.arange(N_full), knn_labels]
+        knn_conf = np.divide(knn_conf, np.clip(weight_sum.squeeze(), 1e-8, None))
+        if prob_full_knn is not None and prob_full_knn.shape[0] == N_full:
+            vote_bins = prob_full_knn  # 保留软概率供后续调试/日志
         thresh = float(getattr(cfg, 'low_conf_threshold', 0.0))
         if thresh > 0.0:
             knn_labels = _majority_filter_low_conf(
                 pos_full, knn_labels, knn_conf, threshold=thresh, k=int(getattr(cfg, 'low_conf_neighbors', 12))
             )
-            knn_conf = prob_full_knn[np.arange(N_full), knn_labels].astype(np.float32)
+            knn_conf = np.clip(knn_conf, 0.0, 1.0)
     else:
         knn_labels = labels_knn.astype(np.int32, copy=False)
         knn_conf = conf_knn.astype(np.float32, copy=False)
 
+    seed_full = knn_labels.astype(np.int32, copy=False)
+    seed_conf = knn_conf.astype(np.float32, copy=False)
+
+    if orig_ids_valid is not None:
+        for oid, lab, cf in zip(orig_ids_valid, orig_labs_valid, orig_conf_valid):
+            if cf > seed_conf[oid]:
+                seed_full[oid] = int(lab)
+                seed_conf[oid] = float(cf)
+
     mask_knn = knn_conf >= float(cfg.seed_conf_th)
-    if np.any(mask_knn):
-        update_mask = mask_knn & (knn_conf > seed_conf)
-        seed_full[update_mask] = knn_labels[update_mask]
-        seed_conf[update_mask] = knn_conf[update_mask]
     if used_soft:
         logs['soft_seed_ratio'] = float(np.mean(mask_knn))
 
@@ -836,7 +843,7 @@ def postprocess_6k_10k_full(
                     seed_full[mask_assign] = assign_labels[mask_assign]
                     seed_conf[mask_assign] = assign_conf[mask_assign]
 
-    seed_ratio = float(np.mean(seed_full >= 0)) if N_full > 0 else 0.0
+    seed_ratio = float(np.mean(seed_conf >= float(cfg.seed_conf_th))) if N_full > 0 else 0.0
     logs['seed_ratio'] = seed_ratio
 
     # ---------- 仅对未标记空洞做半径多数 ----------
@@ -874,7 +881,7 @@ def postprocess_6k_10k_full(
         pred_full = seed_full.copy()
 
     # ---------- Full 级小连通域清理 ----------
-    protect_general = seed_conf >= float(cfg.seed_conf_th)
+    protect_general = seed_full >= 0
     pred_full = _cleanup_small_components_full(
         pos=pos_full,
         labels=pred_full,

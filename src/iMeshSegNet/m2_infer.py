@@ -269,7 +269,7 @@ def _infer_one(
     inp_path: Path,
     out_dir: Path,
     device: torch.device,
-    exact_replay: bool = False,
+    use_exact: bool = True,
 ):
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = inp_path.stem
@@ -334,7 +334,7 @@ def _infer_one(
 
     # 后处理：6k -> 10k -> full
     cfg = PPConfig()
-    if exact_replay:
+    if use_exact:
         cfg.knn_10k = 1
         cfg.knn_full = 1
         cfg.seed_conf_th = 0.0
@@ -355,10 +355,12 @@ def _infer_one(
         cfg.clean_component_neighbors = 6
         cfg.low_conf_neighbors = 6
         cfg.min_component_size = 40
-        cfg.min_component_size_full = 10
-        cfg.fill_radius = 0.2
+        cfg.min_component_size_full = 0
+        cfg.tiny_component_size = 0
+        cfg.fill_radius = 0.0
         cfg.low_conf_threshold = 0.0
         cfg.seed_conf_th = 0.95
+        cfg.svm_max_train = 0
         cfg.gingiva_dilate_iters = 0
         cfg.gingiva_label = max(int(meta.get("num_classes", 1)) - 1, 0)
         cfg.gingiva_protect_seeds = True
@@ -420,7 +422,7 @@ def _infer_one(
     )
     soft_ratio = logs.get('soft_seed_ratio', logs.get('seed_ratio', 0.0))
     print(f"[Post] conf10_mean={logs.get('conf10_mean', -1):.3f}, seed_ratio={logs.get('seed_ratio', 0.0):.3f}, soft_seed={soft_ratio:.3f}")
-    if exact_replay:
+    if use_exact:
         if assign_indices is not None and assign_weights is not None and assign_indices.shape[0] == pos_full_mm.shape[0]:
             neigh_labels = lab10k[assign_indices]
             weights = assign_weights
@@ -450,6 +452,11 @@ def main():
         action="store_true",
         help="禁用所有平滑/投票/阈值，将后处理退化为训练前向的逐点输出升采样",
     )
+    ap.add_argument(
+        "--full-postprocess",
+        action="store_true",
+        help="启用完整后处理流程（KNN 播种 + 清理）。默认使用 exact 管线。",
+    )
     args = ap.parse_args()
 
     ckpt, meta = _load_pipeline(args.ckpt, args)
@@ -462,8 +469,12 @@ def main():
     else:
         files = [args.input]
 
+    use_exact = not args.full_postprocess or args.exact_replay
+    if use_exact and not args.exact_replay:
+        print("[Info] 默认采用 exact 管线（可使用 --full-postprocess 切换回完整后处理）")
+
     for fp in files:
-        _infer_one(model, meta, fp, args.out, device, exact_replay=args.exact_replay)
+        _infer_one(model, meta, fp, args.out, device, use_exact=use_exact)
 
 if __name__ == "__main__":
     main()

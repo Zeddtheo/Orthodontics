@@ -23,6 +23,7 @@ from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import pyvista as pv
+from sklearn.neighbors import NearestNeighbors, KDTree
 
 # 添加项目路径
 sys.path.append(str(Path(__file__).parent))
@@ -86,6 +87,83 @@ def calculate_metrics(preds: torch.Tensor, labels: torch.Tensor, num_classes: in
         float(np.mean(sen_list)) if sen_list else 0.0,
         float(np.mean(ppv_list)) if ppv_list else 0.0
     )
+
+
+def _build_neighbors(pos: np.ndarray, k: int = 12) -> np.ndarray:
+    n = pos.shape[0]
+    if n <= 1:
+        return np.zeros((n, 0), dtype=np.int32)
+    k_eff = max(1, min(k, n - 1))
+    nn = NearestNeighbors(n_neighbors=k_eff, algorithm="auto")
+    nn.fit(pos)
+    neighbors = nn.kneighbors(pos, return_distance=False)
+    idx = np.tile(np.arange(n)[:, None], (1, k_eff))
+    neighbors = np.where(neighbors != idx, neighbors, -1)
+    return neighbors.astype(np.int32, copy=False)
+
+
+def _boundary_flags(labels: np.ndarray, neighbors: np.ndarray) -> np.ndarray:
+    boundary = np.zeros(labels.shape[0], dtype=bool)
+    for idx, nbrs in enumerate(neighbors):
+        for nbr in nbrs:
+            if nbr < 0:
+                continue
+            if labels[nbr] != labels[idx]:
+                boundary[idx] = True
+                break
+    return boundary
+
+
+def compute_boundary_metrics(
+    pos_mm: np.ndarray,
+    gt_labels: np.ndarray,
+    pred_labels: np.ndarray,
+    *,
+    gingiva_label: int = 15,
+    tau: float = 0.2,
+    neighbor_k: int = 12,
+) -> Tuple[float, float, float, float, float]:
+    neighbors = _build_neighbors(pos_mm, neighbor_k)
+    gt_boundary = _boundary_flags(gt_labels, neighbors)
+    pred_boundary = _boundary_flags(pred_labels, neighbors)
+
+    precision = recall = bf1 = 0.0
+    if np.any(pred_boundary) and np.any(gt_boundary):
+        tree_gt = KDTree(pos_mm[gt_boundary])
+        dist_pred, _ = tree_gt.query(pos_mm[pred_boundary], k=1, return_distance=True)
+        precision = float(np.mean(dist_pred <= tau)) if dist_pred.size else 0.0
+
+        tree_pred = KDTree(pos_mm[pred_boundary])
+        dist_gt, _ = tree_pred.query(pos_mm[gt_boundary], k=1, return_distance=True)
+        recall = float(np.mean(dist_gt <= tau)) if dist_gt.size else 0.0
+
+        if precision + recall > 0:
+            bf1 = 2 * precision * recall / (precision + recall)
+
+    gingival_mask = gt_boundary & (gt_labels != gingiva_label)
+    ger = 0.0
+    if np.any(gingival_mask):
+        ger = float(np.mean(pred_labels[gingival_mask] == gingiva_label))
+
+    leak_mask = np.zeros(gt_labels.shape[0], dtype=bool)
+    leak_target = np.zeros(gt_labels.shape[0], dtype=np.int32)
+    for idx, nbrs in enumerate(neighbors):
+        base = gt_labels[idx]
+        if base <= 0 or base == gingiva_label:
+            continue
+        for nbr in nbrs:
+            if nbr < 0:
+                continue
+            nb_lbl = gt_labels[nbr]
+            if nb_lbl > 0 and nb_lbl != gingiva_label and nb_lbl != base:
+                leak_mask[idx] = True
+                leak_target[idx] = nb_lbl
+                break
+    ilr = 0.0
+    if np.any(leak_mask):
+        ilr = float(np.mean(pred_labels[leak_mask] == leak_target[leak_mask]))
+
+    return bf1, precision, recall, ger, ilr
 
 
 DEFAULT_LABEL_MODE = "single_arch_16"
@@ -407,7 +485,10 @@ class OverfitTrainer:
             'train_bg0': [],  # 训练集背景比例
             'train_entropy': [],  # 训练集预测熵
             'val_bg0': [],  # 验证集背景比例
-            'val_entropy': []  # 验证集预测熵
+            'val_entropy': [],  # 验证集预测熵
+            'bf1': [],
+            'ger': [],
+            'ilr': []
         }
         
     def train_epoch(self) -> dict:
@@ -501,6 +582,7 @@ class OverfitTrainer:
         all_labels = []
         all_bg_ratios = []
         all_entropy = []
+        pos_mm_np: Optional[np.ndarray] = None
         
         with torch.no_grad():
             for batch_data in self.dataloader:
@@ -510,6 +592,8 @@ class OverfitTrainer:
                 features = features.to(self.device, non_blocking=True)
                 pos = pos.to(self.device, non_blocking=True)
                 labels = labels.to(self.device, non_blocking=True)
+                if pos_mm_np is None:
+                    pos_mm_np = pos_mm[0].transpose(0, 1).cpu().numpy().astype(np.float32, copy=False)
                 
                 if self.use_amp:
                     with autocast(self.device_type):
@@ -533,13 +617,26 @@ class OverfitTrainer:
         preds_tensor = torch.cat(all_preds)
         labels_tensor = torch.cat(all_labels)
         dsc, sen, ppv = calculate_metrics(preds_tensor, labels_tensor, self.num_classes)
+        bf1 = precision = recall = ger = ilr = 0.0
+        if pos_mm_np is not None and preds_tensor.shape[0] > 0:
+            bf1, precision, recall, ger, ilr = compute_boundary_metrics(
+                pos_mm_np,
+                labels_tensor[0].numpy(),
+                preds_tensor[0].numpy(),
+                gingiva_label=DEFAULT_GINGIVA_CLASS_ID,
+            )
         
         return {
             'dsc': dsc, 
             'sensitivity': sen, 
             'ppv': ppv,
             'bg_ratio': np.mean(all_bg_ratios),
-            'entropy': np.mean(all_entropy)
+            'entropy': np.mean(all_entropy),
+            'bf1': bf1,
+            'ger': ger,
+            'ilr': ilr,
+            'boundary_precision': precision,
+            'boundary_recall': recall,
         }
     
     def _save_training_evidence(self, save_dir: Path, sample_name: str):
@@ -820,6 +917,9 @@ class OverfitTrainer:
                 self.history['train_entropy'].append(train_metrics['entropy'])
                 self.history['val_bg0'].append(eval_metrics['bg_ratio'])
                 self.history['val_entropy'].append(eval_metrics['entropy'])
+                self.history['bf1'].append(eval_metrics['bf1'])
+                self.history['ger'].append(eval_metrics['ger'])
+                self.history['ilr'].append(eval_metrics['ilr'])
                 
                 # 保存最佳模型（包含完整的 pipeline 元数据契约）
                 if eval_metrics['dsc'] > best_dsc:
@@ -839,7 +939,10 @@ class OverfitTrainer:
                       f"🔍 Train BG0: {train_metrics['bg_ratio']:.3f} | "
                       f"Train Ent: {train_metrics['entropy']:.3f} | "
                       f"Val BG0: {eval_metrics['bg_ratio']:.3f} | "
-                      f"Val Ent: {eval_metrics['entropy']:.3f}", flush=True)
+                      f"Val Ent: {eval_metrics['entropy']:.3f} | "
+                      f"BF1@0.2: {eval_metrics['bf1']:.4f} | "
+                      f"GER: {eval_metrics['ger']*100:.2f}% | "
+                      f"ILR: {eval_metrics['ilr']*100:.2f}%", flush=True)
             else:
                 # 快速模式：只打印训练指标，不做评估
                 if epoch % 5 == 0:  # 每 5 个 epoch 打印一次
@@ -913,12 +1016,26 @@ class OverfitTrainer:
         plt.legend()
         plt.grid(True, alpha=0.3)
         
-        # DSC vs Loss散点图
-        plt.subplot(3, 3, 6)
-        plt.scatter(self.history['loss'], self.history['dsc'], alpha=0.6)
-        plt.xlabel('Total Loss')
-        plt.ylabel('DSC')
-        plt.title('DSC vs Loss')
+        # Boundary metrics
+        ax6 = plt.subplot(3, 3, 6)
+        if self.history['bf1']:
+            ax6.plot(epochs, self.history['bf1'], 'b-', label='BF1@0.2')
+            ax6.set_ylim(0.0, 1.0)
+            ax6.set_ylabel('BF1')
+            ax6.set_xlabel('Epoch')
+            ax6.set_title('Boundary Metrics')
+            ax6.grid(True, alpha=0.3)
+            ax6_t = ax6.twinx()
+            ger_percent = np.array(self.history['ger']) * 100.0
+            ilr_percent = np.array(self.history['ilr']) * 100.0
+            ax6_t.plot(epochs, ger_percent, 'r--', label='GER (%)')
+            ax6_t.plot(epochs, ilr_percent, 'g-.', label='ILR (%)')
+            ax6_t.set_ylabel('Percent (%)')
+            lines, labels = ax6.get_legend_handles_labels()
+            lines2, labels2 = ax6_t.get_legend_handles_labels()
+            ax6_t.legend(lines + lines2, labels + labels2, loc='upper right')
+        else:
+            ax6.set_title('Boundary Metrics (N/A)')
         
         # Last 50 epochs loss
         if len(epochs) > 50:

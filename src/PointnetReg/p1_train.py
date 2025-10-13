@@ -338,7 +338,7 @@ def train_all_teeth(args, device: torch.device) -> None:
                                 loss = loss + margin_weight * margin_loss_val
                     presence_loss_val = torch.tensor(0.0, device=device)
                     if args.enable_presence_head and presence_logits is not None and args.presence_loss_weight > 0.0:
-                        presence_target = torch.ones_like(presence_logits)
+                        presence_target = (mask.mean(dim=1, keepdim=True) > 0.0).to(presence_logits.dtype)
                         presence_loss_val = F.binary_cross_entropy_with_logits(presence_logits, presence_target)
                         loss = loss + args.presence_loss_weight * presence_loss_val
                 scaler.scale(loss).backward()
@@ -732,20 +732,20 @@ def parse_args():
     parser.add_argument(
         "--peak_ce",
         type=str,
-        default="0.0",
+        default="0.3:0.8@60",
         help="Weight for auxiliary peak classification CE loss; accepts scalar or 'w0:w1@T'.",
     )
     parser.add_argument("--heatmap_loss_weight", type=float, default=1.0, help="Weight for primary heatmap regression loss.")
     parser.add_argument(
         "--coord_loss_weight",
         type=str,
-        default="0.0",
+        default="0.1:0.7@80",
         help="Weight for soft-argmax coordinate L1 loss; accepts scalar or 'w0:w1@T' for linear ramp.",
     )
     parser.add_argument(
         "--coord_temperature",
         type=str,
-        default="1.0",
+        default="1.0:0.3@80",
         help="Temperature for soft-argmax expectation; accepts scalar or 't0:t1@T'.",
     )
     parser.add_argument(
