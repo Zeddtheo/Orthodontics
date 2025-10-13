@@ -1014,7 +1014,11 @@ class SegmentationDataset(Dataset):
             edges = ((v0, v1), (v1, v2), (v2, v0))
             for a, b in edges:
                 key = (a, b) if a <= b else (b, a)
-                edge_map.setdefault(key, []).append(cid)
+                bucket = edge_map.get(key)
+                if bucket is None:
+                    edge_map[key] = [cid]
+                else:
+                    bucket.append(cid)
         for cells in edge_map.values():
             if len(cells) == 1:
                 boundary[cells[0]] = True
