@@ -797,6 +797,7 @@ class SegmentationDataset(Dataset):
         self._single_arch_maps: Optional[Dict[str, Dict[int, int]]] = None
         self.min_samples_per_class = 160  # 小类保底采样数量（侧重边界牙）
         self.boundary_focus_fraction = 0.4  # 采样时优先保留的边界占比
+        self.sampler_mode = "boundary_balanced" if self.boundary_focus_fraction > 0 else "random"
         self._mirror_pairs_single_arch: Dict[str, List[Tuple[int, int]]] = {}
         self._mirror_pairs_full: List[Tuple[int, int]] = []
         if self.label_mode == "single_arch_16":
@@ -901,7 +902,7 @@ class SegmentationDataset(Dataset):
         if result is None:
             raise RuntimeError(f"File {file_path} is missing a label array.")
         _, raw_labels = result
-        labels = np.asarray(raw_labels, dtype=np.int64)
+        labels = np.array(raw_labels, dtype=np.int64, copy=True)
         if labels.size > 0:
             labels = self._remap_labels(labels, file_path)
 
@@ -1009,7 +1010,7 @@ class SegmentationDataset(Dataset):
 
         pos_tensor = torch.from_numpy(pos_raw).transpose(0, 1).contiguous()  # (3, N)
 
-        labels_tensor = torch.from_numpy(labels.astype(np.int64))
+        labels_tensor = torch.from_numpy(labels.astype(np.int64, copy=False))
         boundary_tensor = torch.from_numpy(boundary_flags.astype(np.float32, copy=False))
 
         return (features_tensor, pos_tensor, boundary_tensor), labels_tensor
@@ -1018,7 +1019,7 @@ class SegmentationDataset(Dataset):
     def _compute_boundary_flags(mesh: pv.PolyData, labels: np.ndarray) -> np.ndarray:
         faces = mesh.faces.reshape(-1, 4)[:, 1:]
         n_cells = faces.shape[0]
-        labels_np = np.asarray(labels, dtype=np.int64, copy=False)
+        labels_np = np.array(labels, dtype=np.int64, copy=False)
         if labels_np.shape[0] != n_cells:
             labels_np = np.resize(labels_np, n_cells)
         boundary = np.zeros(n_cells, dtype=bool)

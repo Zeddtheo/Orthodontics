@@ -225,6 +225,17 @@ class Trainer:
             "with_dropout": bool(getattr(self.model, "with_dropout", False)),
             "dropout_p": float(getattr(self.model, "dropout_p", 0.0)),
         }
+        dataset_obj = getattr(self.train_loader, "dataset", None)
+        sampler_mode = "random"
+        sampler_params: Dict[str, float] = {}
+        if dataset_obj is not None:
+            sampler_mode = str(getattr(dataset_obj, "sampler_mode", sampler_mode))
+            boundary_focus = getattr(dataset_obj, "boundary_focus_fraction", None)
+            min_samples = getattr(dataset_obj, "min_samples_per_class", None)
+            if boundary_focus is not None:
+                sampler_params["boundary_focus_fraction"] = float(boundary_focus)
+            if min_samples is not None:
+                sampler_params["min_samples_per_class"] = float(min_samples)
         pipeline = {
             "zscore": {
                 "apply": True,
@@ -234,7 +245,8 @@ class Trainer:
             "centered": True,
             "div_by_diag": True,
             "use_frame": bool(self.config.data_config.arch_frames_path),
-            "sampler": "random",
+            "sampler": sampler_mode,
+            "sampler_params": sampler_params,
             "sample_cells": int(self.config.data_config.sample_cells),
             "target_cells": int(self.config.data_config.target_cells),
             "train_ids_path": None,
