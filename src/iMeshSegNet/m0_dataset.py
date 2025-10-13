@@ -162,6 +162,19 @@ def _assign_knn_cache_path(src: Path, target_cells: int) -> Path:
 def _ensure_polydata(mesh: pv.DataSet) -> pv.PolyData:
     if isinstance(mesh, pv.PolyData):
         return mesh
+    if isinstance(mesh, pv.MultiBlock):
+        combined = mesh.combine()
+        if combined is None or combined.n_blocks == 0:
+            extracted = mesh.extract_geometry()
+            if isinstance(extracted, pv.PolyData):
+                return extracted
+            if hasattr(extracted, "cast_to_polydata"):
+                return extracted.cast_to_polydata()
+        else:
+            if isinstance(combined, pv.PolyData):
+                return combined
+            if hasattr(combined, "cast_to_polydata"):
+                return combined.cast_to_polydata()
     if hasattr(mesh, "cast_to_polydata"):
         return mesh.cast_to_polydata()
     raise TypeError("Mesh is not convertible to PolyData")
@@ -879,7 +892,8 @@ class SegmentationDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
         file_path = Path(self.file_paths[idx])
-        mesh = pv.read(str(file_path))
+        mesh_raw = pv.read(str(file_path))
+        mesh = _ensure_polydata(mesh_raw)
         mesh.points -= mesh.center
         frame_tensor = self._lookup_arch_frame(file_path.stem)
 
