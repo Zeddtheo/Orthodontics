@@ -619,6 +619,8 @@ class TrainConfig:
     boundary_lambda: float = 3.0
     boundary_knn_k: int = 16
     early_stop_patience: int = 18
+    seed: Optional[int] = None
+    deterministic: bool = False
 
     log_dir: Path = field(init=False)
     checkpoint_dir: Path = field(init=False)
@@ -645,6 +647,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--augment-light-epochs", type=int, help="Epoch count for mirror+jitter light augmentation before full augment.")
     parser.add_argument("--boundary-lambda", type=float, help="Extra loss multiplier (λ) for boundary cells.")
     parser.add_argument("--boundary-knn", type=int, help="k used for boundary-aware neighborhood weighting.")
+    parser.add_argument("--batch-size", type=int, help="Training batch size.")
+    parser.add_argument("--num-workers", type=int, help="Number of DataLoader workers.")
+    parser.add_argument("--seed", type=int, help="Random seed override.")
+    parser.add_argument("--deterministic", action="store_true", help="Enable deterministic cuDNN (may slow training).")
     return parser.parse_args()
 
 
@@ -679,6 +685,14 @@ def main() -> None:
         config.boundary_knn_k = args.boundary_knn
     if args.disable_amp:
         config.enable_amp = False
+    if args.batch_size is not None:
+        config.data_config.batch_size = max(1, args.batch_size)
+    if args.num_workers is not None:
+        config.data_config.num_workers = max(0, args.num_workers)
+    if args.seed is not None:
+        config.seed = args.seed
+    if args.deterministic:
+        config.deterministic = True
 
     print(
         "Configured run directories:\n"
@@ -688,13 +702,15 @@ def main() -> None:
         f"  tensorboard   : {config.tensorboard_dir}"
     )
 
-    set_seed(getattr(config.data_config, "seed", 42))
+    seed_to_use = config.seed if config.seed is not None else getattr(config.data_config, "seed", 42)
+    config.data_config.seed = seed_to_use
+    set_seed(seed_to_use, deterministic=config.deterministic)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Data pipeline
     config.data_config.pin_memory = device.type == "cuda"
-    config.data_config.persistent_workers = True
+    config.data_config.persistent_workers = config.data_config.num_workers > 0
     # ========== 快改开关2：关闭增强做"冷启" ==========
     config.data_config.augment = False  # ← 改3：先关闭增强，待 DSC 抬头后再逐步打开
     config.data_config.label_mode = "single_arch_16"

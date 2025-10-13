@@ -26,7 +26,7 @@ DEFAULT_TOOTH_IDS = [
 def _ensure_xyz(pos: torch.Tensor) -> torch.Tensor:
     if pos.dim() != 3:
         raise ValueError(f"Expected pos to have 3 dims, got {pos.shape}")
-    if pos.shape[1] == 3 and pos.shape[2] != 3:
+    if pos.shape[-1] == 3 and pos.shape[1] != 3:
         return pos.transpose(1, 2).contiguous()
     return pos.contiguous()
 
@@ -148,6 +148,7 @@ def build_loaders(
         augment=augment,
         ensure_constant_L=False,
         tooth_id=tooth_id,
+        health_check=False,
     )
     dataset = P0PointNetRegDataset(cfg)
     n = len(dataset)

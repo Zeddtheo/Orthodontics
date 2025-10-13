@@ -8,9 +8,10 @@ import json
 import random
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+import os
 
 import numpy as np
 import pyvista as pv
@@ -334,14 +335,14 @@ def normalize_mesh_units(mesh: pv.PolyData) -> Tuple[pv.PolyData, float, float, 
 # =============================================================================
 
 
-def set_seed(seed: int = 42) -> None:
+def set_seed(seed: int = 42, *, deterministic: bool = False) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = not deterministic
 
 
 def get_subject_id_from_path(file_path: Path) -> Optional[str]:
@@ -546,13 +547,17 @@ def segmentation_collate(
     return (x, pos, boundary), y
 
 
-@dataclass
+def _default_workers() -> int:
+    cpu_count = os.cpu_count() or 4
+    return max(2, min(8, cpu_count // 2))
+
+
 class DataConfig:
     split_path: Path = SEG_ROOT / "module0" / "dataset_split.json"
     stats_path: Path = SEG_ROOT / "module0" / "stats.npz"
     arch_frames_path: Optional[Path] = None
     batch_size: int = 2
-    num_workers: int = 0
+    num_workers: int = field(default_factory=_default_workers)  # type: ignore[misc]
     persistent_workers: bool = True
     target_cells: int = 10000
     sample_cells: int = 6000
@@ -564,6 +569,7 @@ class DataConfig:
     gingiva_src_label: int = 0
     gingiva_class_id: int = 15
     keep_void_zero: bool = True
+    seed: int = 42
 
 
 # =============================================================================
