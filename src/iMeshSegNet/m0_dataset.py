@@ -902,6 +902,14 @@ class SegmentationDataset(Dataset):
         if result is None:
             raise RuntimeError(f"File {file_path} is missing a label array.")
         _, raw_labels = result
+        raw_arr = np.array(raw_labels, dtype=np.int64, copy=True)
+        mesh = mesh.triangulate()
+        mesh, scale_factor, diag_before, diag_after = normalize_mesh_units(mesh)
+        mesh.points -= mesh.center
+        result = find_label_array(mesh)
+        if result is None:
+            raise RuntimeError(f"File {file_path} is missing a label array after triangulate().")
+        _, raw_labels = result
         labels = np.array(raw_labels, dtype=np.int64, copy=True)
         if labels.size > 0:
             labels = self._remap_labels(labels, file_path)
