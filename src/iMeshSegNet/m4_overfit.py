@@ -249,6 +249,7 @@ class SingleSampleDataset(Dataset):
         labels_tensor = torch.from_numpy(labels.astype(np.int64))
 
         self.sample_data = ((features_tensor, pos_tensor, pos_mm_tensor, pos_scale_tensor), labels_tensor)
+        self.feature_dim = int(features_tensor.shape[0])
         self.remap_debug = debug_info
 
     def __len__(self) -> int:
@@ -278,13 +279,19 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     
     # 加载统计信息（优先复用缓存，缺失则就地计算）
     stats_path = Path("outputs/segmentation/overfit/_stats_sample.npz")
+    need_recompute = True
     if stats_path.exists():
         with np.load(stats_path) as stats:
             mean = stats["mean"].astype(np.float32, copy=False)
             std = stats["std"].astype(np.float32, copy=False)
         std = np.clip(std, 1e-6, None)
-        print(f"✅ 使用缓存统计: {stats_path}")
-    else:
+        feat_dim_est = extract_features(pv.read(str(sample_file)).triangulate()).shape[1]
+        if mean.shape[0] == feat_dim_est:
+            need_recompute = False
+            print(f"✅ 使用缓存统计: {stats_path}")
+        else:
+            print(f"⚠️ 统计维度不匹配 ({mean.shape[0]} -> {feat_dim_est})，重新计算")
+    if need_recompute:
         mesh_mm = _load_or_build_decimated_mm(sample_file, target_cells=10000)
         mesh = mesh_mm.copy(deep=True)
         mesh.points -= mesh.center
@@ -693,13 +700,15 @@ class OverfitTrainer:
             "dropout_p": float(getattr(self.model, "dropout_p", 0.0)),
         }
 
+        feature_dim = int(getattr(self.model, "in_channels", 0) or getattr(single_dataset, "feature_dim", 18))
+
         checkpoint = {
             # 模型权重
             "state_dict": self.model.state_dict(),
             
             # 模型架构信息
             "num_classes": self.num_classes,
-            "in_channels": 15,  # 特征维度（9点坐标 + 3法向 + 3相对位置）
+            "in_channels": feature_dim,  # feature dimension propagated to inference
             "arch": arch_config,
             "train_sample_ids_path": train_ids_path_str,
             "train_arrays_path": train_arrays_path_str,
@@ -726,11 +735,14 @@ class OverfitTrainer:
                 # 特征布局（用于推理时的旋转对齐）
                 "feature_layout": {
                     "rotate_blocks": [
-                        [0, 3],    # v0: 三角形顶点0相对质心
-                        [3, 6],    # v1: 三角形顶点1相对质心
-                        [6, 9],    # v2: 三角形顶点2相对质心
-                        [9, 12],   # normal: 法向量
-                        [12, 15]   # cent_rel: cell中心相对质心
+                        [0, 3],    # triangle vertex 0 relative to centroid
+                        [3, 6],    # vertex 1
+                        [6, 9],    # vertex 2
+                        [9, 12],   # face normal
+                        [12, 15]   # relative centroid
+                    ],
+                    "extra_blocks": [
+                        [15, feature_dim]  # geometric cues (edge length, area, curvature)
                     ]
                 },
                 
@@ -973,7 +985,7 @@ def _save_overfit_checkpoint(model, ckpt_path: Path, *,
     payload = {
         "state_dict": model.state_dict(),
         "num_classes": int(num_classes),
-        "in_channels": 15,
+        "in_channels": feature_dim,
         "arch": arch_config,
         # 兼容字段（老版本会从这些键读取）
         "train_sample_ids_path": train_ids_str,

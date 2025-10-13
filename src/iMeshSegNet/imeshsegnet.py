@@ -222,7 +222,7 @@ class GLMSAP(nn.Module):
 
 # ------------------------------------------------------------
 # iMeshSegNet (EdgeConv-enabled)
-#   Input  : (B, 15, N) features per cell
+#   Input  : (B, F, N) features per cell
 #   Pos    : (B, 3,  N) cell centroids (for kNN)
 #   Output : (B, nclass, N) logits per cell
 # ------------------------------------------------------------
@@ -236,6 +236,7 @@ class iMeshSegNet(nn.Module):
         with_dropout: bool = False,
         dropout_p: float = 0.1,
         use_feature_stn: bool = False,
+        in_channels: int = 18,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -245,9 +246,10 @@ class iMeshSegNet(nn.Module):
         self.with_dropout = with_dropout
         self.dropout_p = dropout_p
         self.use_feature_stn = use_feature_stn
+        self.in_channels = int(in_channels)
 
         # MLP-1 (feature lifting to 64)
-        self.mlp1_conv1 = nn.Conv1d(15, 64, 1)
+        self.mlp1_conv1 = nn.Conv1d(self.in_channels, 64, 1)
         self.mlp1_bn1 = nn.BatchNorm1d(64)
         self.mlp1_conv2 = nn.Conv1d(64, 64, 1)
         self.mlp1_bn2 = nn.BatchNorm1d(64)
@@ -309,15 +311,15 @@ class iMeshSegNet(nn.Module):
     ) -> torch.Tensor:
         """Forward
         Args:
-            x:   (B, 15, N) input features (z-score normalized)
+            x:   (B, F, N) input features (z-score normalized)
             pos: (B, 3,  N) cell centroids in unified arch frame (for kNN)
             a_s/a_l: optional (B,N,N) adjacencies for legacy SAP mode
         Returns:
             logits: (B, num_classes, N)
         """
         B, C, N = x.shape
-        assert C == 15, "Input feature must be 15-D"
-        
+        assert C == self.in_channels, f"Input feature must be {self.in_channels}-D"
+
         # ----- MLP-1 -----
         x = F.relu(self.mlp1_bn1(self.mlp1_conv1(x)))   # (B,64,N)
         x = F.relu(self.mlp1_bn2(self.mlp1_conv2(x)))   # (B,64,N)
@@ -374,9 +376,9 @@ class iMeshSegNet(nn.Module):
 if __name__ == "__main__":
     # quick shape sanity test
     B, N = 2, 4096
-    x = torch.randn(B, 15, N)
-    pos = torch.randn(B, 3, N)
     net = iMeshSegNet(num_classes=66, glm_impl="edgeconv", k_short=6, k_long=12)
+    x = torch.randn(B, net.in_channels, N)
+    pos = torch.randn(B, 3, N)
     with torch.cuda.amp.autocast(enabled=False):
         out = net(x, pos)
-    print("logits:", out.shape)  # (B,15,N)
+    print("logits:", out.shape)

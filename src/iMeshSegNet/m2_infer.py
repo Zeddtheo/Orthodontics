@@ -19,6 +19,7 @@ from m0_dataset import (
     normalize_mesh_units,
     _load_or_build_decimated_mm,
     _decim_cache_path,
+    _assign_knn_cache_path,
 )
 from m3_postprocess import PPConfig, postprocess_6k_10k_full  # 近似graphcut + SVM
 # ^ 若你把 postprocess 文件名不同，请同步这里的导入
@@ -157,6 +158,7 @@ def _build_model(ckpt_path: Path, device: torch.device, meta: dict) -> iMeshSegN
         with_dropout=arch.get("with_dropout", False),
         dropout_p=arch.get("dropout_p", 0.1),
         use_feature_stn=arch.get("use_feature_stn", False),
+        in_channels=meta.get("in_channels", 18),
     )
     if isinstance(state, dict):
         load_state = state
@@ -351,6 +353,9 @@ def _infer_one(
         cfg.seed_conf_th = 0.7
     # 从 decimated 10k 里取映射（两种可能的字段名都支持）
     orig_ids = None
+    assign_ids = None
+    assign_indices = None
+    assign_weights = None
     for key in ("vtkOriginalCellIds", "orig_cell_ids"):
         if key in mesh10k.cell_data:
             orig_ids = np.asarray(mesh10k.cell_data[key]).astype(np.int64, copy=False)
@@ -360,25 +365,33 @@ def _infer_one(
             f"{mesh10k!s} 缺少 'vtkOriginalCellIds' / 'orig_cell_ids'，无法构建 10k→full 播种映射。"
         )
 
-    assign_path = None
     hint = meta.get("decim_cache_vtp")
-    if hint:
-        assign_path = Path(hint).with_suffix(".assign.npy")
-    if assign_path is None or not assign_path.exists():
-        assign_path = _decim_cache_path(inp_path, int(meta["target_cells"])).with_suffix(".assign.npy")
-    if assign_path is None or not assign_path.exists():
-        raise FileNotFoundError(
-            f"缺少 decimation 播种映射: {assign_path}. 请先运行数据准备生成 assign.npy。"
-        )
-    try:
-        assign_ids = np.load(str(assign_path)).astype(np.int64, copy=False)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"读取 assign 映射失败: {assign_path}") from exc
+    base_path = Path(hint) if hint else _decim_cache_path(inp_path, int(meta["target_cells"]))
+    knn_path = base_path.with_suffix(".assign_knn.npz")
+    if knn_path.exists():
+        try:
+            knn_data = np.load(str(knn_path))
+            assign_indices = np.asarray(knn_data["indices"], dtype=np.int64)
+            assign_weights = np.asarray(knn_data["weights"], dtype=np.float32)
+        except Exception as exc:  # noqa: BLE001
+            assign_indices = None
+            assign_weights = None
+            print(f"[Warn] 读取 assign_knn 映射失败: {knn_path.name} ({exc})")
+    else:
+        print(f"[Warn] 缺少 assign_knn 映射: {knn_path.name}")
 
-    if assign_ids.shape[0] != pos_full_mm.shape[0]:
-        raise RuntimeError(
-            f"assign.npy 大小与 full 网格不匹配: assign={assign_ids.shape[0]}, full={pos_full_mm.shape[0]}"
-        )
+    assign_path = base_path.with_suffix(".assign.npy")
+    if assign_path.exists():
+        try:
+            assign_ids = np.load(str(assign_path)).astype(np.int64, copy=False)
+        except Exception as exc:  # noqa: BLE001
+            assign_ids = None
+            print(f"[Warn] 读取 assign 映射失败: {assign_path.name} ({exc})")
+    else:
+        if assign_indices is None:
+            raise FileNotFoundError(
+                f"缺少 decimation 播种映射: {assign_path}. 请先运行数据准备生成 assign 缓存。"
+            )
 
     lab10k, lab_full, logs = postprocess_6k_10k_full(
         pos6=pos6_mm,
@@ -388,11 +401,22 @@ def _infer_one(
         normals6=normals6,
         orig_cell_ids=orig_ids,
         assign_ids=assign_ids,
+        assign_indices=assign_indices,
+        assign_weights=assign_weights,
         cfg=cfg,
     )
-    print(f"[Post] conf10_mean={logs.get('conf10_mean', -1):.3f}, seed_ratio={logs.get('seed_ratio', 0.0):.3f}")
+    soft_ratio = logs.get('soft_seed_ratio', logs.get('seed_ratio', 0.0))
+    print(f"[Post] conf10_mean={logs.get('conf10_mean', -1):.3f}, seed_ratio={logs.get('seed_ratio', 0.0):.3f}, soft_seed={soft_ratio:.3f}")
     if exact_replay:
-        if assign_ids is not None and assign_ids.shape[0] == pos_full_mm.shape[0]:
+        if assign_indices is not None and assign_weights is not None and assign_indices.shape[0] == pos_full_mm.shape[0]:
+            neigh_labels = lab10k[assign_indices]
+            weights = assign_weights
+            vote_bins = np.zeros((assign_indices.shape[0], np.max(lab10k) + 1), dtype=np.float32)
+            for k in range(assign_indices.shape[1]):
+                lbl = neigh_labels[:, k]
+                np.add.at(vote_bins, (np.arange(vote_bins.shape[0]), lbl), weights[:, k])
+            lab_full = vote_bins.argmax(axis=1).astype(np.int32, copy=False)
+        elif assign_ids is not None and assign_ids.shape[0] == pos_full_mm.shape[0]:
             lab_full = lab10k[assign_ids]
 
     # 保存着色

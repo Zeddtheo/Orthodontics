@@ -154,6 +154,10 @@ def _assign_cache_path(src: Path, target_cells: int) -> Path:
     return DECIM_CACHE / f"{src.stem}.c{target_cells}.assign.npy"
 
 
+def _assign_knn_cache_path(src: Path, target_cells: int) -> Path:
+    return DECIM_CACHE / f"{src.stem}.c{target_cells}.assign_knn.npz"
+
+
 def _ensure_polydata(mesh: pv.DataSet) -> pv.PolyData:
     if isinstance(mesh, pv.PolyData):
         return mesh
@@ -162,47 +166,79 @@ def _ensure_polydata(mesh: pv.DataSet) -> pv.PolyData:
     raise TypeError("Mesh is not convertible to PolyData")
 
 
+def _build_soft_assign_cache(
+    full_mesh: pv.PolyData,
+    dec_mesh: pv.PolyData,
+    assign_path: Path,
+    assign_knn_path: Path,
+    *,
+    knn_k: int = 4,
+) -> None:
+    try:
+        full_mesh = _ensure_polydata(full_mesh)
+        dec_mesh = _ensure_polydata(dec_mesh)
+        full_centers = full_mesh.cell_centers().points.astype(np.float32)
+        dec_centers = dec_mesh.cell_centers().points.astype(np.float32)
+        if full_centers.size == 0 or dec_centers.size == 0:
+            return
+        k_eff = max(1, min(int(knn_k), dec_centers.shape[0]))
+        nn = NearestNeighbors(n_neighbors=k_eff, algorithm="auto")
+        nn.fit(dec_centers)
+        dists, indices = nn.kneighbors(full_centers, return_distance=True)
+        if "Area" in dec_mesh.cell_data:
+            areas = np.asarray(dec_mesh.cell_data["Area"], dtype=np.float32)
+        else:
+            dec_with_area = dec_mesh.compute_cell_sizes(length=False, area=True, volume=False)
+            areas = np.asarray(dec_with_area.cell_data["Area"], dtype=np.float32)
+        areas = np.clip(areas, 1e-8, None)
+        weights = 1.0 / np.clip(dists, 1e-8, None)
+        weights *= areas[indices]
+        weight_sum = weights.sum(axis=1, keepdims=True)
+        weights = np.divide(
+            weights,
+            weight_sum,
+            out=np.full_like(weights, 1.0 / float(k_eff)),
+            where=weight_sum > 1e-8,
+        ).astype(np.float32, copy=False)
+        assign_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(assign_path, indices[:, 0].astype(np.int32, copy=False), allow_pickle=False)
+        np.savez(
+            assign_knn_path,
+            indices=indices.astype(np.int32, copy=False),
+            weights=weights,
+        )
+    except Exception:
+        pass
+
+
 def _load_or_build_decimated_mm(raw_path: Path, target_cells: int) -> pv.PolyData:
     cache_path = _decim_cache_path(raw_path, target_cells)
     assign_path = _assign_cache_path(raw_path, target_cells)
+    assign_knn_path = _assign_knn_cache_path(raw_path, target_cells)
     if cache_path.exists():
         mesh_mm = _ensure_polydata(pv.read(str(cache_path)))
-        if not assign_path.exists():
+        if not assign_knn_path.exists():
             try:
-                full_mesh = _ensure_polydata(pv.read(str(raw_path)))
+                full_mesh = _ensure_polydata(pv.read(str(raw_path))).triangulate()
+                _build_soft_assign_cache(full_mesh, mesh_mm, assign_path, assign_knn_path)
             except Exception:
-                full_mesh = None
-            if full_mesh is not None:
-                try:
-                    full_mesh = full_mesh.triangulate()
-                    orig_centers = full_mesh.cell_centers().points.astype(np.float32)
-                    dec_centers = mesh_mm.cell_centers().points.astype(np.float32)
-                    if dec_centers.size and orig_centers.size:
-                        nn = NearestNeighbors(n_neighbors=1, algorithm="auto")
-                        nn.fit(dec_centers)
-                        assign_ids = nn.kneighbors(
-                            orig_centers, return_distance=False
-                        ).reshape(-1).astype(np.int32, copy=False)
-                        np.save(assign_path, assign_ids, allow_pickle=False)
-                except Exception:
-                    pass
+                pass
         return mesh_mm
 
-    mesh_mm = _ensure_polydata(pv.read(str(raw_path)))
-    mesh_mm = mesh_mm.triangulate()
+    mesh_full = _ensure_polydata(pv.read(str(raw_path))).triangulate()
+    mesh_mm = mesh_full.copy(deep=True)
 
-    label_info = find_label_array(mesh_mm)
+    label_info = find_label_array(mesh_full)
     labels = None
     if label_info is not None:
         _, raw_labels = label_info
         labels = remap_segmentation_labels(np.asarray(raw_labels))
 
-    orig_centers = mesh_mm.cell_centers().points.astype(np.float32)
-    orig_ids = np.arange(mesh_mm.n_cells, dtype=np.int64)
+    orig_ids = np.arange(mesh_full.n_cells, dtype=np.int64)
 
-    if mesh_mm.n_cells > target_cells:
-        reduction = 1.0 - (target_cells / float(mesh_mm.n_cells))
-        decimated = mesh_mm.decimate_pro(
+    if mesh_full.n_cells > target_cells:
+        reduction = 1.0 - (target_cells / float(mesh_full.n_cells))
+        decimated = mesh_full.decimate_pro(
             reduction,
             feature_angle=45,
             preserve_topology=True,
@@ -228,13 +264,9 @@ def _load_or_build_decimated_mm(raw_path: Path, target_cells: int) -> pv.PolyDat
 
     try:
         mesh_mm.save(cache_path, binary=True)
-        # 生成 full -> decimated 的最近邻映射（用于推理播种扩散）
-        nn = NearestNeighbors(n_neighbors=1, algorithm="auto")
-        nn.fit(mesh_mm.cell_centers().points.astype(np.float32))
-        assign_ids = nn.kneighbors(orig_centers, return_distance=False).reshape(-1).astype(np.int32)
-        np.save(assign_path, assign_ids, allow_pickle=False)
     except Exception:
         pass
+    _build_soft_assign_cache(mesh_full, mesh_mm, assign_path, assign_knn_path)
 
     return mesh_mm.copy(deep=True)
 
@@ -295,9 +327,71 @@ def extract_features(mesh: pv.PolyData) -> np.ndarray:
     faces = mesh.faces.reshape(-1, 4)[:, 1:]
     vertex_coords = mesh.points[faces.flatten()].reshape(mesh.n_cells, 9)
     mesh.compute_normals(cell_normals=True, point_normals=False, inplace=True)
-    cell_normals = mesh.cell_data["Normals"]
-    relative_positions = mesh.cell_centers().points - mesh.center
-    return np.hstack([vertex_coords, cell_normals, relative_positions])
+    cell_normals = mesh.cell_data["Normals"].astype(np.float32, copy=False)
+    centers = mesh.cell_centers().points.astype(np.float32, copy=False)
+    relative_positions = centers - mesh.center
+
+    # 三角形几何属性
+    v0 = mesh.points[faces[:, 0]]
+    v1 = mesh.points[faces[:, 1]]
+    v2 = mesh.points[faces[:, 2]]
+    e01 = v1 - v0
+    e12 = v2 - v1
+    e20 = v0 - v2
+    edge_lengths = np.stack(
+        [
+            np.linalg.norm(e01, axis=1),
+            np.linalg.norm(e12, axis=1),
+            np.linalg.norm(e20, axis=1),
+        ],
+        axis=1,
+    )
+    mean_edge = edge_lengths.mean(axis=1, dtype=np.float32)
+    cross = np.cross(e01, -e20)
+    area = 0.5 * np.linalg.norm(cross, axis=1)
+
+    # 邻面法向差（离散曲率提示）
+    edge_map: Dict[Tuple[int, int], List[int]] = {}
+    for cid, tri in enumerate(faces):
+        a, b, c = map(int, tri)
+        edges = ((a, b), (b, c), (c, a))
+        for u, v in edges:
+            key = (u, v) if u <= v else (v, u)
+            edge_map.setdefault(key, []).append(cid)
+    normal_variation = np.zeros(mesh.n_cells, dtype=np.float32)
+    counts = np.zeros(mesh.n_cells, dtype=np.int32)
+    for cells in edge_map.values():
+        if len(cells) < 2:
+            continue
+        for i_idx in range(len(cells)):
+            for j_idx in range(i_idx + 1, len(cells)):
+                ci = cells[i_idx]
+                cj = cells[j_idx]
+                ni = cell_normals[ci]
+                nj = cell_normals[cj]
+                dot = np.clip(np.dot(ni, nj), -1.0, 1.0)
+                angle = np.arccos(dot)
+                normal_variation[ci] += angle
+                normal_variation[cj] += angle
+                counts[ci] += 1
+                counts[cj] += 1
+    np.divide(
+        normal_variation,
+        np.clip(counts, 1, None),
+        out=normal_variation,
+        where=counts > 0,
+    )
+
+    extra_feats = np.stack(
+        [
+            mean_edge.astype(np.float32, copy=False),
+            area.astype(np.float32, copy=False),
+            normal_variation.astype(np.float32, copy=False),
+        ],
+        axis=1,
+    )
+
+    return np.hstack([vertex_coords, cell_normals, relative_positions, extra_feats]).astype(np.float32, copy=False)
 
 
 def random_transform(points: np.ndarray) -> np.ndarray:
@@ -446,8 +540,8 @@ def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple
     if not file_paths:
         raise ValueError("Training file list is empty; cannot compute statistics.")
 
-    sum_vec = np.zeros(15, dtype=np.float64)
-    sum_sq_vec = np.zeros(15, dtype=np.float64)
+    sum_vec: Optional[np.ndarray] = None
+    sum_sq_vec: Optional[np.ndarray] = None
     total_faces = 0
 
     for idx, path_str in enumerate(file_paths, 1):
@@ -466,6 +560,10 @@ def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple
             mesh = mesh.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
 
         features = extract_features(mesh).astype(np.float64)
+        if sum_vec is None or sum_sq_vec is None:
+            feature_dim = features.shape[1]
+            sum_vec = np.zeros(feature_dim, dtype=np.float64)
+            sum_sq_vec = np.zeros(feature_dim, dtype=np.float64)
 
         sum_vec += features.sum(axis=0)
         sum_sq_vec += (features ** 2).sum(axis=0)
@@ -476,6 +574,8 @@ def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple
 
     if total_faces == 0:
         raise ValueError("No faces found across training meshes; cannot compute statistics.")
+    if sum_vec is None or sum_sq_vec is None:
+        raise ValueError("Failed to accumulate feature statistics.")
 
     mean = sum_vec / total_faces
     variance = np.maximum(sum_sq_vec / total_faces - mean ** 2, 1e-6)

@@ -263,7 +263,7 @@ class Trainer:
         payload = {
             "state_dict": self.model.state_dict(),
             "num_classes": self.model.num_classes,
-            "in_channels": 15,
+            "in_channels": self.model.in_channels,
             "arch": arch_config,
             "pipeline": pipeline,
             "training": training_meta,
@@ -317,7 +317,8 @@ class Trainer:
             boundary = boundary.to(self.device, non_blocking=True)
 
             if not self._checked_shapes:
-                assert x.dim() == 3 and x.size(1) == 15, "x must be (B,15,N) with z-scored features"
+                expected_in = getattr(self.model, "in_channels", x.size(1))
+                assert x.dim() == 3 and x.size(1) == expected_in, f"x must be (B,{expected_in},N) with z-scored features"
                 assert pos.dim() == 3 and pos.size(1) == 3, "pos must be (B,3,N) in arch frame"
                 assert boundary.shape == y.shape, "boundary mask must match label shape"
                 self._checked_shapes = True
@@ -333,7 +334,7 @@ class Trainer:
                         loss_dice = self.dice_loss(logits, y)
                         loss_ce = self._compute_ce_loss(logits, y)
                         loss_ft = self.focal_tversky_loss(logits, y)
-                        loss = 0.2 * loss_dice + 0.8 * loss_ce + 0.5 * loss_ft
+                        loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft
             else:
                 # 训练阶段保持原有逻辑
                 with autocast(self.device.type, enabled=self.amp_enabled):
@@ -352,7 +353,7 @@ class Trainer:
                         stn_reg = ((trans @ trans.transpose(1, 2) - I) ** 2).sum(dim=(1, 2)).mean()
                     
                     # ← 更新：加入 Focal Tversky 提升召回
-                    loss = 0.2 * loss_dice + 0.8 * loss_ce + 0.5 * loss_ft + 1e-3 * stn_reg
+                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + 1e-3 * stn_reg
 
                 # ========== 修复4: NaN/Inf 哨兵（防飙车）==========
                 if not torch.isfinite(loss):
@@ -615,8 +616,8 @@ class TrainConfig:
     enable_amp: bool = True
     augment_warmup_epochs: int = 20
     augment_light_epochs: int = 6
-    boundary_lambda: float = 0.6
-    boundary_knn_k: int = 12
+    boundary_lambda: float = 3.0
+    boundary_knn_k: int = 16
     early_stop_patience: int = 18
 
     log_dir: Path = field(init=False)

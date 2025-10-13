@@ -186,6 +186,17 @@ def knn_transfer(
         return (None, None) if src_extra is None else (None, None, None)
     if src_pos is None or src_pos.size == 0:
         return (None, None) if src_extra is None else (None, None, None)
+    extra_is_vector = False
+    extra_dim = 0
+    if src_extra is not None:
+        src_extra = np.asarray(src_extra)
+        if src_extra.ndim == 1:
+            extra_dim = 1
+        elif src_extra.ndim == 2:
+            extra_dim = src_extra.shape[1]
+            extra_is_vector = True
+        else:
+            raise ValueError("src_extra must be 1D or 2D array")
     num_src = src_pos.shape[0]
     k_eff = max(1, min(k, num_src))
     neigh = NearestNeighbors(n_neighbors=k_eff, algorithm="auto")
@@ -195,9 +206,12 @@ def knn_transfer(
 
     out_labels = np.zeros(dst_pos.shape[0], dtype=np.int32)
     out_conf: Optional[np.ndarray] = np.zeros(dst_pos.shape[0], dtype=np.float32) if src_conf is not None else None
-    out_extra: Optional[np.ndarray] = (
-        np.zeros(dst_pos.shape[0], dtype=np.float32) if src_extra is not None else None
-    )
+    out_extra: Optional[np.ndarray] = None
+    if src_extra is not None:
+        if extra_is_vector:
+            out_extra = np.zeros((dst_pos.shape[0], extra_dim), dtype=np.float32)
+        else:
+            out_extra = np.zeros(dst_pos.shape[0], dtype=np.float32)
 
     for i in range(dst_pos.shape[0]):
         nbr_idx = idxs[i]
@@ -219,13 +233,46 @@ def knn_transfer(
             extra_vals = src_extra[nbr_idx]
             weight_sum = float(w_eff.sum())
             if weight_sum <= 1e-8:
-                out_extra[i] = float(extra_vals.mean())
+                if extra_is_vector:
+                    out_extra[i] = extra_vals.mean(axis=0)
+                else:
+                    out_extra[i] = float(extra_vals.mean())
             else:
-                out_extra[i] = float(np.dot(extra_vals, w_eff) / weight_sum)
+                if extra_is_vector:
+                    out_extra[i] = np.dot(w_eff, extra_vals) / weight_sum
+                else:
+                    out_extra[i] = float(np.dot(extra_vals, w_eff) / weight_sum)
 
     if out_extra is not None:
         return out_labels, out_conf, out_extra
     return out_labels, out_conf
+
+
+def _soft_assign_probabilities(
+    prob_src: Optional[np.ndarray],
+    indices: Optional[np.ndarray],
+    weights: Optional[np.ndarray],
+) -> Optional[np.ndarray]:
+    if prob_src is None or indices is None or weights is None:
+        return None
+    prob_src = np.asarray(prob_src, dtype=np.float32)
+    idx = np.asarray(indices, dtype=np.int64)
+    w = np.asarray(weights, dtype=np.float32)
+    if idx.ndim != 2 or w.shape != idx.shape:
+        return None
+    if prob_src.ndim != 2 or prob_src.shape[0] <= np.max(idx):
+        return None
+    selected = prob_src[idx]  # (N_full, K, C)
+    w_exp = w[..., None]       # (N_full, K, 1)
+    probs = (selected * w_exp).sum(axis=1)
+    norm = probs.sum(axis=1, keepdims=True)
+    np.divide(
+        probs,
+        np.clip(norm, 1e-8, None),
+        out=probs,
+        where=norm > 0,
+    )
+    return probs
 def _radius_majority_fill(
     train_pos: np.ndarray,
     train_labels: np.ndarray,
@@ -542,6 +589,8 @@ def postprocess_6k_10k_full(
     normals6: Optional[np.ndarray] = None,
     orig_cell_ids: Optional[np.ndarray],
     assign_ids: Optional[np.ndarray] = None,
+    assign_indices: Optional[np.ndarray] = None,
+    assign_weights: Optional[np.ndarray] = None,
     cfg: PPConfig,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
     logs: Dict[str, float] = {}
@@ -560,13 +609,19 @@ def postprocess_6k_10k_full(
     labels6 = np.argmax(prob6_ref, axis=1).astype(np.int32)
     conf6 = prob6_ref[np.arange(prob6_ref.shape[0]), labels6].astype(np.float32)
 
-    labels10, conf10 = knn_transfer(
+    labels10, conf10, prob10 = knn_transfer(
         pos6, labels6,
         pos10, cfg.knn_10k,
         src_conf=conf6,
+        src_extra=prob6_ref,
     )
     if conf10 is None:
         conf10 = np.ones(labels10.shape[0], dtype=np.float32)
+    if prob10 is None:
+        prob10 = np.eye(prob6_ref.shape[1], dtype=np.float32)[labels10]
+    else:
+        row_sum = prob10.sum(axis=1, keepdims=True)
+        np.divide(prob10, np.clip(row_sum, 1e-8, None), out=prob10)
     logs["conf10_mean"] = float(np.mean(conf10))
 
     labels10 = _cleanup_small_components(
@@ -600,8 +655,15 @@ def postprocess_6k_10k_full(
     mask_knn = conf_knn >= float(cfg.seed_conf_th)
     seed_full[mask_knn] = labels_knn[mask_knn]
 
-    # (C) assign.npy 播种映射
-    if assign_ids is not None:
+    # (C) assign 播种映射 / KNN 软播种
+    prob_full_knn = _soft_assign_probabilities(prob10, assign_indices, assign_weights)
+    if prob_full_knn is not None and prob_full_knn.shape[0] == N_full:
+        knn_labels = np.argmax(prob_full_knn, axis=1).astype(np.int32)
+        knn_conf = prob_full_knn[np.arange(N_full), knn_labels]
+        mask_knn = knn_conf >= float(cfg.seed_conf_th)
+        seed_full[mask_knn] = knn_labels[mask_knn]
+        logs["soft_seed_ratio"] = float(np.mean(mask_knn))
+    elif assign_ids is not None:
         assign_arr = np.asarray(assign_ids, dtype=np.int64)
         if assign_arr.shape[0] == N_full:
             valid_assign = (assign_arr >= 0) & (assign_arr < labels10.shape[0])
