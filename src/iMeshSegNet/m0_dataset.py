@@ -552,6 +552,7 @@ def _default_workers() -> int:
     return max(2, min(8, cpu_count // 2))
 
 
+@dataclass
 class DataConfig:
     split_path: Path = SEG_ROOT / "module0" / "dataset_split.json"
     stats_path: Path = SEG_ROOT / "module0" / "stats.npz"
