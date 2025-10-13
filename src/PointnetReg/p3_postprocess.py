@@ -25,6 +25,29 @@ VALID_TOOTH_IDS = [
     "t41","t42","t43","t44","t45","t46","t47",
 ]
 
+DEFAULT_THRESHOLD_TABLE: Dict[str, Dict[str, Any]] = {
+    "default": {"margin_floor": 0.55, "min_valid": 6, "presence_floor": 0.25},
+    "t27": {"margin_floor": 0.50, "min_valid": 4},
+    "t37": {"margin_floor": 0.50, "min_valid": 4},
+    "t47": {"margin_floor": 0.50, "min_valid": 4},
+}
+
+DEBUG_METRIC_FIELDS = [
+    "case_id",
+    "tooth_id",
+    "total_expected",
+    "total_present",
+    "min_valid",
+    "margin_floor",
+    "margin_min",
+    "margin_mean",
+    "presence_floor",
+    "presence_prob",
+    "forced",
+    "missing",
+    "fail_reasons",
+]
+
 
 @dataclass
 class LandmarkResult:
@@ -53,6 +76,187 @@ class CaseAggregate:
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalise_threshold_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    if not isinstance(spec, dict):
+        return out
+    for key, value in spec.items():
+        if value is None:
+            continue
+        key_l = str(key).lower()
+        if key_l in {"margin_floor", "margin", "margin_min"}:
+            try:
+                out["margin_floor"] = float(value)
+            except (TypeError, ValueError):
+                continue
+        elif key_l in {"min_valid", "min_present", "min_count"}:
+            try:
+                out["min_valid"] = int(value)
+            except (TypeError, ValueError):
+                continue
+        elif key_l in {"presence_floor", "presence", "presence_min"}:
+            try:
+                out["presence_floor"] = float(value)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def load_threshold_table(path: Optional[Path]) -> Dict[str, Dict[str, Any]]:
+    table: Dict[str, Dict[str, Any]] = {
+        key.lower(): dict(value) for key, value in DEFAULT_THRESHOLD_TABLE.items()
+    }
+    if not path:
+        return table
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"Threshold table must be a JSON dict, got {type(data)}")
+    for key, spec in data.items():
+        if not isinstance(key, str):
+            continue
+        norm_key = key.strip().lower()
+        norm_spec = _normalise_threshold_spec(spec if isinstance(spec, dict) else {})
+        if not norm_spec:
+            continue
+        base = table.get(norm_key, {}).copy()
+        base.update(norm_spec)
+        table[norm_key] = base
+    return table
+
+
+def resolve_threshold(tooth_id: str, table: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    base = dict(table.get("default", {}))
+    for variant in (tooth_id, tooth_id.lower(), tooth_id.upper()):
+        key = str(variant).strip().lower()
+        if key in table:
+            base.update(table[key])
+            break
+    result = {
+        "margin_floor": float(base.get("margin_floor", 0.0)),
+        "min_valid": int(base.get("min_valid", 0)),
+        "presence_floor": float(base.get("presence_floor", 0.0)),
+    }
+    if result["min_valid"] < 0:
+        result["min_valid"] = 0
+    if result["margin_floor"] < 0.0:
+        result["margin_floor"] = 0.0
+    if result["presence_floor"] < 0.0:
+        result["presence_floor"] = 0.0
+    return result
+
+
+def extract_presence_prob(tooth_record: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(tooth_record, dict):
+        return None
+    candidates: List[Any] = [
+        tooth_record.get("presence_prob"),
+        tooth_record.get("presence_probability"),
+        tooth_record.get("presence"),
+    ]
+    meta = tooth_record.get("meta")
+    if isinstance(meta, dict):
+        candidates.extend(
+            [
+                meta.get("presence_prob"),
+                meta.get("presence_probability"),
+                meta.get("presence"),
+            ]
+        )
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def apply_quality_policy(
+    case_id: str,
+    tooth_id: str,
+    landmarks: Dict[str, LandmarkResult],
+    tooth_flags: Dict[str, Any],
+    tooth_record: Dict[str, Any],
+    thresholds_table: Dict[str, Dict[str, Any]],
+    force_keep: bool,
+) -> Dict[str, Any]:
+    thresholds = resolve_threshold(tooth_id, thresholds_table)
+    margin_floor = thresholds.get("margin_floor", 0.0)
+    min_valid = thresholds.get("min_valid", 0)
+    presence_floor = thresholds.get("presence_floor", 0.0)
+
+    present_cnt = int(tooth_flags.get("total_present", 0))
+    expected = int(tooth_flags.get("total_expected", present_cnt))
+
+    margin_values: List[float] = []
+    for landmark in landmarks.values():
+        if landmark.margin is not None and not landmark.flags.get("missing", False):
+            margin_values.append(float(landmark.margin))
+            if margin_floor > 0.0 and float(landmark.margin) < margin_floor:
+                landmark.flags["low_margin"] = True
+    min_margin = min(margin_values) if margin_values else None
+    mean_margin = float(sum(margin_values) / len(margin_values)) if margin_values else None
+
+    presence_prob = extract_presence_prob(tooth_record)
+    fail_reasons: List[str] = []
+    if present_cnt < min_valid:
+        fail_reasons.append("valid")
+    if margin_floor > 0.0:
+        if not margin_values:
+            fail_reasons.append("margin_missing")
+        elif min_margin is not None and min_margin < margin_floor:
+            fail_reasons.append("margin")
+    if presence_prob is not None and presence_floor > 0.0 and presence_prob < presence_floor:
+        fail_reasons.append("presence")
+
+    forced = bool(fail_reasons) and force_keep
+    missing = bool(fail_reasons) and not force_keep
+
+    tooth_flags["quality"] = "low" if fail_reasons else "ok"
+    tooth_flags["force_keep"] = forced
+    tooth_flags["policy_failures"] = list(fail_reasons)
+    tooth_flags["presence_prob"] = presence_prob
+    tooth_flags["thresholds"] = thresholds
+    if missing:
+        for landmark in landmarks.values():
+            landmark.coord = None
+            landmark.score = None
+            landmark.margin = None
+            landmark.flags["missing"] = True
+        tooth_flags["total_present"] = 0
+
+    return {
+        "case_id": case_id,
+        "tooth_id": tooth_id,
+        "total_expected": expected,
+        "total_present": tooth_flags.get("total_present", 0),
+        "min_valid": min_valid,
+        "margin_floor": margin_floor,
+        "margin_min": min_margin,
+        "margin_mean": mean_margin,
+        "presence_floor": presence_floor,
+        "presence_prob": presence_prob,
+        "forced": forced,
+        "missing": missing,
+        "fail_reasons": ";".join(fail_reasons),
+    }
+
+
+def export_debug_metrics(rows: List[Dict[str, Any]], out_dir: Path) -> Optional[Path]:
+    if not rows:
+        return None
+    debug_dir = out_dir / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    out_path = debug_dir / "tooth_metrics.csv"
+    with out_path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=DEBUG_METRIC_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key) for key in DEBUG_METRIC_FIELDS})
+    return out_path
 
 
 def load_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -315,7 +519,15 @@ def collect_inference_records(infer_root: Path) -> Dict[str, Dict[str, Any]]:
     return cases
 
 
-def aggregate_case(case_id: str, case_data: Dict[str, Any], defs: Dict[str, List[str]], order: List[str]) -> CaseAggregate:
+def aggregate_case(
+    case_id: str,
+    case_data: Dict[str, Any],
+    defs: Dict[str, List[str]],
+    order: List[str],
+    thresholds: Optional[Dict[str, Dict[str, Any]]] = None,
+    force_keep: bool = True,
+    debug_rows: Optional[List[Dict[str, Any]]] = None,
+) -> CaseAggregate:
     case_meta = case_data.get("meta", {})
     bounds = get_bounds(case_meta)
     teeth_results: Dict[str, ToothResult] = {}
@@ -323,6 +535,7 @@ def aggregate_case(case_id: str, case_data: Dict[str, Any], defs: Dict[str, List
     total_expected = 0
     total_present = 0
     missing_teeth: List[str] = []
+    thresholds_table = thresholds or DEFAULT_THRESHOLD_TABLE
 
     for tooth_id in order:
         names = defs.get(tooth_id) or defs.get(tooth_id.upper()) or defs.get(tooth_id.lower())
@@ -355,6 +568,25 @@ def aggregate_case(case_id: str, case_data: Dict[str, Any], defs: Dict[str, List
                 "total_expected": len(names),
                 "total_present": 0,
             }
+            if debug_rows is not None:
+                thresh = resolve_threshold(tooth_id, thresholds_table)
+                debug_rows.append(
+                    {
+                        "case_id": case_id,
+                        "tooth_id": tooth_id,
+                        "total_expected": len(names),
+                        "total_present": 0,
+                        "min_valid": thresh.get("min_valid", 0),
+                        "margin_floor": thresh.get("margin_floor", 0.0),
+                        "margin_min": None,
+                        "margin_mean": None,
+                        "presence_floor": thresh.get("presence_floor", 0.0),
+                        "presence_prob": None,
+                        "forced": False,
+                        "missing": True,
+                        "fail_reasons": "no_prediction",
+                    }
+                )
         else:
             tooth_meta = {}
             if isinstance(tooth_record.get("meta"), dict):
@@ -367,7 +599,26 @@ def aggregate_case(case_id: str, case_data: Dict[str, Any], defs: Dict[str, List
                 case_meta,
                 bounds,
             )
-            tooth_flags["missing_tooth"] = False
+            quality_info = apply_quality_policy(
+                case_id,
+                tooth_id,
+                landmarks_map,
+                tooth_flags,
+                tooth_record,
+                thresholds_table,
+                force_keep=force_keep,
+            )
+            if debug_rows is not None:
+                debug_rows.append(quality_info)
+            tooth_flags["missing_tooth"] = bool(quality_info.get("missing"))
+            if tooth_flags.get("missing_tooth"):
+                missing_teeth.append(tooth_id)
+            elif tooth_flags.get("force_keep"):
+                for landmark in landmarks_map.values():
+                    landmark.flags["force_kept"] = True
+            if tooth_flags.get("quality") == "low":
+                tooth_flags["_quality"] = "low"
+                tooth_flags["_quality_reasons"] = quality_info.get("fail_reasons", "")
             if tooth_meta:
                 if "arch" in tooth_meta and tooth_meta["arch"]:
                     tooth_flags.setdefault("arch", tooth_meta["arch"])
@@ -660,6 +911,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--export-mrk", action="store_true")
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--cases", type=str, default=None, help="Optional comma-separated list of case IDs to process")
+    parser.add_argument("--threshold-table", type=Path, default=None, help="Optional JSON file with per-tooth quality thresholds.")
+    parser.add_argument("--force-keep-all-teeth", dest="force_keep_all_teeth", action="store_true", help="Always emit each tooth even if thresholds are not met.")
+    parser.add_argument("--no-force-keep-all-teeth", dest="force_keep_all_teeth", action="store_false", help="Disable force-keep fallback.")
+    parser.add_argument("--export-debug", action="store_true", help="Export per-tooth quality metrics CSV alongside outputs.")
+    parser.set_defaults(force_keep_all_teeth=True)
     return parser.parse_args()
 
 
@@ -676,6 +932,12 @@ def main() -> None:
         selected_cases = sorted(records.keys())
 
     out_dir = args.out_dir
+    try:
+        thresholds = load_threshold_table(args.threshold_table)
+    except ValueError as exc:
+        raise SystemExit(f"Failed to load threshold table: {exc}") from exc
+    debug_rows: Optional[List[Dict[str, Any]]] = [] if args.export_debug else None
+    debug_path: Optional[Path] = None
     out_json_dir = out_dir / "json"
     out_csv_dir = out_dir / "csv"
     out_ply_dir = out_dir / "ply"
@@ -689,7 +951,15 @@ def main() -> None:
 
     for case_id in selected_cases:
         case_data = records[case_id]
-        case = aggregate_case(case_id, case_data, defs, order)
+        case = aggregate_case(
+            case_id,
+            case_data,
+            defs,
+            order,
+            thresholds=thresholds,
+            force_keep=args.force_keep_all_teeth,
+            debug_rows=debug_rows,
+        )
         export_case_json(case, out_json_dir)
         if args.export_csv:
             export_case_csv(case, out_csv_dir)
@@ -706,6 +976,11 @@ def main() -> None:
         summaries.append(summary)
         print(summary)
 
+    if args.export_debug and debug_rows is not None:
+        debug_path = export_debug_metrics(debug_rows, out_dir)
+        if debug_path:
+            print(f"Debug metrics saved to {debug_path}")
+
     if args.log_path:
         log_path = args.log_path
     else:
@@ -714,6 +989,8 @@ def main() -> None:
     with log_path.open("w", encoding="utf-8") as fh:
         for line in summaries:
             fh.write(line + "\n")
+        if debug_path:
+            fh.write(f"Debug metrics saved to {debug_path}\n")
         fh.write(f"Processed {len(summaries)} cases.\n")
 
 

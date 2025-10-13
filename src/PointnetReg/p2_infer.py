@@ -151,6 +151,8 @@ def infer_one_tooth(
     names = _load_landmark_names(landmark_json, tooth_id, num_landmarks)
 
     ckpt_use_tnet = payload.get("use_tnet", use_tnet)
+    enable_presence_head = bool(payload.get("enable_presence_head", False))
+    presence_hidden = int(payload.get("presence_hidden", 128))
 
     model = PointNetReg(
         in_channels=in_channels,
@@ -158,6 +160,8 @@ def infer_one_tooth(
         heads_config=heads_config,
         use_tnet=ckpt_use_tnet,
         return_logits=True,
+        enable_presence_head=enable_presence_head,
+        presence_hidden=presence_hidden,
     ).to(device)
     model.load_state_dict(payload["model"])
     model.eval()
@@ -183,15 +187,30 @@ def infer_one_tooth(
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
             x = batch["x"].to(device, non_blocking=True)
-            logits = model(x, tooth_id=tooth_id if model.multi_head else None)  # (B, L, N)
+            model_out = model(
+                x,
+                tooth_id=tooth_id if model.multi_head else None,
+                return_presence=enable_presence_head,
+            )
+            if isinstance(model_out, tuple):
+                logits, presence_logits = model_out
+            else:
+                logits = model_out
+                presence_logits = None
             probs = torch.sigmoid(logits)
             topk_logits, topk_idx = torch.topk(logits, k=2, dim=-1)
             top1_vals = torch.sigmoid(topk_logits[..., 0])
-            top2_vals = torch.sigmoid(topk_logits[..., 1])
+            top2_vals_sig = torch.sigmoid(topk_logits[..., 1])
             top1_idx = topk_idx[..., 0]
             idx = top1_idx.cpu().numpy()
             scores = top1_vals.cpu().numpy()
-            seconds = top2_vals.cpu().numpy()
+            seconds = top2_vals_sig.cpu().numpy()
+            if presence_logits is not None:
+                presence_logits_np = presence_logits.detach().cpu().numpy()
+                presence_probs_np = torch.sigmoid(presence_logits).detach().cpu().numpy()
+            else:
+                presence_logits_np = None
+                presence_probs_np = None
             mask_batch = batch.get("mask")
             if mask_batch is not None:
                 mask_np = (mask_batch.cpu().numpy() > 0.5)
@@ -254,6 +273,9 @@ def infer_one_tooth(
                 tooth_payload["top2"] = second_map.copy()
                 tooth_payload.setdefault("second_scores", second_map.copy())
                 tooth_payload["margin"] = margin_map
+                if presence_logits_np is not None and presence_probs_np is not None:
+                    tooth_payload["presence_logit"] = float(np.asarray(presence_logits_np[b]).reshape(-1)[0])
+                    tooth_payload["presence_prob"] = float(np.asarray(presence_probs_np[b]).reshape(-1)[0])
                 if active_mask is not None:
                     tooth_payload["active_mask"] = {names[i]: bool(active_mask[i]) for i in range(len(names))}
                 tooth_meta_out = {}

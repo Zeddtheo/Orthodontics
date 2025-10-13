@@ -336,8 +336,17 @@ def upsert_manifest(case_id="001", arch="L"):
     man = COOK/"manifest.csv"
     rows = []
     if man.exists():
-        reader = csv.DictReader(man.read_text(encoding="utf-8").splitlines())
-        rows = [r for r in reader if not (r["case_id"] == case_id and r["arch"] == arch)]
+        data = man.read_bytes()
+        decoded = None
+        for encoding in ("utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
+            try:
+                decoded = data.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if decoded:
+            reader = csv.DictReader(decoded.splitlines())
+            rows = [r for r in reader if not (r.get("case_id") == case_id and r.get("arch") == arch)]
     samples = sorted((COOK/"samples").glob(f"{case_id}_{arch}_t*.npz"))
     for f in samples:
         fdi = f.stem.split("_t")[-1]

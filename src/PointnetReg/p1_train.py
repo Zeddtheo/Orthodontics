@@ -221,6 +221,8 @@ def train_all_teeth(args, device: torch.device) -> None:
         heads_config=heads_config,
         use_tnet=args.use_tnet,
         return_logits=True,
+        enable_presence_head=args.enable_presence_head,
+        presence_hidden=args.presence_hidden,
     ).to(device)
     print(f"heads_config={heads_config}")
 
@@ -266,6 +268,8 @@ def train_all_teeth(args, device: torch.device) -> None:
             refined_sum = 0.0
             refined_hit05 = 0
             refined_hit10 = 0
+            presence_sum = 0.0
+            presence_count = 0
             for batch in train_loader:
                 x = batch["x"].to(device, non_blocking=True)
                 y = batch["y"].to(device, non_blocking=True)
@@ -287,7 +291,12 @@ def train_all_teeth(args, device: torch.device) -> None:
 
                 optim.zero_grad(set_to_none=True)
                 with autocast(device.type, enabled=device.type == "cuda"):
-                    logits = model(x, tooth_id=tooth)
+                    model_out = model(x, tooth_id=tooth, return_presence=args.enable_presence_head)
+                    if isinstance(model_out, tuple):
+                        logits, presence_logits = model_out
+                    else:
+                        logits = model_out
+                        presence_logits = None
                     probs = torch.sigmoid(logits)
                     loss_target = y
                     if args.label_gamma != 1.0:
@@ -327,6 +336,11 @@ def train_all_teeth(args, device: torch.device) -> None:
                             if margin_deficit.numel() > 0:
                                 margin_loss_val = margin_deficit.mean()
                                 loss = loss + margin_weight * margin_loss_val
+                    presence_loss_val = torch.tensor(0.0, device=device)
+                    if args.enable_presence_head and presence_logits is not None and args.presence_loss_weight > 0.0:
+                        presence_target = torch.ones_like(presence_logits)
+                        presence_loss_val = F.binary_cross_entropy_with_logits(presence_logits, presence_target)
+                        loss = loss + args.presence_loss_weight * presence_loss_val
                 scaler.scale(loss).backward()
                 scaler.unscale_(optim)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -368,6 +382,10 @@ def train_all_teeth(args, device: torch.device) -> None:
                             refined_sum += float(errors_active.sum().item())
                             refined_hit05 += int(((errors <= 0.5) & active).sum().item())
                             refined_hit10 += int(((errors <= 1.0) & active).sum().item())
+                    if presence_logits is not None:
+                        probs_presence = torch.sigmoid(presence_logits.detach())
+                        presence_sum += float(probs_presence.sum().item())
+                        presence_count += int(probs_presence.numel())
             train_losses[tooth] = running / max(1, len(train_loader))
             train_stats[tooth] = {
                 "mae": (mae_sum / mae_count) if mae_count > 0 else 0.0,
@@ -380,6 +398,7 @@ def train_all_teeth(args, device: torch.device) -> None:
                 "refined_hit10": refined_hit10,
                 "margin": (margin_sum / active_total) if active_total > 0 else 0.0,
                 "soft_margin": (soft_margin_sum / active_total) if active_total > 0 else 0.0,
+                "presence": (presence_sum / presence_count) if presence_count > 0 else None,
             }
 
         mean_train = sum(train_losses.values()) / max(1, len(train_losses))
@@ -407,6 +426,8 @@ def train_all_teeth(args, device: torch.device) -> None:
                 refined_sum = 0.0
                 refined_hit05 = 0
                 refined_hit10 = 0
+                presence_sum = 0.0
+                presence_count = 0
                 for batch in val_loader:
                     x = batch["x"].to(device, non_blocking=True)
                     y = batch["y"].to(device, non_blocking=True)
@@ -425,7 +446,12 @@ def train_all_teeth(args, device: torch.device) -> None:
                     if landmarks_gt is not None:
                         landmarks_gt = landmarks_gt.to(device, non_blocking=True)
                         landmarks_gt = torch.nan_to_num(landmarks_gt, nan=0.0)
-                    logits = model(x, tooth_id=tooth)
+                    model_out = model(x, tooth_id=tooth, return_presence=args.enable_presence_head)
+                    if isinstance(model_out, tuple):
+                        logits, presence_logits = model_out
+                    else:
+                        logits = model_out
+                        presence_logits = None
                     probs = torch.sigmoid(logits)
                     loss_target = y
                     if args.label_gamma != 1.0:
@@ -433,15 +459,38 @@ def train_all_teeth(args, device: torch.device) -> None:
                     weight = torch.pow(loss_target, args.loss_power) + args.loss_eps
                     weight = weight * mask_exp
                     loss_map = mse_loss(probs, loss_target)
-                    running += (
-                        args.heatmap_loss_weight
-                        * (loss_map * weight).sum()
-                        / weight.sum().clamp(min=1e-12)
-                    ).item()
+                    denom = torch.clamp(weight.sum(), min=1e-12)
+                    heatmap_loss = (loss_map * weight).sum() / denom
+                    loss = args.heatmap_loss_weight * heatmap_loss
                     gt_idx = torch.argmax(y, dim=-1)
                     if landmarks_gt is None:
                         src_pos = pos if pos is not None else x[:, :3, :]
                         landmarks_gt = _gather_points(src_pos, gt_idx)
+                    if coord_weight > 0.0 and landmarks_gt is not None:
+                        pred_coords = heatmap_expectation(logits, pos, temperature=coord_temp, topk=args.coord_topk)
+                        coord_diff = pred_coords - landmarks_gt
+                        coord_loss_val = (coord_diff.abs() * mask_exp).sum() / torch.clamp(mask_exp.sum(), min=1e-12)
+                        loss = loss + coord_weight * coord_loss_val
+                    if peak_ce_weight > 0.0:
+                        active_flat = mask_exp.view(-1) > 0.5
+                        if active_flat.any():
+                            logits_flat = logits.view(-1, logits.shape[-1])[active_flat]
+                            gt_flat = gt_idx.view(-1)[active_flat]
+                            loss = loss + peak_ce_weight * torch.nn.functional.cross_entropy(logits_flat, gt_flat)
+                    if margin_weight > 0.0 and args.margin_floor > 0.0:
+                        top2_vals = logits.topk(2, dim=-1).values
+                        delta = top2_vals[..., 0] - top2_vals[..., 1]
+                        soft_margin = torch.sigmoid(delta)
+                        margin_mask = mask > 0.5
+                        if margin_mask.any():
+                            margin_deficit = F.relu(args.margin_floor - soft_margin[margin_mask])
+                            if margin_deficit.numel() > 0:
+                                margin_loss_val = margin_deficit.mean()
+                                loss = loss + margin_weight * margin_loss_val
+                    if args.enable_presence_head and presence_logits is not None and args.presence_loss_weight > 0.0:
+                        presence_target = torch.ones_like(presence_logits)
+                        loss = loss + args.presence_loss_weight * F.binary_cross_entropy_with_logits(presence_logits, presence_target)
+                    running += loss.item()
 
                     mask_bool = mask > 0.5
                     pred_idx = torch.argmax(logits, dim=-1)
@@ -475,6 +524,10 @@ def train_all_teeth(args, device: torch.device) -> None:
                             refined_sum += float(errors_active.sum().item())
                             refined_hit05 += int(((errors <= 0.5) & active).sum().item())
                             refined_hit10 += int(((errors <= 1.0) & active).sum().item())
+                    if presence_logits is not None:
+                        probs_presence = torch.sigmoid(presence_logits)
+                        presence_sum += float(probs_presence.sum().item())
+                        presence_count += int(probs_presence.numel())
                 val_losses[tooth] = running / max(1, len(val_loader))
                 val_stats[tooth] = {
                     "mae": (mae_sum / mae_count) if mae_count > 0 else 0.0,
@@ -487,6 +540,7 @@ def train_all_teeth(args, device: torch.device) -> None:
                     "refined_hit10": refined_hit10,
                     "margin": (margin_sum / active_total) if active_total > 0 else 0.0,
                     "soft_margin": (soft_margin_sum / active_total) if active_total > 0 else 0.0,
+                    "presence": (presence_sum / presence_count) if presence_count > 0 else None,
                 }
 
         mean_val = sum(val_losses.values()) / max(1, len(val_losses))
@@ -504,6 +558,9 @@ def train_all_teeth(args, device: torch.device) -> None:
                     "heads_config": heads_config,
                     "features": args.features,
                     "use_tnet": args.use_tnet,
+                    "enable_presence_head": args.enable_presence_head,
+                    "presence_hidden": args.presence_hidden,
+                    "presence_loss_weight": args.presence_loss_weight,
                     "coord_loss_weight": coord_weight,
                     "coord_loss_weight_spec": args.coord_loss_weight_spec,
                     "coord_weight_schedule": args.coord_weight_schedule,
@@ -532,6 +589,9 @@ def train_all_teeth(args, device: torch.device) -> None:
                     "heads_config": heads_config,
                     "features": args.features,
                     "use_tnet": args.use_tnet,
+                    "enable_presence_head": args.enable_presence_head,
+                    "presence_hidden": args.presence_hidden,
+                    "presence_loss_weight": args.presence_loss_weight,
                     "coord_loss_weight": coord_weight,
                     "coord_loss_weight_spec": args.coord_loss_weight_spec,
                     "coord_weight_schedule": args.coord_weight_schedule,
@@ -568,11 +628,15 @@ def train_all_teeth(args, device: torch.device) -> None:
                 vl = val_losses[tooth]
                 stat_tr = train_stats[tooth]
                 stat_vl = val_stats.get(tooth, stat_tr)
+                tr_presence = stat_tr.get("presence")
+                vl_presence = stat_vl.get("presence")
+                tr_presence_str = f" presence={tr_presence:.3f}" if tr_presence is not None else ""
+                vl_presence_str = f" presence={vl_presence:.3f}" if vl_presence is not None else ""
                 parts.append(
                     f"{tooth}:trn={tr:.6f}(mae={stat_tr['mae']:.4f}mm refined={stat_tr['refined_mae']:.4f}mm match={stat_tr['matches']}/{stat_tr['count']} "
-                    f"hit05={stat_tr['hit05']} hit10={stat_tr['hit10']} margin={stat_tr['margin']:.6f} soft_margin={stat_tr['soft_margin']:.6f})"
+                    f"hit05={stat_tr['hit05']} hit10={stat_tr['hit10']} margin={stat_tr['margin']:.6f} soft_margin={stat_tr['soft_margin']:.6f}{tr_presence_str})"
                     f"/val={vl:.6f}(mae={stat_vl['mae']:.4f}mm refined={stat_vl['refined_mae']:.4f}mm match={stat_vl['matches']}/{stat_vl['count']} "
-                    f"hit05={stat_vl['hit05']} hit10={stat_vl['hit10']} margin={stat_vl['margin']:.6f} soft_margin={stat_vl['soft_margin']:.6f})"
+                    f"hit05={stat_vl['hit05']} hit10={stat_vl['hit10']} margin={stat_vl['margin']:.6f} soft_margin={stat_vl['soft_margin']:.6f}{vl_presence_str})"
                 )
             msg = " | ".join(parts)
             print(msg)
@@ -598,6 +662,9 @@ def train_all_teeth(args, device: torch.device) -> None:
             "heads_config": heads_config,
             "features": args.features,
             "use_tnet": args.use_tnet,
+            "enable_presence_head": args.enable_presence_head,
+            "presence_hidden": args.presence_hidden,
+            "presence_loss_weight": args.presence_loss_weight,
             "coord_loss_weight": final_coord_weight,
             "coord_loss_weight_spec": args.coord_loss_weight_spec,
             "coord_weight_schedule": args.coord_weight_schedule,
@@ -655,6 +722,9 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--log_every", type=int, default=1)
     parser.add_argument("--disable_tnet", action="store_true", help="Disable TNet alignment.")
+    parser.add_argument("--disable_presence_head", action="store_true", help="Disable auxiliary presence classifier head.")
+    parser.add_argument("--presence_loss_weight", type=float, default=0.1, help="Weight for auxiliary presence BCE loss.")
+    parser.add_argument("--presence_hidden", type=int, default=128, help="Hidden width for the presence head MLP.")
     parser.add_argument("--early_stop", type=int, default=0, help="Stop training if no improvement for N epochs (0 = disabled).")
     parser.add_argument("--label_gamma", type=float, default=1.0, help="Optional sharpening factor for targets (y^gamma).")
     parser.add_argument("--loss_power", type=float, default=2.0, help="Exponent applied to target heatmaps for weighted MSE (>=0).")
@@ -699,6 +769,9 @@ def parse_args():
     args = parser.parse_args()
     args.tooth = DEFAULT_TOOTH_IDS if args.tooth.strip().lower() == "all" else [t.strip() for t in args.tooth.split(",") if t.strip()]
     args.use_tnet = not args.disable_tnet
+    args.enable_presence_head = not args.disable_presence_head
+    args.presence_loss_weight = max(0.0, float(args.presence_loss_weight))
+    args.presence_hidden = max(1, int(args.presence_hidden))
     args.case_filter = args.case.strip() if args.case and args.case.strip() else None
     coord_base, coord_schedule, coord_spec = parse_coord_loss_weight(args.coord_loss_weight)
     args.coord_loss_weight = coord_base

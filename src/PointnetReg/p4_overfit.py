@@ -108,6 +108,7 @@ def overfit_one_tooth(args, tooth_id: str, device: torch.device):
         heads_config={head_key: sample["y"].shape[0]},
         use_tnet=args.use_tnet,
         return_logits=True,
+        enable_presence_head=False,
         dropout_p=0.0,    # 过拟合时关闭
     ).to(device)
 
@@ -357,6 +358,7 @@ def overfit_shared(args, device: torch.device):
         heads_config=heads_config,
         use_tnet=args.use_tnet,
         return_logits=True,
+        enable_presence_head=False,
         dropout_p=0.0,
     ).to(device)
 

@@ -1,1511 +1,3235 @@
 {
-    "@schema": "https://raw.githubusercontent.com/slicer/slicer/master/Modules/Loadable/Markups/Resources/Schema/markups-schema-v1.0.3.json#",
-    "markups": [
+  "@schema": "https://raw.githubusercontent.com/slicer/slicer/master/Modules/Loadable/Markups/Resources/Schema/markups-schema-v1.0.3.json#",
+  "markups": [
+    {
+      "type": "Fiducial",
+      "coordinateSystem": "LPS",
+      "coordinateUnits": "mm",
+      "locked": true,
+      "fixedNumberOfControlPoints": false,
+      "labelFormat": "%N-%d",
+      "lastUsedControlPointNumber": 127,
+      "controlPoints": [
         {
-            "type": "Fiducial",
-            "coordinateSystem": "LPS",
-            "coordinateUnits": "mm",
-            "locked": true,
-            "fixedNumberOfControlPoints": false,
-            "labelFormat": "%N-%d",
-            "lastUsedControlPointNumber": 127,
-            "controlPoints": [
-                {
-                    "id": "2",
-                    "label": "17db",
-                    "description": "右上第二磨牙远中颊尖点",
-                    "associatedNodeID": "",
-                    "position": [29.080692221927265, -16.577029236311, 21.202715966464204],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "3",
-                    "label": "17mb",
-                    "description": "右上第二磨牙近中颊尖点",
-                    "associatedNodeID": "",
-                    "position": [27.15348265936285, -20.936231608794184, 18.93559562423635],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "4",
-                    "label": "17ml",
-                    "description": "右上第二磨牙近中舌尖点",
-                    "associatedNodeID": "",
-                    "position": [21.1768517570126, -18.571496604811607, 18.136323681128843],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "5",
-                    "label": "17dl",
-                    "description": "右上第二磨牙远中舌尖点",
-                    "associatedNodeID": "",
-                    "position": [23.87745225837738, -12.673235190217326, 19.815657206075585],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "6",
-                    "label": "17m",
-                    "description": "右上第二磨牙中央窝点",
-                    "associatedNodeID": "",
-                    "position": [25.679255685139495, -16.168327742767026, 17.85725109504024],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "7",
-                    "label": "17mr",
-                    "description": "右上第二磨牙近中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [24.000906101315447, -20.65226596292848, 17.047445217816758],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "8",
-                    "label": "17mc",
-                    "description": "右上第二磨牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [23.78481109622243, -20.95351478740474, 16.80475274412322],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "9",
-                    "label": "17dr",
-                    "description": "右上第二磨牙远中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [26.9400634765625, -12.623748779296875, 20.458520889282227],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "10",
-                    "label": "17dc",
-                    "description": "右上第二磨牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [26.85697465627971, -12.135138717201844, 20.5143730182902],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "11",
-                    "label": "17bg",
-                    "description": "右上第二磨牙颊沟点",
-                    "associatedNodeID": "",
-                    "position": [28.35441963929328, -18.63494152275312, 19.53407052177296],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "12",
-                    "label": "17bgb",
-                    "description": "右上第二磨牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [31.593456941013525, -18.079597357986493, 15.570136100847364],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "13",
-                    "label": "17lgb",
-                    "description": "右上第二磨牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [21.753302529265063, -14.189416625351967, 15.388492533490165],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "14",
-                    "label": "16db",
-                    "description": "右上第一磨牙远中颊尖点",
-                    "associatedNodeID": "",
-                    "position": [24.222136234972012, -27.882169894324594, 16.070811730041093],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "15",
-                    "label": "16mb",
-                    "description": "右上第一磨牙近中颊尖点",
-                    "associatedNodeID": "",
-                    "position": [23.306460118018677, -31.5118817226345, 14.199922823557841],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "16",
-                    "label": "16ml",
-                    "description": "右上第一磨牙近中舌尖点",
-                    "associatedNodeID": "",
-                    "position": [17.7024222950475, -29.302073814835452, 13.886874591838172],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "17",
-                    "label": "16dl",
-                    "description": "右上第一磨牙远中舌尖点",
-                    "associatedNodeID": "",
-                    "position": [19.288160144159846, -23.677904216423933, 15.989342815321315],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "18",
-                    "label": "16m",
-                    "description": "右上第一磨牙中央窝点",
-                    "associatedNodeID": "",
-                    "position": [22.30694289616676, -26.882521520757017, 14.092777147347746],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "19",
-                    "label": "16mr",
-                    "description": "右上第一磨牙近中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [19.839787379334766, -31.634829947117005, 12.49518729991265],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "20",
-                    "label": "16mc",
-                    "description": "右上第一磨牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [19.838502771800872, -31.749903500012945, 12.4469839905029],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "21",
-                    "label": "16dr",
-                    "description": "右上第一磨牙远中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [23.47801893900263, -22.049808385710357, 16.525495925924126],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "22",
-                    "label": "16dc",
-                    "description": "右上第一磨牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [23.542219658205134, -21.765719864763188, 16.36051806867504],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "23",
-                    "label": "16bg",
-                    "description": "右上第一磨牙颊沟点",
-                    "associatedNodeID": "",
-                    "position": [24.305076494641707, -29.40697724884171, 15.409307737273224],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "24",
-                    "label": "16bgb",
-                    "description": "右上第一磨牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [28.568363233899, -27.529888185728076, 11.281117750694271],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "25",
-                    "label": "16lgb",
-                    "description": "右上第一磨牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [18.58587111323113, -24.267693215233905, 11.561668838847638],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "26",
-                    "label": "15b",
-                    "description": "右上第二前磨牙颊尖点",
-                    "associatedNodeID": "",
-                    "position": [21.189899811245898, -37.94829802361715, 12.618225132738381],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "27",
-                    "label": "15l",
-                    "description": "右上第二前磨牙舌尖点",
-                    "associatedNodeID": "",
-                    "position": [16.538107573637244, -35.87723701466217, 11.238502623645303],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "28",
-                    "label": "15m",
-                    "description": "右上第二前磨牙中央窝点",
-                    "associatedNodeID": "",
-                    "position": [19.173440256712762, -36.12725752258603, 11.37822937656022],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "29",
-                    "label": "15mr",
-                    "description": "右上第二前磨牙近中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [18.82511290864915, -38.58196797632107, 10.009711338729474],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "30",
-                    "label": "15mc",
-                    "description": "右上第二前磨牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [18.704850806094115, -38.90985703547832, 9.812340286360147],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "31",
-                    "label": "15dr",
-                    "description": "右上第二前磨牙远中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [20.043657302856445, -33.639034271240234, 12.344165802001953],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "32",
-                    "label": "15dc",
-                    "description": "右上第二前磨牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [20.522898099577098, -32.734147477576236, 12.124601672860393],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "33",
-                    "label": "15bgb",
-                    "description": "右上第二前磨牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [25.437548775421284, -35.77697438224335, 7.733408465144677],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "34",
-                    "label": "15lgb",
-                    "description": "右上第二前磨牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [16.80607683087166, -33.871886534059406, 7.680696896429858],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "35",
-                    "label": "14b",
-                    "description": "右上第一前磨牙颊尖点",
-                    "associatedNodeID": "",
-                    "position": [21.179515958420172, -45.25906850703524, 9.814062770529972],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "36",
-                    "label": "14l",
-                    "description": "右上第一前磨牙舌尖点",
-                    "associatedNodeID": "",
-                    "position": [17.488567602903398, -42.92732288674975, 8.693602038235191],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "37",
-                    "label": "14m",
-                    "description": "右上第一前磨牙中央窝点",
-                    "associatedNodeID": "",
-                    "position": [18.796131230907516, -42.85164541831369, 8.689195007527161],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "38",
-                    "label": "14mr",
-                    "description": "右上第一前磨牙近中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [18.487841511971148, -45.01791812583288, 6.8904574790330315],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "39",
-                    "label": "14mc",
-                    "description": "右上第一前磨牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [18.459834690626035, -45.23737959642063, 6.789668233443969],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "40",
-                    "label": "14dr",
-                    "description": "右上第一前磨牙远中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [20.079980073797135, -40.82528375440464, 10.095200866269295],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "41",
-                    "label": "14dc",
-                    "description": "右上第一前磨牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [20.312812998490916, -40.23256588466607, 9.82594245795925],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "42",
-                    "label": "14bgb",
-                    "description": "右上第一前磨牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [23.220860158928794, -41.87842615393315, 2.392786527712314],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "43",
-                    "label": "14lgb",
-                    "description": "右上第一前磨牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [16.66609607943645, -40.84007300680492, 6.118839695935307],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "44",
-                    "label": "13m",
-                    "description": "右上尖牙牙尖点",
-                    "associatedNodeID": "",
-                    "position": [15.93538859231213, -49.449667585565024, 8.429436465582675],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "45",
-                    "label": "13dc",
-                    "description": "右上尖牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [18.870040581227393, -46.742103716920646, 6.190124438527633],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "46",
-                    "label": "13mc",
-                    "description": "右上尖牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [12.872270094347456, -48.775818877624246, 6.26111190976026],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "47",
-                    "label": "13bgb",
-                    "description": "右上尖牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [15.879384373011977, -47.56814912724526, -0.011000440796528288],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "48",
-                    "label": "13lgb",
-                    "description": "右上尖牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [14.662463884072919, -41.880732110765884, 4.4971587892933655],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "49",
-                    "label": "12m",
-                    "description": "右上侧切牙切缘中点",
-                    "associatedNodeID": "",
-                    "position": [9.735279122033887, -50.07528981502535, 8.22118898527846],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "50",
-                    "label": "12ma",
-                    "description": "右上侧切牙近中切角点",
-                    "associatedNodeID": "",
-                    "position": [7.429029933433627, -50.206590687899265, 8.391416355409703],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "51",
-                    "label": "12da",
-                    "description": "右上侧切牙远中切角点",
-                    "associatedNodeID": "",
-                    "position": [11.346152663113951, -49.223676451808416, 8.751151114327094],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "52",
-                    "label": "12dc",
-                    "description": "右上侧切牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [12.378757265208293, -48.636235923686, 7.8745394176890855],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "53",
-                    "label": "12mc",
-                    "description": "右上侧切牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [7.179434387073975, -50.095092893561045, 7.788639600271992],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "54",
-                    "label": "12bgb",
-                    "description": "右上侧切牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [9.773684059417064, -48.67732254049782, 0.7493172479284307],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "55",
-                    "label": "12lgb",
-                    "description": "右上侧切牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [9.628869326362901, -42.48108793573258, 3.235718233238643],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "56",
-                    "label": "11m",
-                    "description": "右上中切牙切缘中点",
-                    "associatedNodeID": "",
-                    "position": [4.77809725714914, -50.7399920654804, 8.293379843547914],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "57",
-                    "label": "11ma",
-                    "description": "右上中切牙近中切角点",
-                    "associatedNodeID": "",
-                    "position": [3.1075942995136057, -49.33642268400635, 9.176245190580996],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "58",
-                    "label": "11da",
-                    "description": "右上中切牙远中切角点",
-                    "associatedNodeID": "",
-                    "position": [6.485835388362, -51.434377770574585, 7.538886168516843],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "59",
-                    "label": "11dc",
-                    "description": "右上中切牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [6.7158682618136645, -51.392149344584624, 6.377007595673398],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "60",
-                    "label": "11mc",
-                    "description": "右上中切牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [2.748925530311368, -48.52404615622436, 8.067508940148954],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "61",
-                    "label": "11bgb",
-                    "description": "右上中切牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [4.310025509434627, -49.04056916856501, 0.8136132778334506],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "62",
-                    "label": "11lgb",
-                    "description": "右上中切牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [5.90580150257059, -43.99782888519476, 3.430549761832559],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "63",
-                    "label": "21m",
-                    "description": "左上中切牙切缘中点",
-                    "associatedNodeID": "",
-                    "position": [-0.923386981112142, -50.485327769013196, 8.235493502697636],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "64",
-                    "label": "21ma",
-                    "description": "左上中切牙近中切角点",
-                    "associatedNodeID": "",
-                    "position": [1.164492801506753, -50.240036165415205, 8.755586600795574],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "65",
-                    "label": "21da",
-                    "description": "左上中切牙远中切角点",
-                    "associatedNodeID": "",
-                    "position": [-2.7867653154910452, -50.69201355238311, 7.911587337403375],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "66",
-                    "label": "21mc",
-                    "description": "左上中切牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [2.1389676129102435, -49.959509891728416, 7.989175892425688],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "67",
-                    "label": "21dc",
-                    "description": "左上中切牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [-2.7782381979909587, -50.88840976393677, 6.718939859032366],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "68",
-                    "label": "21bgb",
-                    "description": "左上中切牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [0.19586580705389522, -49.365190061523386, 1.0817219680833978],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "69",
-                    "label": "21lgb",
-                    "description": "左上中切牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-0.20913615823491316, -43.376764784908254, 2.8665001742986647],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "70",
-                    "label": "22m",
-                    "description": "左上侧切牙切缘中点",
-                    "associatedNodeID": "",
-                    "position": [-6.030106303813319, -50.22806195759674, 8.202842292579128],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "71",
-                    "label": "22ma",
-                    "description": "左上侧切牙近中切角点",
-                    "associatedNodeID": "",
-                    "position": [-4.0437415734262885, -50.568389621928404, 7.846333424037461],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "72",
-                    "label": "22da",
-                    "description": "左上侧切牙远中切角点",
-                    "associatedNodeID": "",
-                    "position": [-8.06610980607639, -49.10369075026941, 7.622305531519849],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "73",
-                    "label": "22mc",
-                    "description": "左上侧切牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [-3.3597407366730936, -50.57258526005785, 7.473911966524774],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "74",
-                    "label": "22dc",
-                    "description": "左上侧切牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [-8.547758186537791, -48.642637381253635, 6.480803956851169],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "75",
-                    "label": "22bgb",
-                    "description": "左上侧切牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-5.383635991486697, -48.76617904491866, 0.4835485545054201],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "76",
-                    "label": "22lgb",
-                    "description": "左上侧切牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-4.107296335754411, -42.66106885921693, 2.9078377195079455],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "77",
-                    "label": "23m",
-                    "description": "左上尖牙牙尖点",
-                    "associatedNodeID": "",
-                    "position": [-11.624821394269022, -48.7983593849783, 7.245242438517607],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "78",
-                    "label": "23mc",
-                    "description": "左上尖牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [-9.018308650395886, -49.26256385554811, 4.5960355241957345],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "79",
-                    "label": "23dc",
-                    "description": "左上尖牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [-13.602304414518638, -45.41770751573401, 5.83017806340456],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "80",
-                    "label": "23bgb",
-                    "description": "左上尖牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-11.613031099275847, -46.36923284505435, -1.0952039098977142],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "81",
-                    "label": "23lgb",
-                    "description": "左上尖牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-8.271289710366702, -41.77860863949265, 3.3998405645149106],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "82",
-                    "label": "24b",
-                    "description": "左上第一前磨牙颊尖点",
-                    "associatedNodeID": "",
-                    "position": [-16.07558722167226, -43.56900428965299, 8.286226887682496],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "83",
-                    "label": "24l",
-                    "description": "左上第一前磨牙舌尖点",
-                    "associatedNodeID": "",
-                    "position": [-11.984958638181334, -41.07640072366413, 7.624692384370277],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "88",
-                    "label": "24m",
-                    "description": "左上第一前磨牙中央窝点",
-                    "associatedNodeID": "",
-                    "position": [-13.725434426598518, -41.65817683842682, 7.4381844891685915],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "89",
-                    "label": "24mr",
-                    "description": "左上第一前磨牙近中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [-13.447303553368565, -43.83559731284079, 5.379787451709646],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "90",
-                    "label": "24dr",
-                    "description": "左上第一前磨牙远中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [-15.029931218481707, -39.51658496123472, 8.771559339074877],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "91",
-                    "label": "24mc",
-                    "description": "左上第一前磨牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [-13.168461387310602, -43.915573929928684, 5.1787424798068],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "92",
-                    "label": "24dc",
-                    "description": "左上第一前磨牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [-14.853323701380956, -37.967254229373886, 8.051329302601346],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "93",
-                    "label": "24bgb",
-                    "description": "左上第一前磨牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-17.76836005673971, -40.66395250093088, 1.5911170994687716],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "94",
-                    "label": "24lgb",
-                    "description": "左上第一前磨牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-11.507824603814733, -38.18306371657563, 5.440073177643669],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "95",
-                    "label": "25b",
-                    "description": "左上第二前磨牙颊尖点",
-                    "associatedNodeID": "",
-                    "position": [-18.482761367112275, -36.87089302578026, 11.409961025302273],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "96",
-                    "label": "25l",
-                    "description": "左上第二前磨牙舌尖点",
-                    "associatedNodeID": "",
-                    "position": [-13.989564176827965, -35.34639625550505, 11.224885561731575],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "97",
-                    "label": "25m",
-                    "description": "左上第二前磨牙中央窝点",
-                    "associatedNodeID": "",
-                    "position": [-16.526232773515606, -35.23823136831574, 10.606553105072159],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "98",
-                    "label": "25mr",
-                    "description": "左上第二前磨牙近中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [-15.79513169394532, -37.81773636336385, 9.12053329514147],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "99",
-                    "label": "25dr",
-                    "description": "左上第二前磨牙远中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [-17.61377918731473, -32.562114051757064, 11.600431502367883],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "100",
-                    "label": "25mc",
-                    "description": "左上第二前磨牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [-15.730292005001756, -38.074037086084, 9.059976945811606],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "101",
-                    "label": "25dc",
-                    "description": "左上第二前磨牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [-17.90376315021444, -32.00634530257571, 11.381407287179272],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "102",
-                    "label": "25bgb",
-                    "description": "左上第二前磨牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-20.96831595783908, -35.399533703689634, 5.524856441111041],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "103",
-                    "label": "25lgb",
-                    "description": "左上第二前磨牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-13.164256139292732, -33.39986995274927, 7.56564119348711],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "104",
-                    "label": "26mb",
-                    "description": "左上第一磨牙近中颊尖点",
-                    "associatedNodeID": "",
-                    "position": [-19.887591607037784, -30.48252586552591, 13.779336285699308],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "105",
-                    "label": "26db",
-                    "description": "左上第一磨牙远中颊尖点",
-                    "associatedNodeID": "",
-                    "position": [-21.896875370172186, -26.54376364081898, 15.308969394195707],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "106",
-                    "label": "26ml",
-                    "description": "左上第一磨牙近中舌尖点",
-                    "associatedNodeID": "",
-                    "position": [-16.148206651560923, -23.536420536195234, 15.269929149032755],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "107",
-                    "label": "26dl",
-                    "description": "左上第一磨牙远中舌尖点",
-                    "associatedNodeID": "",
-                    "position": [-14.291823564608832, -29.322629954840583, 13.804456652471977],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "108",
-                    "label": "26m",
-                    "description": "左上第一磨牙中央窝点",
-                    "associatedNodeID": "",
-                    "position": [-18.084837453151536, -26.417740997283033, 13.26263531906924],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "109",
-                    "label": "26mr",
-                    "description": "左上第一磨牙近中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [-17.19830465304991, -30.99629221942508, 12.386096845793354],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "110",
-                    "label": "26mc",
-                    "description": "左上第一磨牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [-17.03375307128093, -31.1736698348952, 12.383798940205942],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "111",
-                    "label": "26dr",
-                    "description": "左上第一磨牙远中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [-21.185069306397747, -21.5168716106328, 15.461469954803981],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "112",
-                    "label": "26dc",
-                    "description": "左上第一磨牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [-21.52095767154216, -21.11047000554849, 15.359473170914313],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "113",
-                    "label": "26bg",
-                    "description": "左上第一磨牙颊沟点",
-                    "associatedNodeID": "",
-                    "position": [-21.018360639342177, -28.157069601988837, 14.270044922555421],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "114",
-                    "label": "26bgb",
-                    "description": "左上第一磨牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-24.234654978971662, -27.161414350194775, 9.198620277859042],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "115",
-                    "label": "26lgb",
-                    "description": "左上第一磨牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-14.394062011968856, -24.143691725689482, 10.965603910641057],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "116",
-                    "label": "27mb",
-                    "description": "左上第二磨牙近中颊尖点",
-                    "associatedNodeID": "",
-                    "position": [-24.591815280748982, -19.49385621195752, 16.995066101699443],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "117",
-                    "label": "27db",
-                    "description": "左上第二磨牙远中颊尖点",
-                    "associatedNodeID": "",
-                    "position": [-26.266693356071503, -15.131375562319384, 18.29566761259806],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "118",
-                    "label": "27ml",
-                    "description": "左上第二磨牙近中舌尖点",
-                    "associatedNodeID": "",
-                    "position": [-19.032978871485042, -18.429362196175568, 17.059225653551195],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "119",
-                    "label": "27dl",
-                    "description": "左上第二磨牙远中舌尖点",
-                    "associatedNodeID": "",
-                    "position": [-20.084756886843053, -13.010701208899693, 18.67654501308011],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "120",
-                    "label": "27m",
-                    "description": "左上第二磨牙中央窝点",
-                    "associatedNodeID": "",
-                    "position": [-22.652272917124698, -15.833814409133236, 15.994465057853397],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "121",
-                    "label": "27mr",
-                    "description": "左上第二磨牙近中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [-22.062453311029568, -20.079441370015406, 15.58900518058843],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "122",
-                    "label": "27mc",
-                    "description": "左上第二磨牙近中接触点",
-                    "associatedNodeID": "",
-                    "position": [-22.042971560444656, -20.42170381937472, 15.518094563288251],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "123",
-                    "label": "27dr",
-                    "description": "左上第二磨牙远中边缘嵴中点",
-                    "associatedNodeID": "",
-                    "position": [-23.527505954386726, -10.994241783765428, 18.196736927020474],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "124",
-                    "label": "27dc",
-                    "description": "左上第二磨牙远中接触点",
-                    "associatedNodeID": "",
-                    "position": [-23.445118120723485, -10.577401319522782, 18.322925869086724],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "125",
-                    "label": "27bg",
-                    "description": "左上第二磨牙颊沟点",
-                    "associatedNodeID": "",
-                    "position": [-25.843518417741993, -17.22187216004513, 17.3620969632072],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "126",
-                    "label": "27bgb",
-                    "description": "左上第二磨牙唇（颊）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-28.46750456695024, -16.024171419948118, 12.413669779402362],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                },
-                {
-                    "id": "127",
-                    "label": "27lgb",
-                    "description": "左上第二磨牙舌（腭）侧龈缘中点",
-                    "associatedNodeID": "",
-                    "position": [-18.242496169980193, -14.182837985105031, 14.305898751656258],
-                    "orientation": [-1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 1.0],
-                    "selected": true,
-                    "locked": false,
-                    "visibility": true,
-                    "positionStatus": "defined"
-                }
-            ],
-            "measurements": [],
-            "display": {
-                "visibility": true,
-                "opacity": 1.0,
-                "color": [0.95, 0.2, 0.2],
-                "selectedColor": [0.2, 0.8, 0.2],
-                "activeColor": [0.4, 1.0, 0.0],
-                "propertiesLabelVisibility": false,
-                "pointLabelsVisibility": true,
-                "textScale": 3.0,
-                "glyphType": "Sphere3D",
-                "glyphScale": 2.0,
-                "glyphSize": 5.0,
-                "useGlyphScale": true,
-                "sliceProjection": false,
-                "sliceProjectionUseFiducialColor": true,
-                "sliceProjectionOutlinedBehindSlicePlane": false,
-                "sliceProjectionColor": [1.0, 1.0, 1.0],
-                "sliceProjectionOpacity": 0.6,
-                "lineThickness": 0.2,
-                "lineColorFadingStart": 1.0,
-                "lineColorFadingEnd": 10.0,
-                "lineColorFadingSaturation": 1.0,
-                "lineColorFadingHueOffset": 0.0,
-                "handlesInteractive": false,
-                "translationHandleVisibility": true,
-                "rotationHandleVisibility": true,
-                "scaleHandleVisibility": true,
-                "interactionHandleScale": 3.0,
-                "snapMode": "toVisibleSurface"
-            }
+          "id": "2",
+          "label": "37db",
+          "description": "右上第二磨牙远中颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            29.080692221927265,
+            -16.577029236311,
+            21.202715966464204
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "3",
+          "label": "37mb",
+          "description": "右上第二磨牙近中颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            27.15348265936285,
+            -20.936231608794184,
+            18.93559562423635
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "4",
+          "label": "37ml",
+          "description": "右上第二磨牙近中舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            21.1768517570126,
+            -18.571496604811607,
+            18.136323681128843
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "5",
+          "label": "37dl",
+          "description": "右上第二磨牙远中舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            23.87745225837738,
+            -12.673235190217326,
+            19.815657206075585
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "6",
+          "label": "37m",
+          "description": "右上第二磨牙中央窝点",
+          "associatedNodeID": "",
+          "position": [
+            25.679255685139495,
+            -16.168327742767026,
+            17.85725109504024
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "7",
+          "label": "37mr",
+          "description": "右上第二磨牙近中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            24.000906101315447,
+            -20.65226596292848,
+            17.047445217816758
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "8",
+          "label": "37mc",
+          "description": "右上第二磨牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            23.78481109622243,
+            -20.95351478740474,
+            16.80475274412322
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "9",
+          "label": "37dr",
+          "description": "右上第二磨牙远中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            26.9400634765625,
+            -12.623748779296875,
+            20.458520889282227
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "10",
+          "label": "37dc",
+          "description": "右上第二磨牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            26.85697465627971,
+            -12.135138717201844,
+            20.5143730182902
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "11",
+          "label": "37bg",
+          "description": "右上第二磨牙颊沟点",
+          "associatedNodeID": "",
+          "position": [
+            28.35441963929328,
+            -18.63494152275312,
+            19.53407052177296
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "12",
+          "label": "37bgb",
+          "description": "右上第二磨牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            31.593456941013525,
+            -18.079597357986493,
+            15.570136100847364
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "13",
+          "label": "37lgb",
+          "description": "右上第二磨牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            21.753302529265063,
+            -14.189416625351967,
+            15.388492533490165
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "14",
+          "label": "36db",
+          "description": "右上第一磨牙远中颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            24.222136234972012,
+            -27.882169894324594,
+            16.070811730041093
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "15",
+          "label": "36mb",
+          "description": "右上第一磨牙近中颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            23.306460118018677,
+            -31.5118817226345,
+            14.199922823557841
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "16",
+          "label": "36ml",
+          "description": "右上第一磨牙近中舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            17.7024222950475,
+            -29.302073814835452,
+            13.886874591838172
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "17",
+          "label": "36dl",
+          "description": "右上第一磨牙远中舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            19.288160144159846,
+            -23.677904216423933,
+            15.989342815321315
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "18",
+          "label": "36m",
+          "description": "右上第一磨牙中央窝点",
+          "associatedNodeID": "",
+          "position": [
+            22.30694289616676,
+            -26.882521520757017,
+            14.092777147347746
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "19",
+          "label": "36mr",
+          "description": "右上第一磨牙近中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            19.839787379334766,
+            -31.634829947117005,
+            12.49518729991265
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "20",
+          "label": "36mc",
+          "description": "右上第一磨牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            19.838502771800872,
+            -31.749903500012945,
+            12.4469839905029
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "21",
+          "label": "36dr",
+          "description": "右上第一磨牙远中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            23.47801893900263,
+            -22.049808385710357,
+            16.525495925924126
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "22",
+          "label": "36dc",
+          "description": "右上第一磨牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            23.542219658205134,
+            -21.765719864763188,
+            16.36051806867504
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "23",
+          "label": "36bg",
+          "description": "右上第一磨牙颊沟点",
+          "associatedNodeID": "",
+          "position": [
+            24.305076494641707,
+            -29.40697724884171,
+            15.409307737273224
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "24",
+          "label": "36bgb",
+          "description": "右上第一磨牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            28.568363233899,
+            -27.529888185728076,
+            11.281117750694271
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "25",
+          "label": "36lgb",
+          "description": "右上第一磨牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            18.58587111323113,
+            -24.267693215233905,
+            11.561668838847638
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "26",
+          "label": "35b",
+          "description": "右上第二前磨牙颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            21.189899811245898,
+            -37.94829802361715,
+            12.618225132738381
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "27",
+          "label": "35l",
+          "description": "右上第二前磨牙舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            16.538107573637244,
+            -35.87723701466217,
+            11.238502623645303
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "28",
+          "label": "35m",
+          "description": "右上第二前磨牙中央窝点",
+          "associatedNodeID": "",
+          "position": [
+            19.173440256712762,
+            -36.12725752258603,
+            11.37822937656022
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "29",
+          "label": "35mr",
+          "description": "右上第二前磨牙近中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            18.82511290864915,
+            -38.58196797632107,
+            10.009711338729474
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "30",
+          "label": "35mc",
+          "description": "右上第二前磨牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            18.704850806094115,
+            -38.90985703547832,
+            9.812340286360147
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "31",
+          "label": "35dr",
+          "description": "右上第二前磨牙远中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            20.043657302856445,
+            -33.639034271240234,
+            12.344165802001953
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "32",
+          "label": "35dc",
+          "description": "右上第二前磨牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            20.522898099577098,
+            -32.734147477576236,
+            12.124601672860393
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "33",
+          "label": "35bgb",
+          "description": "右上第二前磨牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            25.437548775421284,
+            -35.77697438224335,
+            7.733408465144677
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "34",
+          "label": "35lgb",
+          "description": "右上第二前磨牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            16.80607683087166,
+            -33.871886534059406,
+            7.680696896429858
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "35",
+          "label": "34b",
+          "description": "右上第一前磨牙颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            21.179515958420172,
+            -45.25906850703524,
+            9.814062770529972
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "36",
+          "label": "34l",
+          "description": "右上第一前磨牙舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            17.488567602903398,
+            -42.92732288674975,
+            8.693602038235191
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "37",
+          "label": "34m",
+          "description": "右上第一前磨牙中央窝点",
+          "associatedNodeID": "",
+          "position": [
+            18.796131230907516,
+            -42.85164541831369,
+            8.689195007527161
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "38",
+          "label": "34mr",
+          "description": "右上第一前磨牙近中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            18.487841511971148,
+            -45.01791812583288,
+            6.8904574790330315
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "39",
+          "label": "34mc",
+          "description": "右上第一前磨牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            18.459834690626035,
+            -45.23737959642063,
+            6.789668233443969
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "40",
+          "label": "34dr",
+          "description": "右上第一前磨牙远中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            20.079980073797135,
+            -40.82528375440464,
+            10.095200866269295
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "41",
+          "label": "34dc",
+          "description": "右上第一前磨牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            20.312812998490916,
+            -40.23256588466607,
+            9.82594245795925
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "42",
+          "label": "34bgb",
+          "description": "右上第一前磨牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            23.220860158928794,
+            -41.87842615393315,
+            2.392786527712314
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "43",
+          "label": "34lgb",
+          "description": "右上第一前磨牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            16.66609607943645,
+            -40.84007300680492,
+            6.118839695935307
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "44",
+          "label": "33m",
+          "description": "右上尖牙牙尖点",
+          "associatedNodeID": "",
+          "position": [
+            15.93538859231213,
+            -49.449667585565024,
+            8.429436465582675
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "45",
+          "label": "33dc",
+          "description": "右上尖牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            18.870040581227393,
+            -46.742103716920646,
+            6.190124438527633
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "46",
+          "label": "33mc",
+          "description": "右上尖牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            12.872270094347456,
+            -48.775818877624246,
+            6.26111190976026
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "47",
+          "label": "33bgb",
+          "description": "右上尖牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            15.879384373011977,
+            -47.56814912724526,
+            -0.011000440796528288
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "48",
+          "label": "33lgb",
+          "description": "右上尖牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            14.662463884072919,
+            -41.880732110765884,
+            4.4971587892933655
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "49",
+          "label": "32m",
+          "description": "右上侧切牙切缘中点",
+          "associatedNodeID": "",
+          "position": [
+            9.735279122033887,
+            -50.07528981502535,
+            8.22118898527846
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "50",
+          "label": "32ma",
+          "description": "右上侧切牙近中切角点",
+          "associatedNodeID": "",
+          "position": [
+            7.429029933433627,
+            -50.206590687899265,
+            8.391416355409703
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "51",
+          "label": "32da",
+          "description": "右上侧切牙远中切角点",
+          "associatedNodeID": "",
+          "position": [
+            11.346152663113951,
+            -49.223676451808416,
+            8.751151114327094
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "52",
+          "label": "32dc",
+          "description": "右上侧切牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            12.378757265208293,
+            -48.636235923686,
+            7.8745394176890855
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "53",
+          "label": "32mc",
+          "description": "右上侧切牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            7.179434387073975,
+            -50.095092893561045,
+            7.788639600271992
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "54",
+          "label": "32bgb",
+          "description": "右上侧切牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            9.773684059417064,
+            -48.67732254049782,
+            0.7493172479284307
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "55",
+          "label": "32lgb",
+          "description": "右上侧切牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            9.628869326362901,
+            -42.48108793573258,
+            3.235718233238643
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "56",
+          "label": "31m",
+          "description": "右上中切牙切缘中点",
+          "associatedNodeID": "",
+          "position": [
+            4.77809725714914,
+            -50.7399920654804,
+            8.293379843547914
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "57",
+          "label": "31ma",
+          "description": "右上中切牙近中切角点",
+          "associatedNodeID": "",
+          "position": [
+            3.1075942995136057,
+            -49.33642268400635,
+            9.176245190580996
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "58",
+          "label": "31da",
+          "description": "右上中切牙远中切角点",
+          "associatedNodeID": "",
+          "position": [
+            6.485835388362,
+            -51.434377770574585,
+            7.538886168516843
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "59",
+          "label": "31dc",
+          "description": "右上中切牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            6.7158682618136645,
+            -51.392149344584624,
+            6.377007595673398
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "60",
+          "label": "31mc",
+          "description": "右上中切牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            2.748925530311368,
+            -48.52404615622436,
+            8.067508940148954
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "61",
+          "label": "31bgb",
+          "description": "右上中切牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            4.310025509434627,
+            -49.04056916856501,
+            0.8136132778334506
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "62",
+          "label": "31lgb",
+          "description": "右上中切牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            5.90580150257059,
+            -43.99782888519476,
+            3.430549761832559
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "63",
+          "label": "41m",
+          "description": "左上中切牙切缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -0.923386981112142,
+            -50.485327769013196,
+            8.235493502697636
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "64",
+          "label": "41ma",
+          "description": "左上中切牙近中切角点",
+          "associatedNodeID": "",
+          "position": [
+            1.164492801506753,
+            -50.240036165415205,
+            8.755586600795574
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "65",
+          "label": "41da",
+          "description": "左上中切牙远中切角点",
+          "associatedNodeID": "",
+          "position": [
+            -2.7867653154910452,
+            -50.69201355238311,
+            7.911587337403375
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "66",
+          "label": "41mc",
+          "description": "左上中切牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            2.1389676129102435,
+            -49.959509891728416,
+            7.989175892425688
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "67",
+          "label": "41dc",
+          "description": "左上中切牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -2.7782381979909587,
+            -50.88840976393677,
+            6.718939859032366
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "68",
+          "label": "41bgb",
+          "description": "左上中切牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            0.19586580705389522,
+            -49.365190061523386,
+            1.0817219680833978
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "69",
+          "label": "41lgb",
+          "description": "左上中切牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -0.20913615823491316,
+            -43.376764784908254,
+            2.8665001742986647
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "70",
+          "label": "42m",
+          "description": "左上侧切牙切缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -6.030106303813319,
+            -50.22806195759674,
+            8.202842292579128
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "71",
+          "label": "42ma",
+          "description": "左上侧切牙近中切角点",
+          "associatedNodeID": "",
+          "position": [
+            -4.0437415734262885,
+            -50.568389621928404,
+            7.846333424037461
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "72",
+          "label": "42da",
+          "description": "左上侧切牙远中切角点",
+          "associatedNodeID": "",
+          "position": [
+            -8.06610980607639,
+            -49.10369075026941,
+            7.622305531519849
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "73",
+          "label": "42mc",
+          "description": "左上侧切牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -3.3597407366730936,
+            -50.57258526005785,
+            7.473911966524774
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "74",
+          "label": "42dc",
+          "description": "左上侧切牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -8.547758186537791,
+            -48.642637381253635,
+            6.480803956851169
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "75",
+          "label": "42bgb",
+          "description": "左上侧切牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -5.383635991486697,
+            -48.76617904491866,
+            0.4835485545054201
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "76",
+          "label": "42lgb",
+          "description": "左上侧切牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -4.107296335754411,
+            -42.66106885921693,
+            2.9078377195079455
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "77",
+          "label": "43m",
+          "description": "左上尖牙牙尖点",
+          "associatedNodeID": "",
+          "position": [
+            -11.624821394269022,
+            -48.7983593849783,
+            7.245242438517607
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "78",
+          "label": "43mc",
+          "description": "左上尖牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -9.018308650395886,
+            -49.26256385554811,
+            4.5960355241957345
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "79",
+          "label": "43dc",
+          "description": "左上尖牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -13.602304414518638,
+            -45.41770751573401,
+            5.83017806340456
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "80",
+          "label": "43bgb",
+          "description": "左上尖牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -11.613031099275847,
+            -46.36923284505435,
+            -1.0952039098977142
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "81",
+          "label": "43lgb",
+          "description": "左上尖牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -8.271289710366702,
+            -41.77860863949265,
+            3.3998405645149106
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "82",
+          "label": "44b",
+          "description": "左上第一前磨牙颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            -16.07558722167226,
+            -43.56900428965299,
+            8.286226887682496
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "83",
+          "label": "44l",
+          "description": "左上第一前磨牙舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            -11.984958638181334,
+            -41.07640072366413,
+            7.624692384370277
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "88",
+          "label": "44m",
+          "description": "左上第一前磨牙中央窝点",
+          "associatedNodeID": "",
+          "position": [
+            -13.725434426598518,
+            -41.65817683842682,
+            7.4381844891685915
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "89",
+          "label": "44mr",
+          "description": "左上第一前磨牙近中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            -13.447303553368565,
+            -43.83559731284079,
+            5.379787451709646
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "90",
+          "label": "44dr",
+          "description": "左上第一前磨牙远中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            -15.029931218481707,
+            -39.51658496123472,
+            8.771559339074877
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "91",
+          "label": "44mc",
+          "description": "左上第一前磨牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -13.168461387310602,
+            -43.915573929928684,
+            5.1787424798068
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "92",
+          "label": "44dc",
+          "description": "左上第一前磨牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -14.853323701380956,
+            -37.967254229373886,
+            8.051329302601346
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "93",
+          "label": "44bgb",
+          "description": "左上第一前磨牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -17.76836005673971,
+            -40.66395250093088,
+            1.5911170994687716
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "94",
+          "label": "44lgb",
+          "description": "左上第一前磨牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -11.507824603814733,
+            -38.18306371657563,
+            5.440073177643669
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "95",
+          "label": "45b",
+          "description": "左上第二前磨牙颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            -18.482761367112275,
+            -36.87089302578026,
+            11.409961025302273
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "96",
+          "label": "45l",
+          "description": "左上第二前磨牙舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            -13.989564176827965,
+            -35.34639625550505,
+            11.224885561731575
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "97",
+          "label": "45m",
+          "description": "左上第二前磨牙中央窝点",
+          "associatedNodeID": "",
+          "position": [
+            -16.526232773515606,
+            -35.23823136831574,
+            10.606553105072159
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "98",
+          "label": "45mr",
+          "description": "左上第二前磨牙近中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            -15.79513169394532,
+            -37.81773636336385,
+            9.12053329514147
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "99",
+          "label": "45dr",
+          "description": "左上第二前磨牙远中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            -17.61377918731473,
+            -32.562114051757064,
+            11.600431502367883
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "100",
+          "label": "45mc",
+          "description": "左上第二前磨牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -15.730292005001756,
+            -38.074037086084,
+            9.059976945811606
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "101",
+          "label": "45dc",
+          "description": "左上第二前磨牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -17.90376315021444,
+            -32.00634530257571,
+            11.381407287179272
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "102",
+          "label": "45bgb",
+          "description": "左上第二前磨牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -20.96831595783908,
+            -35.399533703689634,
+            5.524856441111041
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "103",
+          "label": "45lgb",
+          "description": "左上第二前磨牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -13.164256139292732,
+            -33.39986995274927,
+            7.56564119348711
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "104",
+          "label": "46mb",
+          "description": "左上第一磨牙近中颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            -19.887591607037784,
+            -30.48252586552591,
+            13.779336285699308
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "105",
+          "label": "46db",
+          "description": "左上第一磨牙远中颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            -21.896875370172186,
+            -26.54376364081898,
+            15.308969394195707
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "106",
+          "label": "46ml",
+          "description": "左上第一磨牙近中舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            -16.148206651560923,
+            -23.536420536195234,
+            15.269929149032755
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "107",
+          "label": "46dl",
+          "description": "左上第一磨牙远中舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            -14.291823564608832,
+            -29.322629954840583,
+            13.804456652471977
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "108",
+          "label": "46m",
+          "description": "左上第一磨牙中央窝点",
+          "associatedNodeID": "",
+          "position": [
+            -18.084837453151536,
+            -26.417740997283033,
+            13.26263531906924
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "109",
+          "label": "46mr",
+          "description": "左上第一磨牙近中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            -17.19830465304991,
+            -30.99629221942508,
+            12.386096845793354
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "110",
+          "label": "46mc",
+          "description": "左上第一磨牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -17.03375307128093,
+            -31.1736698348952,
+            12.383798940205942
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "111",
+          "label": "46dr",
+          "description": "左上第一磨牙远中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            -21.185069306397747,
+            -21.5168716106328,
+            15.461469954803981
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "112",
+          "label": "46dc",
+          "description": "左上第一磨牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -21.52095767154216,
+            -21.11047000554849,
+            15.359473170914313
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "113",
+          "label": "46bg",
+          "description": "左上第一磨牙颊沟点",
+          "associatedNodeID": "",
+          "position": [
+            -21.018360639342177,
+            -28.157069601988837,
+            14.270044922555421
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "114",
+          "label": "46bgb",
+          "description": "左上第一磨牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -24.234654978971662,
+            -27.161414350194775,
+            9.198620277859042
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "115",
+          "label": "46lgb",
+          "description": "左上第一磨牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -14.394062011968856,
+            -24.143691725689482,
+            10.965603910641057
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "116",
+          "label": "47mb",
+          "description": "左上第二磨牙近中颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            -24.591815280748982,
+            -19.49385621195752,
+            16.995066101699443
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "117",
+          "label": "47db",
+          "description": "左上第二磨牙远中颊尖点",
+          "associatedNodeID": "",
+          "position": [
+            -26.266693356071503,
+            -15.131375562319384,
+            18.29566761259806
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "118",
+          "label": "47ml",
+          "description": "左上第二磨牙近中舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            -19.032978871485042,
+            -18.429362196175568,
+            17.059225653551195
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "119",
+          "label": "47dl",
+          "description": "左上第二磨牙远中舌尖点",
+          "associatedNodeID": "",
+          "position": [
+            -20.084756886843053,
+            -13.010701208899693,
+            18.67654501308011
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "120",
+          "label": "47m",
+          "description": "左上第二磨牙中央窝点",
+          "associatedNodeID": "",
+          "position": [
+            -22.652272917124698,
+            -15.833814409133236,
+            15.994465057853397
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "121",
+          "label": "47mr",
+          "description": "左上第二磨牙近中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            -22.062453311029568,
+            -20.079441370015406,
+            15.58900518058843
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "122",
+          "label": "47mc",
+          "description": "左上第二磨牙近中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -22.042971560444656,
+            -20.42170381937472,
+            15.518094563288251
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "123",
+          "label": "47dr",
+          "description": "左上第二磨牙远中边缘嵴中点",
+          "associatedNodeID": "",
+          "position": [
+            -23.527505954386726,
+            -10.994241783765428,
+            18.196736927020474
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "124",
+          "label": "47dc",
+          "description": "左上第二磨牙远中接触点",
+          "associatedNodeID": "",
+          "position": [
+            -23.445118120723485,
+            -10.577401319522782,
+            18.322925869086724
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "125",
+          "label": "47bg",
+          "description": "左上第二磨牙颊沟点",
+          "associatedNodeID": "",
+          "position": [
+            -25.843518417741993,
+            -17.22187216004513,
+            17.3620969632072
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "126",
+          "label": "47bgb",
+          "description": "左上第二磨牙唇（颊）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -28.46750456695024,
+            -16.024171419948118,
+            12.413669779402362
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
+        },
+        {
+          "id": "127",
+          "label": "47lgb",
+          "description": "左上第二磨牙舌（腭）侧龈缘中点",
+          "associatedNodeID": "",
+          "position": [
+            -18.242496169980193,
+            -14.182837985105031,
+            14.305898751656258
+          ],
+          "orientation": [
+            -1.0,
+            -0.0,
+            -0.0,
+            -0.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "selected": true,
+          "locked": false,
+          "visibility": true,
+          "positionStatus": "defined"
         }
-    ]
+      ],
+      "measurements": [],
+      "display": {
+        "visibility": true,
+        "opacity": 1.0,
+        "color": [
+          0.95,
+          0.2,
+          0.2
+        ],
+        "selectedColor": [
+          0.2,
+          0.8,
+          0.2
+        ],
+        "activeColor": [
+          0.4,
+          1.0,
+          0.0
+        ],
+        "propertiesLabelVisibility": false,
+        "pointLabelsVisibility": true,
+        "textScale": 3.0,
+        "glyphType": "Sphere3D",
+        "glyphScale": 2.0,
+        "glyphSize": 5.0,
+        "useGlyphScale": true,
+        "sliceProjection": false,
+        "sliceProjectionUseFiducialColor": true,
+        "sliceProjectionOutlinedBehindSlicePlane": false,
+        "sliceProjectionColor": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "sliceProjectionOpacity": 0.6,
+        "lineThickness": 0.2,
+        "lineColorFadingStart": 1.0,
+        "lineColorFadingEnd": 10.0,
+        "lineColorFadingSaturation": 1.0,
+        "lineColorFadingHueOffset": 0.0,
+        "handlesInteractive": false,
+        "translationHandleVisibility": true,
+        "rotationHandleVisibility": true,
+        "scaleHandleVisibility": true,
+        "interactionHandleScale": 3.0,
+        "snapMode": "toVisibleSurface"
+      }
+    }
+  ]
 }

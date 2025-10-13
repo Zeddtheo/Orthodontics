@@ -2,7 +2,7 @@
 # A lightweight PointNet-Reg backbone for ROI landmark heatmap regression.
 # Focus: clean model only (no dataset/loss/decoder here).
 
-from typing import Optional, Dict, Union
+from typing import Optional, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -101,12 +101,15 @@ class PointNetReg(nn.Module):
         norm: str = "gn",
         dropout_p: float = 0.0,
         return_logits: bool = True,
+        enable_presence_head: bool = True,
+        presence_hidden: int = 128,
     ):
         super().__init__()
         assert in_channels >= 3, "in_channels must include xyz as first 3 dims."
         self.in_channels = in_channels
         self.use_tnet = use_tnet
         self.return_logits = return_logits
+        self.enable_presence_head = enable_presence_head
 
         self.multi_head = heads_config is not None
         self.heads_config: Optional[Dict[str, int]] = None
@@ -129,23 +132,53 @@ class PointNetReg(nn.Module):
             if not heads_config:
                 raise ValueError("heads_config must be provided when multi_head is enabled.")
             self.heads_config = {self._normalize_head_key(k): int(v) for k, v in heads_config.items()}
-            self.head2 = None
-            self.heads = nn.ModuleDict({
+            self.fused_heads = nn.ModuleDict({
                 key: nn.Conv1d(256, channels, 1) for key, channels in self.heads_config.items()
             })
-            self.default_head_key = next(iter(self.heads))
+            self.local_heads = nn.ModuleDict({
+                key: nn.Conv1d(256, channels, 1) for key, channels in self.heads_config.items()
+            })
+            if self.enable_presence_head:
+                self.presence_heads = nn.ModuleDict({
+                    key: nn.Sequential(
+                        nn.Linear(256, presence_hidden),
+                        nn.ReLU(inplace=True),
+                        nn.Linear(presence_hidden, 1),
+                    )
+                    for key in self.heads_config
+                })
+            else:
+                self.presence_heads = None
+            self.presence_head = None
+            self.default_head_key = next(iter(self.fused_heads))
             self.num_landmarks = None
         else:
-            self.heads = None
+            self.fused_heads = None
+            self.local_heads = None
             self.heads_config = None
             self.default_head_key = None
-            self.head2 = nn.Conv1d(256, num_landmarks, 1)
+            self.fused_head = nn.Conv1d(256, num_landmarks, 1)
+            self.local_head = nn.Conv1d(256, num_landmarks, 1)
+            if self.enable_presence_head:
+                self.presence_head = nn.Sequential(
+                    nn.Linear(256, presence_hidden),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(presence_hidden, 1),
+                )
+            else:
+                self.presence_head = None
+            self.presence_heads = None
             self.num_landmarks = num_landmarks
 
         self.act = nn.ReLU(inplace=True)
         self.apply(init_weights)
 
-    def forward(self, x: torch.Tensor, tooth_id: Optional[Union[str, int]] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        tooth_id: Optional[Union[str, int]] = None,
+        return_presence: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Optional[torch.Tensor]]]:
         # x: (B,C,N) with xyz in x[:, :3, :]
         B, C, N = x.shape
         xyz, extras = x[:, :3, :], x[:, 3:, :]
@@ -182,13 +215,30 @@ class PointNetReg(nn.Module):
         h = self.dropout(h)
         if self.multi_head:
             head_key = self._normalize_head_key(tooth_id)
-            if head_key not in self.heads:
-                raise KeyError(f"Head '{head_key}' not found. Available: {list(self.heads.keys())}")
-            logits = self.heads[head_key](h)
+            if head_key not in self.fused_heads:
+                raise KeyError(f"Head '{head_key}' not found. Available: {list(self.fused_heads.keys())}")
+            fused_logits = self.fused_heads[head_key](h)
+            local_logits = self.local_heads[head_key](feat_local)
+            logits = fused_logits + local_logits
+            if self.enable_presence_head and self.presence_heads:
+                pooled = torch.max(h, dim=2).values
+                presence_logits = self.presence_heads[head_key](pooled)
+            else:
+                presence_logits = None
         else:
-            logits = self.head2(h)                    # (B,L,N)
+            fused_logits = self.fused_head(h)
+            local_logits = self.local_head(feat_local)
+            logits = fused_logits + local_logits
+            if self.enable_presence_head and self.presence_head is not None:
+                pooled = torch.max(h, dim=2).values
+                presence_logits = self.presence_head(pooled)
+            else:
+                presence_logits = None
 
-        return logits if self.return_logits else torch.sigmoid(logits)
+        heatmap = logits if self.return_logits else torch.sigmoid(logits)
+        if return_presence:
+            return heatmap, presence_logits
+        return heatmap
 
     @property
     def last_tnet_matrix(self) -> Optional[torch.Tensor]:

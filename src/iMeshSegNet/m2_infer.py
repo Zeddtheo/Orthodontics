@@ -21,7 +21,7 @@ from m0_dataset import (
     _decim_cache_path,
     _assign_knn_cache_path,
 )
-from m3_postprocess import PPConfig, postprocess_6k_10k_full  # 近似graphcut + SVM
+from m3_postprocess import PPConfig, postprocess_6k_10k_full, build_cell_adjacency  # 近似graphcut + SVM
 # ^ 若你把 postprocess 文件名不同，请同步这里的导入
 
 # ---------------- 色表（0..14） ----------------
@@ -277,6 +277,11 @@ def _infer_one(
     # 读取 full 原始网格（用于最终着色保存）
     orig = pv.read(str(inp_path))
     orig_centers = orig.cell_centers().points.astype(np.float32)
+    try:
+        orig_tri = orig.triangulate()
+    except Exception:
+        orig_tri = orig
+    full_adjacency = build_cell_adjacency(orig_tri)
 
     # 读取 10k decimated（契约优先，其次回退）
     mesh10k = _read_decimated(stem, meta, inp_path)
@@ -345,12 +350,19 @@ def _infer_one(
         cfg.gc_k = 4
         cfg.gc_iterations = 1
         kk = meta.get("knn_k", {"to10k": 3, "tofull": 3})
-        cfg.knn_10k = int(kk.get("to10k", 3))
-        cfg.knn_full = int(kk.get("tofull", 3))
-        cfg.min_component_size = 80
-        cfg.min_component_size_full = 200
+        cfg.knn_10k = max(3, int(kk.get("to10k", 3)))
+        cfg.knn_full = max(3, int(kk.get("tofull", 3)))
+        cfg.clean_component_neighbors = 6
+        cfg.low_conf_neighbors = 6
+        cfg.min_component_size = 40
+        cfg.min_component_size_full = 10
         cfg.fill_radius = 0.2
-        cfg.seed_conf_th = 0.7
+        cfg.low_conf_threshold = 0.0
+        cfg.seed_conf_th = 0.95
+        cfg.gingiva_dilate_iters = 0
+        cfg.gingiva_label = max(int(meta.get("num_classes", 1)) - 1, 0)
+        cfg.gingiva_protect_seeds = True
+        cfg.gingiva_protect_conf = 0.95
     # 从 decimated 10k 里取映射（两种可能的字段名都支持）
     orig_ids = None
     assign_ids = None
@@ -404,6 +416,7 @@ def _infer_one(
         assign_indices=assign_indices,
         assign_weights=assign_weights,
         cfg=cfg,
+        full_adjacency=full_adjacency,
     )
     soft_ratio = logs.get('soft_seed_ratio', logs.get('seed_ratio', 0.0))
     print(f"[Post] conf10_mean={logs.get('conf10_mean', -1):.3f}, seed_ratio={logs.get('seed_ratio', 0.0):.3f}, soft_seed={soft_ratio:.3f}")

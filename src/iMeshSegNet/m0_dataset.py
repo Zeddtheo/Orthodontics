@@ -181,6 +181,24 @@ def _build_soft_assign_cache(
         dec_centers = dec_mesh.cell_centers().points.astype(np.float32)
         if full_centers.size == 0 or dec_centers.size == 0:
             return
+        # 确保具备法向
+        if "Normals" not in full_mesh.cell_data:
+            full_mesh = full_mesh.compute_normals(cell_normals=True, point_normals=False, inplace=False)
+        if "Normals" not in dec_mesh.cell_data:
+            dec_mesh = dec_mesh.compute_normals(cell_normals=True, point_normals=False, inplace=False)
+        full_normals = np.asarray(full_mesh.cell_data.get("Normals"), dtype=np.float32, copy=False)
+        dec_normals = np.asarray(dec_mesh.cell_data.get("Normals"), dtype=np.float32, copy=False)
+        if full_normals.shape[0] != full_centers.shape[0]:
+            full_normals = np.zeros_like(full_centers)
+        if dec_normals.shape[0] != dec_centers.shape[0]:
+            dec_normals = np.zeros_like(dec_centers)
+        # 归一化
+        def _safe_normalize(arr: np.ndarray) -> np.ndarray:
+            norm = np.linalg.norm(arr, axis=1, keepdims=True)
+            return np.divide(arr, np.clip(norm, 1e-6, None), out=np.zeros_like(arr), where=norm > 1e-6)
+        full_normals = _safe_normalize(full_normals)
+        dec_normals = _safe_normalize(dec_normals)
+
         k_eff = max(1, min(int(knn_k), dec_centers.shape[0]))
         nn = NearestNeighbors(n_neighbors=k_eff, algorithm="auto")
         nn.fit(dec_centers)
@@ -193,6 +211,17 @@ def _build_soft_assign_cache(
         areas = np.clip(areas, 1e-8, None)
         weights = 1.0 / np.clip(dists, 1e-8, None)
         weights *= areas[indices]
+        # 法向相似度加权（抑制跨面传播）
+        selected_normals = dec_normals[indices]  # (N_full, k, 3)
+        full_normals_exp = full_normals[:, None, :]  # (N_full, 1, 3)
+        cos_sim = np.clip(np.abs((selected_normals * full_normals_exp).sum(axis=2)), 0.0, 1.0)
+        angle_thresh = np.cos(np.radians(40.0))
+        valid_mask = cos_sim >= angle_thresh
+        gamma = 3.0
+        angular_weights = np.exp(-gamma * (1.0 - cos_sim))
+        angular_weights *= valid_mask.astype(np.float32)
+        weights *= angular_weights
+
         weight_sum = weights.sum(axis=1, keepdims=True)
         weights = np.divide(
             weights,
@@ -200,6 +229,11 @@ def _build_soft_assign_cache(
             out=np.full_like(weights, 1.0 / float(k_eff)),
             where=weight_sum > 1e-8,
         ).astype(np.float32, copy=False)
+        # 若全部权重被筛空，则退化为均匀
+        zero_mask = ~np.isfinite(weights).all(axis=1) | (weights.sum(axis=1) <= 1e-6)
+        if np.any(zero_mask):
+            weights[zero_mask] = 1.0 / float(k_eff)
+
         assign_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(assign_path, indices[:, 0].astype(np.int32, copy=False), allow_pickle=False)
         np.savez(
@@ -227,6 +261,7 @@ def _load_or_build_decimated_mm(raw_path: Path, target_cells: int) -> pv.PolyDat
 
     mesh_full = _ensure_polydata(pv.read(str(raw_path))).triangulate()
     mesh_mm = mesh_full.copy(deep=True)
+    orig_centers = mesh_full.cell_centers().points.astype(np.float32)
 
     label_info = find_label_array(mesh_full)
     labels = None
