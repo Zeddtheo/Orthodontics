@@ -11,7 +11,7 @@ from shutil import copy2
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -27,6 +27,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from m0_dataset import (
+    ARCH_LABEL_ORDERS,
     DataConfig,
     SEG_NUM_CLASSES,
     SINGLE_ARCH_NUM_CLASSES,
@@ -251,6 +252,14 @@ class Trainer:
             "best_val_dsc": float(self.best_val_dsc),
             "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
         }
+        label_book: Dict[str, Dict[int, object]] = {}
+        gingiva_idx = int(getattr(self.config.data_config, "gingiva_class_id", 15))
+        for jaw, order in ARCH_LABEL_ORDERS.items():
+            mapping: Dict[int, object] = {0: "background"}
+            for idx, fdi in enumerate(order, start=1):
+                mapping[idx] = int(fdi)
+            mapping[gingiva_idx] = "gingiva"
+            label_book[jaw] = mapping
         payload = {
             "state_dict": self.model.state_dict(),
             "num_classes": self.model.num_classes,
@@ -259,6 +268,8 @@ class Trainer:
             "pipeline": pipeline,
             "training": training_meta,
             "ce_class_weights": self.config.ce_class_weights,
+            "label_book": label_book,
+            "label_mode": getattr(self.config.data_config, "label_mode", "single_arch_16"),
         }
         return payload
 

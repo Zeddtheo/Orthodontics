@@ -1,7 +1,7 @@
 from pathlib import Path
 import argparse, random, time
 from shutil import copy2
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -23,13 +23,39 @@ DEFAULT_TOOTH_IDS = [
 ]
 
 
-def heatmap_expectation(logits: torch.Tensor, pos: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+def _ensure_xyz(pos: torch.Tensor) -> torch.Tensor:
+    if pos.dim() != 3:
+        raise ValueError(f"Expected pos to have 3 dims, got {pos.shape}")
+    if pos.shape[1] == 3 and pos.shape[2] != 3:
+        return pos.transpose(1, 2).contiguous()
+    return pos.contiguous()
+
+
+def heatmap_expectation(
+    logits: torch.Tensor,
+    pos: torch.Tensor,
+    temperature: float = 1.0,
+    topk: int = 0,
+) -> torch.Tensor:
     if temperature <= 0:
         temperature = 1.0
+    pos_xyz = _ensure_xyz(pos)
+    if pos_xyz.dtype != logits.dtype:
+        pos_xyz = pos_xyz.to(dtype=logits.dtype)
+    if topk and topk > 0:
+        k = min(max(1, topk), logits.shape[-1])
+        top_vals, top_idx = logits.topk(k, dim=-1)  # (B,L,K)
+        weights = F.softmax(top_vals * (1.0 / temperature), dim=-1)  # (B,L,K)
+        pos_t = pos_xyz.transpose(1, 2)  # (B,3,N)
+        pos_exp = pos_t.unsqueeze(1).expand(-1, logits.shape[1], -1, -1)  # (B,L,3,N)
+        gather_idx = top_idx.unsqueeze(2).expand(-1, -1, pos_exp.shape[2], -1)  # (B,L,3,K)
+        selected = torch.gather(pos_exp, dim=3, index=gather_idx)  # (B,L,3,K)
+        coords = (weights.unsqueeze(2) * selected).sum(dim=-1)  # (B,L,3)
+        return coords
     weights = F.softmax(logits * (1.0 / temperature), dim=-1)  # (B,L,N)
-    if pos.dtype != weights.dtype:
-        pos = pos.to(dtype=weights.dtype)
-    coords = torch.matmul(weights, pos.transpose(1, 2))        # (B,L,3)
+    if pos_xyz.dtype != weights.dtype:
+        pos_xyz = pos_xyz.to(dtype=weights.dtype)
+    coords = torch.matmul(weights, pos_xyz.transpose(1, 2))        # (B,L,3)
     return coords
 
 
@@ -39,6 +65,41 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = True
+
+
+def parse_schedule_spec(spec: str, param_name: str, default: float = 0.0) -> Tuple[float, Optional[Tuple[float, float, int]], str]:
+    raw = (spec or "").strip()
+    if not raw:
+        return default, None, f"{default:.6f}".rstrip("0").rstrip(".")
+    if ":" in raw and "@" in raw:
+        try:
+            weights, milestone = raw.split("@", 1)
+            start_str, end_str = weights.split(":", 1)
+            start_val = float(start_str)
+            end_val = float(end_str)
+            steps = max(1, int(milestone))
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid schedule '{spec}' for {param_name}. Expected format 'start:end@T'."
+            ) from exc
+        return start_val, (start_val, end_val, steps), raw
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid value '{spec}' for {param_name}.") from exc
+    return value, None, raw
+
+
+def parse_coord_loss_weight(spec: str) -> Tuple[float, Optional[Tuple[float, float, int]], str]:
+    return parse_schedule_spec(spec, "coord_loss_weight", 0.0)
+
+
+def compute_scheduled_value(epoch: int, base_value: float, schedule: Optional[Tuple[float, float, int]]) -> float:
+    if not schedule:
+        return base_value
+    start, end, steps = schedule
+    progress = min(max((epoch - 1) / max(1, steps), 0.0), 1.0)
+    return start * (1.0 - progress) + end * progress
 
 
 def _limit_subset(subset, max_count: int):
@@ -175,12 +236,19 @@ def train_all_teeth(args, device: torch.device) -> None:
     best_mae_epoch = 0
     log_path = out_dir / "log.txt"
     with open(log_path, "a", encoding="utf-8") as fh:
-        fh.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} multi-tooth ===="
-                 f" teeth={args.tooth} in_channels={in_channels}\n")
+        fh.write(
+            f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} multi-tooth ===="
+            f" teeth={args.tooth} in_channels={in_channels}"
+            f" coord_spec={args.coord_loss_weight_spec} temp_spec={args.coord_temperature_spec} peak_spec={args.peak_ce_spec} margin_spec={args.margin_loss_weight_spec}/{args.margin_floor}\n"
+        )
 
     tooth_list = list(loaders.keys())
 
     for epoch in range(1, args.epochs + 1):
+        coord_weight = compute_scheduled_value(epoch, args.coord_loss_weight, args.coord_weight_schedule)
+        coord_temp = compute_scheduled_value(epoch, args.coord_temperature, args.coord_temperature_schedule)
+        peak_ce_weight = compute_scheduled_value(epoch, args.peak_ce, args.peak_ce_schedule)
+        margin_weight = compute_scheduled_value(epoch, args.margin_loss_weight, args.margin_weight_schedule)
         model.train()
         train_losses = {}
         train_stats = {}
@@ -236,18 +304,29 @@ def train_all_teeth(args, device: torch.device) -> None:
                         landmarks_gt = _gather_points(src_pos, gt_idx)
 
                     coord_loss_val = torch.tensor(0.0, device=device)
-                    if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
-                        pred_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                    if coord_weight > 0.0 and landmarks_gt is not None:
+                        pred_coords = heatmap_expectation(logits, pos, temperature=coord_temp, topk=args.coord_topk)
                         coord_diff = pred_coords - landmarks_gt
                         coord_loss_val = (coord_diff.abs() * mask_exp).sum() / torch.clamp(mask_exp.sum(), min=1e-12)
-                        loss = loss + args.coord_loss_weight * coord_loss_val
+                        loss = loss + coord_weight * coord_loss_val
 
-                    if args.peak_ce > 0.0:
+                    if peak_ce_weight > 0.0:
                         active_flat = mask_exp.view(-1) > 0.5
                         if active_flat.any():
                             logits_flat = logits.view(-1, logits.shape[-1])[active_flat]
                             gt_flat = gt_idx.view(-1)[active_flat]
-                            loss = loss + args.peak_ce * torch.nn.functional.cross_entropy(logits_flat, gt_flat)
+                            loss = loss + peak_ce_weight * torch.nn.functional.cross_entropy(logits_flat, gt_flat)
+
+                    if margin_weight > 0.0 and args.margin_floor > 0.0:
+                        top2_vals = logits.topk(2, dim=-1).values
+                        delta = top2_vals[..., 0] - top2_vals[..., 1]
+                        soft_margin = torch.sigmoid(delta)
+                        margin_mask = mask > 0.5
+                        if margin_mask.any():
+                            margin_deficit = F.relu(args.margin_floor - soft_margin[margin_mask])
+                            if margin_deficit.numel() > 0:
+                                margin_loss_val = margin_deficit.mean()
+                                loss = loss + margin_weight * margin_loss_val
                 scaler.scale(loss).backward()
                 scaler.unscale_(optim)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -278,8 +357,8 @@ def train_all_teeth(args, device: torch.device) -> None:
                         soft_margin_vals = soft_topk[..., 0] - soft_topk[..., 1]
                         soft_margin_sum += float(soft_margin_vals[active].sum().item())
                         active_total += int(active.sum().item())
-                        if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
-                            refined_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                        if coord_weight > 0.0 and landmarks_gt is not None:
+                            refined_coords = heatmap_expectation(logits, pos, temperature=coord_temp, topk=args.coord_topk)
                             coord_errors = torch.norm(refined_coords - landmarks_gt, dim=-1)
                             refined_active = coord_errors[active]
                             refined_sum += float(refined_active.sum().item())
@@ -385,8 +464,8 @@ def train_all_teeth(args, device: torch.device) -> None:
                         soft_margin_vals = soft_topk[..., 0] - soft_topk[..., 1]
                         soft_margin_sum += float(soft_margin_vals[active].sum().item())
                         active_total += int(active.sum().item())
-                        if args.coord_loss_weight > 0.0 and landmarks_gt is not None:
-                            refined_coords = heatmap_expectation(logits, pos, temperature=args.coord_temperature)
+                        if coord_weight > 0.0 and landmarks_gt is not None:
+                            refined_coords = heatmap_expectation(logits, pos, temperature=coord_temp, topk=args.coord_topk)
                             coord_errors = torch.norm(refined_coords - landmarks_gt, dim=-1)
                             coord_active = coord_errors[active]
                             refined_sum += float(coord_active.sum().item())
@@ -425,8 +504,20 @@ def train_all_teeth(args, device: torch.device) -> None:
                     "heads_config": heads_config,
                     "features": args.features,
                     "use_tnet": args.use_tnet,
-                    "coord_loss_weight": args.coord_loss_weight,
-                    "coord_temperature": args.coord_temperature,
+                    "coord_loss_weight": coord_weight,
+                    "coord_loss_weight_spec": args.coord_loss_weight_spec,
+                    "coord_weight_schedule": args.coord_weight_schedule,
+                    "coord_temperature": coord_temp,
+                    "coord_temperature_spec": args.coord_temperature_spec,
+                    "coord_temperature_schedule": args.coord_temperature_schedule,
+                    "coord_topk": args.coord_topk,
+                    "peak_ce": peak_ce_weight,
+                    "peak_ce_spec": args.peak_ce_spec,
+                    "peak_ce_schedule": args.peak_ce_schedule,
+                    "margin_loss_weight": margin_weight,
+                    "margin_loss_weight_spec": args.margin_loss_weight_spec,
+                    "margin_weight_schedule": args.margin_weight_schedule,
+                    "margin_floor": args.margin_floor,
                 },
                 out_dir / "best_mse.pt",
             )
@@ -441,15 +532,33 @@ def train_all_teeth(args, device: torch.device) -> None:
                     "heads_config": heads_config,
                     "features": args.features,
                     "use_tnet": args.use_tnet,
-                    "coord_loss_weight": args.coord_loss_weight,
-                    "coord_temperature": args.coord_temperature,
+                    "coord_loss_weight": coord_weight,
+                    "coord_loss_weight_spec": args.coord_loss_weight_spec,
+                    "coord_weight_schedule": args.coord_weight_schedule,
+                    "coord_temperature": coord_temp,
+                    "coord_temperature_spec": args.coord_temperature_spec,
+                    "coord_temperature_schedule": args.coord_temperature_schedule,
+                    "coord_topk": args.coord_topk,
+                    "peak_ce": peak_ce_weight,
+                    "peak_ce_spec": args.peak_ce_spec,
+                    "peak_ce_schedule": args.peak_ce_schedule,
+                    "margin_loss_weight": margin_weight,
+                    "margin_loss_weight_spec": args.margin_loss_weight_spec,
+                    "margin_weight_schedule": args.margin_weight_schedule,
+                    "margin_floor": args.margin_floor,
                 },
                 out_dir / "best_mae.pt",
             )
+            try:
+                copy2(out_dir / "best_mae.pt", out_dir / "best.pt")
+            except Exception as exc:
+                print(f"[warn] failed to refresh best.pt: {exc}")
 
         if epoch % args.log_every == 0 or epoch in (1, args.epochs):
             parts = [
-                f"[epoch {epoch:03d}/{args.epochs}] train {mean_train:.6f} val {mean_val:.6f} "
+                f"[epoch {epoch:03d}/{args.epochs}] coord_w {coord_weight:.4f} temp {coord_temp:.3f} "
+                f"peak {peak_ce_weight:.3f} margin_w {margin_weight:.3f} "
+                f"train {mean_train:.6f} val {mean_val:.6f} "
                 f"mean_mae {mean_mae:.6f} refined {mean_refined_mae:.6f} train_refined {mean_train_refined:.6f} "
                 f"best_mse {best_loss:.6f} (ep {best_loss_epoch}) "
                 f"best_mae {best_mae_metric:.6f} (ep {best_mae_epoch})"
@@ -477,6 +586,11 @@ def train_all_teeth(args, device: torch.device) -> None:
                 fh.write(stop_msg + "\n")
             break
 
+    final_coord_weight = compute_scheduled_value(args.epochs, args.coord_loss_weight, args.coord_weight_schedule)
+    final_coord_temp = compute_scheduled_value(args.epochs, args.coord_temperature, args.coord_temperature_schedule)
+    final_peak_ce = compute_scheduled_value(args.epochs, args.peak_ce, args.peak_ce_schedule)
+    final_margin_weight = compute_scheduled_value(args.epochs, args.margin_loss_weight, args.margin_weight_schedule)
+
     torch.save(
         {
             "model": model.state_dict(),
@@ -484,11 +598,31 @@ def train_all_teeth(args, device: torch.device) -> None:
             "heads_config": heads_config,
             "features": args.features,
             "use_tnet": args.use_tnet,
-            "coord_loss_weight": args.coord_loss_weight,
-            "coord_temperature": args.coord_temperature,
+            "coord_loss_weight": final_coord_weight,
+            "coord_loss_weight_spec": args.coord_loss_weight_spec,
+            "coord_weight_schedule": args.coord_weight_schedule,
+            "coord_temperature": final_coord_temp,
+            "coord_temperature_spec": args.coord_temperature_spec,
+            "coord_temperature_schedule": args.coord_temperature_schedule,
+            "coord_topk": args.coord_topk,
+            "peak_ce": final_peak_ce,
+            "peak_ce_spec": args.peak_ce_spec,
+            "peak_ce_schedule": args.peak_ce_schedule,
+            "margin_loss_weight": final_margin_weight,
+            "margin_loss_weight_spec": args.margin_loss_weight_spec,
+            "margin_weight_schedule": args.margin_weight_schedule,
+            "margin_floor": args.margin_floor,
         },
         out_dir / "last.pt",
     )
+    if (out_dir / "best.pt").exists() is False:
+        try:
+            copy2(out_dir / "best_mae.pt", out_dir / "best.pt")
+        except Exception:
+            try:
+                copy2(out_dir / "last.pt", out_dir / "best.pt")
+            except Exception as exc:
+                print(f"[warn] unable to create best.pt fallback: {exc}")
 
     print(
         f"Training done; best_mse {best_loss:.6f} epoch {best_loss_epoch} -> {out_dir/'best_mse.pt'} | "
@@ -525,16 +659,66 @@ def parse_args():
     parser.add_argument("--label_gamma", type=float, default=1.0, help="Optional sharpening factor for targets (y^gamma).")
     parser.add_argument("--loss_power", type=float, default=2.0, help="Exponent applied to target heatmaps for weighted MSE (>=0).")
     parser.add_argument("--loss_eps", type=float, default=1e-3, help="Stability term added to the weighted MSE denominator.")
-    parser.add_argument("--peak_ce", type=float, default=0.0, help="Weight for auxiliary peak classification CE loss.")
+    parser.add_argument(
+        "--peak_ce",
+        type=str,
+        default="0.0",
+        help="Weight for auxiliary peak classification CE loss; accepts scalar or 'w0:w1@T'.",
+    )
     parser.add_argument("--heatmap_loss_weight", type=float, default=1.0, help="Weight for primary heatmap regression loss.")
-    parser.add_argument("--coord_loss_weight", type=float, default=0.0, help="Weight for soft-argmax coordinate L1 loss.")
-    parser.add_argument("--coord_temperature", type=float, default=1.0, help="Temperature for soft-argmax expectation (<=0 defaults to 1.0).")
+    parser.add_argument(
+        "--coord_loss_weight",
+        type=str,
+        default="0.0",
+        help="Weight for soft-argmax coordinate L1 loss; accepts scalar or 'w0:w1@T' for linear ramp.",
+    )
+    parser.add_argument(
+        "--coord_temperature",
+        type=str,
+        default="1.0",
+        help="Temperature for soft-argmax expectation; accepts scalar or 't0:t1@T'.",
+    )
+    parser.add_argument(
+        "--coord_topk",
+        type=int,
+        default=0,
+        help="Optional top-K truncation when computing soft-argmax expectation (0 disables).",
+    )
+    parser.add_argument(
+        "--margin_loss_weight",
+        type=str,
+        default="0.0",
+        help="Weight for logit margin regularizer (0 disables); accepts scalar or 'w0:w1@T'.",
+    )
+    parser.add_argument(
+        "--margin_floor",
+        type=float,
+        default=0.0,
+        help="Target floor for sigmoid(top1-top2) margin when margin regularizer is enabled.",
+    )
     args = parser.parse_args()
     args.tooth = DEFAULT_TOOTH_IDS if args.tooth.strip().lower() == "all" else [t.strip() for t in args.tooth.split(",") if t.strip()]
     args.use_tnet = not args.disable_tnet
     args.case_filter = args.case.strip() if args.case and args.case.strip() else None
-    if args.coord_temperature <= 0:
-        args.coord_temperature = 1.0
+    coord_base, coord_schedule, coord_spec = parse_coord_loss_weight(args.coord_loss_weight)
+    args.coord_loss_weight = coord_base
+    args.coord_weight_schedule = coord_schedule
+    args.coord_loss_weight_spec = coord_spec
+    peak_base, peak_schedule, peak_spec = parse_schedule_spec(args.peak_ce, "peak_ce", 0.0)
+    args.peak_ce = peak_base
+    args.peak_ce_schedule = peak_schedule
+    args.peak_ce_spec = peak_spec
+    temp_base, temp_schedule, temp_spec = parse_schedule_spec(args.coord_temperature, "coord_temperature", 1.0)
+    if temp_base <= 0:
+        temp_base = 1.0
+    args.coord_temperature = temp_base
+    args.coord_temperature_schedule = temp_schedule
+    args.coord_temperature_spec = temp_spec
+    args.coord_topk = max(0, int(args.coord_topk))
+    margin_base, margin_schedule, margin_spec = parse_schedule_spec(args.margin_loss_weight, "margin_loss_weight", 0.0)
+    args.margin_loss_weight = margin_base
+    args.margin_weight_schedule = margin_schedule
+    args.margin_loss_weight_spec = margin_spec
     return args
 
 
@@ -548,3 +732,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

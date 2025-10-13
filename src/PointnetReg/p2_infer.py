@@ -105,13 +105,15 @@ def infer_one_tooth(
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, collate_fn=collate_p0)
     sample = None
     ckpt_root = Path(ckpt_root)
-    ckpt_path = (
-        ckpt_root / "best.pt"
-        if (ckpt_root / "best.pt").exists()
-        else ckpt_root / tooth_id / "best.pt"
-    )
-    if not ckpt_path.exists():
-        print(f"[{tooth_id}] missing checkpoint: {ckpt_path}")
+    candidate_names = ["best.pt", "best_mae.pt", "best_mse.pt", "last.pt"]
+    search_paths = [(ckpt_root / name) for name in candidate_names]
+    tooth_variants = {tooth_id, tooth_id.lower(), tooth_id.upper()}
+    for variant in tooth_variants:
+        tooth_dir = ckpt_root / variant
+        search_paths.extend(tooth_dir / name for name in candidate_names)
+    ckpt_path = next((path for path in search_paths if path.exists()), None)
+    if ckpt_path is None:
+        print(f"[{tooth_id}] missing checkpoint under {ckpt_root}")
         return
     state = torch.load(ckpt_path, map_location="cpu")
     payload = state if isinstance(state, dict) else {"model": state}
