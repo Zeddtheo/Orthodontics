@@ -64,6 +64,21 @@ ARCH_LABEL_ORDERS: Dict[str, Tuple[int, ...]] = {
 SINGLE_ARCH_NUM_CLASSES = 16
 
 
+def _build_mirror_pairs(order: Sequence[int]) -> Tuple[Tuple[int, int], ...]:
+    half = len(order) // 2
+    return tuple(zip(order[:half], order[half:]))
+
+
+ARCH_MIRROR_PAIRS: Dict[str, Tuple[Tuple[int, int], ...]] = {
+    jaw: _build_mirror_pairs(order)
+    for jaw, order in ARCH_LABEL_ORDERS.items()
+}
+
+FULL_FDI_MIRROR_PAIRS: Tuple[Tuple[int, int], ...] = tuple(
+    pair for pairs in ARCH_MIRROR_PAIRS.values() for pair in pairs
+)
+
+
 def _remap_value(v: int) -> int:
     return LABEL_REMAP.get(int(v), 0)
 
@@ -152,6 +167,25 @@ def _load_or_build_decimated_mm(raw_path: Path, target_cells: int) -> pv.PolyDat
     assign_path = _assign_cache_path(raw_path, target_cells)
     if cache_path.exists():
         mesh_mm = _ensure_polydata(pv.read(str(cache_path)))
+        if not assign_path.exists():
+            try:
+                full_mesh = _ensure_polydata(pv.read(str(raw_path)))
+            except Exception:
+                full_mesh = None
+            if full_mesh is not None:
+                try:
+                    full_mesh = full_mesh.triangulate()
+                    orig_centers = full_mesh.cell_centers().points.astype(np.float32)
+                    dec_centers = mesh_mm.cell_centers().points.astype(np.float32)
+                    if dec_centers.size and orig_centers.size:
+                        nn = NearestNeighbors(n_neighbors=1, algorithm="auto")
+                        nn.fit(dec_centers)
+                        assign_ids = nn.kneighbors(
+                            orig_centers, return_distance=False
+                        ).reshape(-1).astype(np.int32, copy=False)
+                        np.save(assign_path, assign_ids, allow_pickle=False)
+                except Exception:
+                    pass
         return mesh_mm
 
     mesh_mm = _ensure_polydata(pv.read(str(raw_path)))
@@ -567,12 +601,31 @@ class SegmentationDataset(Dataset):
         self.keep_void_zero = keep_void_zero
         self._single_arch_maps: Optional[Dict[str, Dict[int, int]]] = None
         self.min_samples_per_class = 160  # 小类保底采样数量（侧重边界牙）
+        self._mirror_pairs_single_arch: Dict[str, List[Tuple[int, int]]] = {}
+        self._mirror_pairs_full: List[Tuple[int, int]] = []
         if self.label_mode == "single_arch_16":
             self._single_arch_maps = _build_single_arch_label_maps(
                 self.gingiva_src_label,
                 self.gingiva_class_id,
                 self.keep_void_zero,
             )
+            for jaw, raw_pairs in ARCH_MIRROR_PAIRS.items():
+                mapping = self._single_arch_maps[jaw]
+                cls_pairs: List[Tuple[int, int]] = []
+                for left_raw, right_raw in raw_pairs:
+                    left_cls = int(mapping.get(left_raw, 0))
+                    right_cls = int(mapping.get(right_raw, 0))
+                    if left_cls <= 0 or right_cls <= 0:
+                        continue
+                    cls_pairs.append((left_cls, right_cls))
+                self._mirror_pairs_single_arch[jaw] = cls_pairs
+        elif self.label_mode == "full_fdi":
+            for left_raw, right_raw in FULL_FDI_MIRROR_PAIRS:
+                left_cls = int(LABEL_REMAP.get(left_raw, 0))
+                right_cls = int(LABEL_REMAP.get(right_raw, 0))
+                if left_cls <= 0 or right_cls <= 0:
+                    continue
+                self._mirror_pairs_full.append((left_cls, right_cls))
 
     @property
     def augment(self) -> bool:
@@ -609,10 +662,43 @@ class SegmentationDataset(Dataset):
             return remap_segmentation_labels(labels)
         raise ValueError(f"Unsupported label_mode: {self.label_mode}")
 
+    def _apply_mirror_label_swap(self, labels: np.ndarray, file_path: Path) -> np.ndarray:
+        if labels.size == 0:
+            return labels
+        if self.label_mode == "single_arch_16":
+            jaw = _infer_jaw_from_stem(file_path.stem)
+            pairs = self._mirror_pairs_single_arch.get(jaw, [])
+        elif self.label_mode == "full_fdi":
+            pairs = self._mirror_pairs_full
+        else:
+            return labels
+        if not pairs:
+            return labels
+
+        swapped = labels
+        updated = False
+        for left_cls, right_cls in pairs:
+            if left_cls == right_cls:
+                continue
+            left_mask = labels == left_cls
+            right_mask = labels == right_cls
+            if left_mask.any():
+                if not updated:
+                    swapped = labels.copy()
+                    updated = True
+                swapped[left_mask] = right_cls
+            if right_mask.any():
+                if not updated:
+                    swapped = labels.copy()
+                    updated = True
+                swapped[right_mask] = left_cls
+        return swapped if updated else labels
+
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         file_path = Path(self.file_paths[idx])
         mesh = pv.read(str(file_path))
         mesh.points -= mesh.center
+        frame_tensor = self._lookup_arch_frame(file_path.stem)
 
         result = find_label_array(mesh)
         if result is None:
@@ -637,6 +723,7 @@ class SegmentationDataset(Dataset):
             if random.random() > 0.5:
                 mesh.points[:, 0] *= -1
                 mesh = mesh.flip_faces()
+                labels = self._apply_mirror_label_swap(labels, file_path)
             if self._augment_stage == "light":
                 mesh.points = light_jitter(mesh.points)
             else:
@@ -649,6 +736,11 @@ class SegmentationDataset(Dataset):
             if original_ids is not None and len(original_ids) == decimated.n_cells:
                 mesh = decimated
                 labels = labels[original_ids]
+
+        if frame_tensor is not None:
+            frame_np = frame_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
+            rotated_points = mesh.points.astype(np.float32, copy=False) @ frame_np.T
+            mesh.points = rotated_points
 
         features = extract_features(mesh).astype(np.float32)
 
@@ -700,11 +792,7 @@ class SegmentationDataset(Dataset):
         features_tensor = (features_tensor - self.mean) / self.std
         features_tensor = features_tensor.transpose(0, 1).contiguous()  # (15, N)
 
-        pos_tensor = torch.from_numpy(pos_raw)
-        frame = self._lookup_arch_frame(file_path.stem)
-        if frame is not None:
-            pos_tensor = (frame @ pos_tensor.T).T
-        pos_tensor = pos_tensor.transpose(0, 1).contiguous()  # (3, N)
+        pos_tensor = torch.from_numpy(pos_raw).transpose(0, 1).contiguous()  # (3, N)
 
         labels_tensor = torch.from_numpy(labels.astype(np.int64))
 

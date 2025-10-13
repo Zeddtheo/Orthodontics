@@ -11,7 +11,7 @@ m5_overfit.py - 单样本过拟合训练脚本
 import argparse
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 import time
 
 import torch
@@ -91,7 +91,7 @@ def calculate_metrics(preds: torch.Tensor, labels: torch.Tensor, num_classes: in
 DEFAULT_LABEL_MODE = "single_arch_16"
 DEFAULT_GINGIVA_SRC = 0
 DEFAULT_GINGIVA_CLASS_ID = 15
-DEFAULT_KEEP_VOID_ZERO = True
+DEFAULT_KEEP_VOID_ZERO = False
 FDI_LABEL_SET = set(FDI_LABELS)
 INV_LABEL_REMAP = {v: k for k, v in LABEL_REMAP.items()}
 
@@ -114,17 +114,31 @@ class SingleSampleDataset(Dataset):
         sample_cells = 6000
         sample_path = Path(sample_file)
 
-        mesh10k_mm = _load_or_build_decimated_mm(sample_path, target_cells=target_cells)
+        decimated_mesh = _load_or_build_decimated_mm(sample_path, target_cells=target_cells)
         self.decim_cache_vtp = (DECIM_CACHE / f"{sample_path.stem}.c{target_cells}.vtp").resolve()
 
-        mesh = mesh10k_mm.copy(deep=True)
+        mesh = decimated_mesh.copy(deep=True)
         mesh.points -= mesh.center
 
-        label_info = find_label_array(mesh)
-        if label_info is None:
+        dec_label_info = find_label_array(mesh)
+        if dec_label_info is None:
+            raise RuntimeError(f"{self.decim_cache_vtp} 缺失 Label 数组")
+        _, dec_labels = dec_label_info
+        dec_labels = np.asarray(dec_labels, dtype=np.int64)
+
+        full_mesh = pv.read(str(sample_path))
+        full_label_info = find_label_array(full_mesh)
+        if full_label_info is None:
             raise RuntimeError(f"{sample_file} 缺失 Label 数组")
-        _, raw_labels = label_info
-        labels = np.asarray(raw_labels, dtype=np.int64)
+        _, full_raw_labels = full_label_info
+        full_raw_labels = np.asarray(full_raw_labels, dtype=np.int64, copy=False)
+
+        orig_ids = mesh.cell_data.get("vtkOriginalCellIds")
+        if orig_ids is not None and full_raw_labels.size > 0:
+            orig_ids_np = np.asarray(orig_ids, dtype=np.int64, copy=False)
+            base_labels = full_raw_labels[orig_ids_np]
+        else:
+            base_labels = dec_labels
 
         self.label_mode = label_mode
         self._label_kwargs = {
@@ -133,33 +147,33 @@ class SingleSampleDataset(Dataset):
             "keep_void_zero": keep_void_zero,
         }
         debug_info = {
-            "raw_unique": np.unique(labels).astype(int).tolist(),
+            "raw_unique": np.unique(base_labels).astype(int).tolist(),
             "intermediate_unique": None,
             "fallback_values": [],
         }
         if label_mode == "single_arch_16":
-            raw_unique = np.unique(labels)
+            raw_unique = np.unique(base_labels)
             needs_inverse = any(
                 (val not in FDI_LABEL_SET) and (val != gingiva_src_label) and (val != 0)
                 for val in raw_unique
             )
             if needs_inverse:
-                labels = np.asarray(
-                    [INV_LABEL_REMAP.get(int(v), 0) for v in labels],
+                base_labels = np.asarray(
+                    [INV_LABEL_REMAP.get(int(v), 0) for v in base_labels],
                     dtype=np.int64,
                 )
-            debug_info["intermediate_unique"] = np.unique(labels).astype(int).tolist()
+            debug_info["intermediate_unique"] = np.unique(base_labels).astype(int).tolist()
         if label_mode == "single_arch_16":
             single_arch_maps = _build_single_arch_label_maps(
                 gingiva_src_label,
                 gingiva_class_id,
                 keep_void_zero,
             )
-            labels = remap_labels_single_arch(labels, sample_path, single_arch_maps)
+            labels = remap_labels_single_arch(base_labels, sample_path, single_arch_maps)
             self.num_classes_full = SINGLE_ARCH_NUM_CLASSES
             debug_info["post_unique"] = np.unique(labels).astype(int).tolist()
         elif label_mode == "full_fdi":
-            labels = remap_segmentation_labels(labels)
+            labels = remap_segmentation_labels(base_labels)
             self.num_classes_full = SEG_NUM_CLASSES
             debug_info["post_unique"] = np.unique(labels).astype(int).tolist()
         else:
@@ -178,7 +192,46 @@ class SingleSampleDataset(Dataset):
 
         rng = np.random.default_rng(42)
         if feats.shape[0] > sample_cells:
-            idx = rng.choice(feats.shape[0], size=sample_cells, replace=False)
+            total_cells = feats.shape[0]
+            min_samples_per_class = 160
+            required_indices: List[int] = []
+            unique_labels = np.unique(labels)
+            for cls in unique_labels:
+                if cls == 0:
+                    continue
+                cls_indices = np.where(labels == cls)[0]
+                if cls_indices.size == 0:
+                    continue
+                quota = min(min_samples_per_class, sample_cells)
+                take = min(cls_indices.size, quota)
+                chosen = rng.choice(cls_indices, size=take, replace=cls_indices.size < take)
+                required_indices.extend(chosen.tolist())
+
+            if required_indices:
+                required_array = np.unique(np.asarray(required_indices, dtype=np.int64))
+            else:
+                required_array = np.empty(0, dtype=np.int64)
+
+            slots_left = sample_cells - required_array.size
+            if slots_left < 0:
+                idx = rng.choice(required_array, size=sample_cells, replace=False)
+            else:
+                mask = np.ones(total_cells, dtype=bool)
+                if required_array.size > 0:
+                    mask[required_array] = False
+                pool = np.nonzero(mask)[0]
+                extra_take = min(slots_left, pool.size)
+                extra = rng.choice(pool, size=extra_take, replace=False) if extra_take > 0 else np.empty(0, dtype=np.int64)
+                if required_array.size > 0:
+                    idx = np.concatenate([required_array, extra])
+                else:
+                    idx = extra
+                if idx.size < sample_cells:
+                    deficit = sample_cells - idx.size
+                    fallback = rng.choice(total_cells, size=deficit, replace=True)
+                    idx = np.concatenate([idx, fallback])
+            idx = idx[:sample_cells]
+            rng.shuffle(idx)
             feats = feats[idx]
             pos_mm = pos_mm[idx]
             pos_norm = pos_norm[idx]
@@ -186,7 +239,7 @@ class SingleSampleDataset(Dataset):
         else:
             idx = np.arange(feats.shape[0], dtype=np.int64)
 
-        self.sample_indices = idx.astype(np.int64)
+        self.sample_indices = idx.astype(np.int64, copy=False)
 
         feats_norm = (feats - mean.reshape(1, -1)) / np.clip(std.reshape(1, -1), 1e-6, None)
         features_tensor = torch.from_numpy(feats_norm.astype(np.float32)).transpose(0, 1).contiguous()
@@ -666,7 +719,7 @@ class OverfitTrainer:
                 "use_frame": False,        # overfit 不使用 arch frame
                 
                 # 采样策略
-                "sampler": "random",       # overfit 使用随机采样
+                "sampler": "class_balanced",  # overfit 使用分层采样
                 "sample_cells": 6000,      # 采样的 cell 数量
                 "target_cells": 10000,     # 抽取后的目标 cell 数量
                 

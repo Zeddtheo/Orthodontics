@@ -25,9 +25,21 @@ from m3_postprocess import PPConfig, postprocess_6k_10k_full  # 近似graphcut +
 
 # ---------------- 色表（0..14） ----------------
 LABEL_COLORS = {
-    0:  [160,160,160], 1:[255,0,0], 2:[255,127,0], 3:[255,255,0], 4:[0,255,0],
-    5:  [0,255,255], 6:[0,0,255], 7:[127,0,255], 8:[255,0,255], 9:[255,192,203],
-    10: [165,42,42], 11:[255,215,0], 12:[0,128,128], 13:[128,0,128], 14:[255,140,0],
+    0:  [160,160,160],   # background / gingiva
+    1:  [255,  69,   0], # 21 - orange red
+    2:  [255, 165,   0], # 22 - orange
+    3:  [255, 215,   0], # 23 - gold
+    4:  [154, 205,  50], # 24 - yellow green
+    5:  [ 34, 139,  34], # 25 - forest green
+    6:  [ 46, 139,  87], # 26 - sea green
+    7:  [ 72, 209, 204], # 27 - turquoise
+    8:  [ 70, 130, 180], # 11 - steel blue
+    9:  [ 65, 105, 225], # 12 - royal blue
+    10: [138,  43, 226], # 13 - blue violet
+    11: [199,  21, 133], # 14 - medium violet red
+    12: [255, 105, 180], # 15 - hot pink
+    13: [205,  92,  92], # 16 - indian red
+    14: [255, 140,   0], # 17 - dark orange
 }
 
 def _softmax_np(x: np.ndarray) -> np.ndarray:
@@ -327,7 +339,7 @@ def _infer_one(
         cfg.min_component_size = 0
         cfg.min_component_size_full = 0
     else:
-        cfg.gc_beta = 1.0
+        cfg.gc_beta = 0.8
         cfg.gc_k = 4
         cfg.gc_iterations = 1
         kk = meta.get("knn_k", {"to10k": 3, "tofull": 3})
@@ -335,8 +347,8 @@ def _infer_one(
         cfg.knn_full = int(kk.get("tofull", 3))
         cfg.min_component_size = 80
         cfg.min_component_size_full = 200
-        cfg.fill_radius = 0.0
-        cfg.seed_conf_th = 0.85
+        cfg.fill_radius = 0.2
+        cfg.seed_conf_th = 0.7
     # 从 decimated 10k 里取映射（两种可能的字段名都支持）
     orig_ids = None
     for key in ("vtkOriginalCellIds", "orig_cell_ids"):
@@ -344,23 +356,29 @@ def _infer_one(
             orig_ids = np.asarray(mesh10k.cell_data[key]).astype(np.int64, copy=False)
             break
     if orig_ids is None:
-        print("[Warn] 10k 网格缺少 vtkOriginalCellIds / orig_cell_ids，Full 阶段将无种子，可能出现边界侵蚀")
+        raise RuntimeError(
+            f"{mesh10k!s} 缺少 'vtkOriginalCellIds' / 'orig_cell_ids'，无法构建 10k→full 播种映射。"
+        )
 
-    assign_ids = None
     assign_path = None
     hint = meta.get("decim_cache_vtp")
     if hint:
         assign_path = Path(hint).with_suffix(".assign.npy")
     if assign_path is None or not assign_path.exists():
         assign_path = _decim_cache_path(inp_path, int(meta["target_cells"])).with_suffix(".assign.npy")
-    if assign_path.exists():
-        try:
-            assign_ids = np.load(str(assign_path)).astype(np.int64, copy=False)
-        except Exception as exc:  # noqa: BLE001
-            assign_ids = None
-            print(f"[Warn] 读取 assign 映射失败: {assign_path.name} ({exc})")
-    else:
-        print("[Warn] assign.npy 缓存缺失，播种阶段将退化为纯 KNN")
+    if assign_path is None or not assign_path.exists():
+        raise FileNotFoundError(
+            f"缺少 decimation 播种映射: {assign_path}. 请先运行数据准备生成 assign.npy。"
+        )
+    try:
+        assign_ids = np.load(str(assign_path)).astype(np.int64, copy=False)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"读取 assign 映射失败: {assign_path}") from exc
+
+    if assign_ids.shape[0] != pos_full_mm.shape[0]:
+        raise RuntimeError(
+            f"assign.npy 大小与 full 网格不匹配: assign={assign_ids.shape[0]}, full={pos_full_mm.shape[0]}"
+        )
 
     lab10k, lab_full, logs = postprocess_6k_10k_full(
         pos6=pos6_mm,
