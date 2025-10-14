@@ -405,8 +405,10 @@ def extract_features(mesh: pv.PolyData) -> np.ndarray:
     faces = mesh.faces.reshape(-1, 4)[:, 1:]
     vertex_coords = mesh.points[faces.flatten()].reshape(mesh.n_cells, 9)
     mesh.compute_normals(cell_normals=True, point_normals=False, inplace=True)
-    cell_normals = mesh.cell_data["Normals"].astype(np.float32, copy=False)
-    centers = mesh.cell_centers().points.astype(np.float32, copy=False)
+    # pyvista_ndarray 在不同版本的 PyVista 下会保留 association 属性，直接切片时
+    # 可能触发 FieldAssociation.__call__ 异常，这里显式转成 NumPy 数组规避。
+    cell_normals = np.asarray(mesh.cell_data["Normals"], dtype=np.float32)
+    centers = np.asarray(mesh.cell_centers().points, dtype=np.float32)
     relative_positions = centers - mesh.center
 
     # 三角形几何属性
