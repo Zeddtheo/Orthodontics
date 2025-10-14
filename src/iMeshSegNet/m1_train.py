@@ -198,6 +198,9 @@ class Trainer:
         self._checked_shapes = False
         self.stats_mean = np.asarray(stats_mean, dtype=np.float32)
         self.stats_std = np.asarray(stats_std, dtype=np.float32)
+        in_ch = int(getattr(self.model, "in_channels", self.stats_mean.shape[0]))
+        self.stats_mean = self.stats_mean[:in_ch]
+        self.stats_std = np.clip(self.stats_std[:in_ch], 1e-6, None)
         self.epochs_since_best = 0
         self.best_epoch = 0
 
@@ -354,7 +357,7 @@ class Trainer:
                             idx = knn_graph(pos.float(), k=8)
                             nbr = index_points(p, idx)
                             lap_reg = (nbr.mean(dim=-1) - p).pow(2).mean()
-                        loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + 0.03 * lap_reg
+                        loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + float(self.config.laplacian_lambda) * lap_reg
             else:
                 # 训练阶段保持原有逻辑
                 with autocast(self.device.type, enabled=self.amp_enabled):
@@ -381,7 +384,22 @@ class Trainer:
                         stn_reg = ((trans @ trans.transpose(1, 2) - I) ** 2).sum(dim=(1, 2)).mean()
                     
                     # ← 更新：加入 Focal Tversky 提升召回
-                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + 0.03 * lap_reg + 1e-3 * stn_reg
+                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + float(self.config.laplacian_lambda) * lap_reg + 1e-3 * stn_reg
+
+                if self.config.interior_tv_lambda > 0:
+                    with torch.no_grad():
+                        idx_tv = knn_graph(pos.float(), k=self.boundary_knn_k)
+                    p_tv = F.softmax(logits.float(), dim=1)
+                    p_nei_tv = index_points(p_tv, idx_tv)
+                    y_nei_tv = index_points(y.unsqueeze(1).float(), idx_tv).squeeze(1).long()
+                    same_cls = (y_nei_tv == y.unsqueeze(-1)).float()
+                    interior_mask = (1.0 - boundary.float()).unsqueeze(-1)
+                    weight_mask = same_cls * interior_mask
+                    weight_sum = weight_mask.sum()
+                    if torch.isfinite(weight_sum).item() and weight_sum.item() > 0:
+                        diff_tv = (p_tv.unsqueeze(-1) - p_nei_tv).pow(2).sum(dim=1)
+                        tv_reg = (diff_tv * weight_mask).sum() / weight_sum.clamp_min(1e-6)
+                        loss = loss + self.config.interior_tv_lambda * tv_reg
 
                 # ========== 修复4: NaN/Inf 哨兵（防飙车）==========
                 if not torch.isfinite(loss):
@@ -654,8 +672,10 @@ class TrainConfig:
     enable_amp: bool = True
     augment_warmup_epochs: int = 20
     augment_light_epochs: int = 6
-    boundary_lambda: float = 3.0
+    boundary_lambda: float = 2.0
     boundary_knn_k: int = 16
+    interior_tv_lambda: float = 0.1
+    laplacian_lambda: float = 0.03
     early_stop_patience: int = 18
     seed: Optional[int] = None
     deterministic: bool = False
@@ -685,10 +705,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--augment-light-epochs", type=int, help="Epoch count for mirror+jitter light augmentation before full augment.")
     parser.add_argument("--boundary-lambda", type=float, help="Extra loss multiplier (λ) for boundary cells.")
     parser.add_argument("--boundary-knn", type=int, help="k used for boundary-aware neighborhood weighting.")
+    parser.add_argument("--interior-tv-lambda", type=float, help="Weight for same-class interior TV regularizer.")
+    parser.add_argument("--laplacian-lambda", type=float, help="Weight for Laplacian smoothing regularizer.")
     parser.add_argument("--batch-size", type=int, help="Training batch size.")
     parser.add_argument("--num-workers", type=int, help="Number of DataLoader workers.")
     parser.add_argument("--seed", type=int, help="Random seed override.")
     parser.add_argument("--deterministic", action="store_true", help="Enable deterministic cuDNN (may slow training).")
+    parser.add_argument("--feature-dim", type=int, help="Feature dimension to use (15 or 18).")
     return parser.parse_args()
 
 
@@ -721,12 +744,18 @@ def main() -> None:
         config.boundary_lambda = args.boundary_lambda
     if args.boundary_knn is not None:
         config.boundary_knn_k = args.boundary_knn
+    if args.interior_tv_lambda is not None:
+        config.interior_tv_lambda = max(0.0, args.interior_tv_lambda)
+    if args.laplacian_lambda is not None:
+        config.laplacian_lambda = max(0.0, args.laplacian_lambda)
     if args.disable_amp:
         config.enable_amp = False
     if args.batch_size is not None:
         config.data_config.batch_size = max(1, args.batch_size)
     if args.num_workers is not None:
         config.data_config.num_workers = max(0, args.num_workers)
+    if args.feature_dim is not None:
+        config.data_config.feature_dim = max(1, args.feature_dim)
     if args.seed is not None:
         config.seed = args.seed
     if args.deterministic:
@@ -745,6 +774,7 @@ def main() -> None:
     set_seed(seed_to_use, deterministic=config.deterministic)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    print(f"Feature dimension: {config.data_config.feature_dim}")
 
     # Data pipeline
     config.data_config.pin_memory = device.type == "cuda"
@@ -786,10 +816,34 @@ def main() -> None:
             f"max={ce_weights.max():.3f}"
         )
 
-    stats_mean, stats_std = load_stats(config.data_config.stats_path)
+    stats_mean, stats_std = load_stats(
+        config.data_config.stats_path,
+        feature_dim=config.data_config.feature_dim,
+    )
 
     print("Loading datasets...")
     train_loader, val_loader = get_dataloaders(config.data_config)
+    # --- 强化边界采样与小类保底 ---
+    train_dataset = getattr(train_loader, "dataset", None)
+    if train_dataset is not None:
+        targets = [train_dataset]
+        base_dataset = getattr(train_dataset, "dataset", None)
+        if base_dataset is not None:
+            targets.append(base_dataset)
+        adjusted = False
+        for ds in targets:
+            if hasattr(ds, "boundary_focus_fraction"):
+                ds.boundary_focus_fraction = float(max(0.0, min(1.0, 0.60)))
+                adjusted = True
+            if hasattr(ds, "min_samples_per_class"):
+                ds.min_samples_per_class = int(max(0, 240))
+                adjusted = True
+        if adjusted:
+            root_ds = targets[-1]
+            print(
+                f"[Data] boundary_focus={getattr(root_ds, 'boundary_focus_fraction', 'n/a')}, "
+                f"min_samples_per_class={getattr(root_ds, 'min_samples_per_class', 'n/a')}"
+            )
 
     # Model + Optimizer + Scheduler
     print("Initializing model, loss function, optimizer, and scheduler...")
@@ -802,6 +856,7 @@ def main() -> None:
         with_dropout=False,        # ← 改1：先关闭 Dropout（或改成 0.1）
         dropout_p=0.1,             # ← 如果 with_dropout=True，用更轻的值
         use_feature_stn=True,      # ← 改2：开启特征 STN，抵消增强带来的旋转
+        in_channels=int(config.data_config.feature_dim),
     ).to(device)
 
     # ========== 调整 classifier bias：使用零均值 log-先验，避免偏向牙龈 ==========

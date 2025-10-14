@@ -14,18 +14,18 @@ class PPConfig:
     knn_full: int = 7
     seed_conf_th: float = 0.55
     bg_seed_th: float = 0.98
-    gc_beta: float = 20.0
-    gc_k: int = 6
-    gc_iterations: int = 2
+    gc_beta: float = 30.0
+    gc_k: int = 8
+    gc_iterations: int = 4
     normal_gamma: float = 10.0
     svm_max_train: int = 20000
     svm_c: float = 1.0
     svm_gamma: float | str = "scale"
     svm_random_state: Optional[int] = 42
-    fill_radius: float = 1.0
-    fill_majority: float = 0.6
-    fill_max_neighbors: int = 24
-    min_component_size: int = 500
+    fill_radius: float = 0.2
+    fill_majority: float = 0.7
+    fill_max_neighbors: int = 12
+    min_component_size: int = 200
     clean_component_neighbors: int = 12
     min_component_size_full: int = 1200
     enforce_single_component: bool = True
@@ -33,12 +33,12 @@ class PPConfig:
     low_conf_threshold: float = 0.55
     low_conf_neighbors: int = 12
     tiny_component_size: int = 10
-    gingiva_dilate_iters: int = 0
-    gingiva_dilate_thresh: float = 0.6
+    gingiva_dilate_iters: int = 1
+    gingiva_dilate_thresh: float = 0.5
     gingiva_dilate_k: int = 12
     gingiva_label: int = 0
     gingiva_protect_seeds: bool = True
-    gingiva_protect_conf: float = 0.85
+    gingiva_protect_conf: float = 0.92
 
 
 def softmax_np(logits: np.ndarray) -> np.ndarray:
@@ -90,11 +90,20 @@ def _pairwise_weights_dihedral(pos_mm: np.ndarray,
     ni = ni / np.clip(np.linalg.norm(ni, axis=1, keepdims=True), 1e-6, None)
     nj = nj / np.clip(np.linalg.norm(nj, axis=1, keepdims=True), 1e-6, None)
     cos = np.clip(np.sum(ni * nj, axis=1), -1.0, 1.0)
-    theta = np.arccos(np.abs(cos))                     # θ_ij ∈ [0, π]
+    theta = np.arccos(np.clip(cos, -1.0, 1.0))         # θ_ij ∈ [0, π]
 
-    # 论文里的光滑项：w_ij ∝ -log(θ/π) * φ_ij
-    w = -np.log(np.clip(theta / np.pi, 1e-4, 1.0)) * phi
-    # 数值稳定 & 上限裁剪
+    # 基础平滑项：-log(θ/π)·φ
+    w_base = -np.log(np.clip(theta / np.pi, 1e-4, 1.0)) * phi
+
+    # 凹凸判别：根据 (ni × nj) 与 (cj-ci) 的方向确定符号
+    cross_vec = np.cross(ni, nj)
+    dir_vec = cj - ci
+    is_convex = np.sum(cross_vec * dir_vec, axis=1) > 0.0
+
+    beta_ij = 1.0 + np.abs(cos)
+    coef = np.where(is_convex, 30.0 * beta_ij, 1.0)
+
+    w = w_base * coef
     w = np.clip(w, 0.0, np.percentile(w, 99.5))
     return w.astype(np.float32, copy=False)
 

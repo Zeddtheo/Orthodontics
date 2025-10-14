@@ -9,6 +9,7 @@ m5_overfit.py - 单样本过拟合训练脚本
 """
 
 import argparse
+import csv
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -16,6 +17,7 @@ import time
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torch.amp import autocast, GradScaler
 from torch.nn.utils import clip_grad_norm_
@@ -38,13 +40,14 @@ from m0_dataset import (
     _build_single_arch_label_maps,
     _load_or_build_decimated_mm,
     extract_features,
+    trim_feature_dim,
     find_label_array,
     normalize_mesh_units,
     remap_labels_single_arch,
     remap_segmentation_labels,
 )
-from m1_train import GeneralizedDiceLoss
-from imeshsegnet import iMeshSegNet
+from m1_train import GeneralizedDiceLoss, FocalTverskyLoss
+from imeshsegnet import iMeshSegNet, index_points, knn_graph
 
 
 def calculate_metrics(preds: torch.Tensor, labels: torch.Tensor, num_classes: int) -> Tuple[float, float, float]:
@@ -187,10 +190,15 @@ class SingleSampleDataset(Dataset):
         gingiva_src_label: int = DEFAULT_GINGIVA_SRC,
         gingiva_class_id: int = DEFAULT_GINGIVA_CLASS_ID,
         keep_void_zero: bool = DEFAULT_KEEP_VOID_ZERO,
+        feature_dim: int = 18,
     ):
         target_cells = 10000
         sample_cells = 6000
         sample_path = Path(sample_file)
+        feat_dim = int(feature_dim)
+        mean = trim_feature_dim(np.asarray(mean, dtype=np.float32), feat_dim)
+        std = trim_feature_dim(np.asarray(std, dtype=np.float32), feat_dim)
+        std = np.clip(std, 1e-6, None)
 
         decimated_mesh = _load_or_build_decimated_mm(sample_path, target_cells=target_cells)
         self.decim_cache_vtp = (DECIM_CACHE / f"{sample_path.stem}.c{target_cells}.vtp").resolve()
@@ -209,11 +217,11 @@ class SingleSampleDataset(Dataset):
         if full_label_info is None:
             raise RuntimeError(f"{sample_file} 缺失 Label 数组")
         _, full_raw_labels = full_label_info
-        full_raw_labels = np.asarray(full_raw_labels, dtype=np.int64, copy=False)
+        full_raw_labels = np.asarray(full_raw_labels, dtype=np.int64)
 
         orig_ids = mesh.cell_data.get("vtkOriginalCellIds")
         if orig_ids is not None and full_raw_labels.size > 0:
-            orig_ids_np = np.asarray(orig_ids, dtype=np.int64, copy=False)
+            orig_ids_np = np.asarray(orig_ids, dtype=np.int64)
             base_labels = full_raw_labels[orig_ids_np]
         else:
             base_labels = dec_labels
@@ -264,6 +272,7 @@ class SingleSampleDataset(Dataset):
         self.labels_full_unique = labels_full_unique
 
         feats = extract_features(mesh).astype(np.float32, copy=False)
+        feats = trim_feature_dim(feats, feat_dim).astype(np.float32, copy=False)
         pos_mm = mesh.cell_centers().points.astype(np.float32)
         pos_scale = diag_after if diag_after > 1e-6 else 1.0
         pos_norm = pos_mm / pos_scale
@@ -327,7 +336,9 @@ class SingleSampleDataset(Dataset):
         labels_tensor = torch.from_numpy(labels.astype(np.int64))
 
         self.sample_data = ((features_tensor, pos_tensor, pos_mm_tensor, pos_scale_tensor), labels_tensor)
-        self.feature_dim = int(features_tensor.shape[0])
+        self.feature_dim = feat_dim
+        self.mean = mean
+        self.std = std
         self.remap_debug = debug_info
 
     def __len__(self) -> int:
@@ -337,7 +348,11 @@ class SingleSampleDataset(Dataset):
         return self.sample_data
 
 
-def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[DataLoader, int, np.ndarray, np.ndarray]:
+def setup_single_sample_training(
+    sample_name: str,
+    dataset_root: Path,
+    feature_dim: int = 15,
+) -> Tuple[DataLoader, int, np.ndarray, np.ndarray]:
     """
     设置单样本训练数据
     
@@ -360,15 +375,17 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     need_recompute = True
     if stats_path.exists():
         with np.load(stats_path) as stats:
-            mean = stats["mean"].astype(np.float32, copy=False)
-            std = stats["std"].astype(np.float32, copy=False)
-        std = np.clip(std, 1e-6, None)
-        feat_dim_est = extract_features(pv.read(str(sample_file)).triangulate()).shape[1]
-        if mean.shape[0] == feat_dim_est:
+            mean_full = stats["mean"].astype(np.float32, copy=False)
+            std_full = stats["std"].astype(np.float32, copy=False)
+        if mean_full.shape[0] >= feature_dim:
+            mean = trim_feature_dim(mean_full, feature_dim)
+            std = np.clip(trim_feature_dim(std_full, feature_dim), 1e-6, None)
             need_recompute = False
-            print(f"✅ 使用缓存统计: {stats_path}")
+            print(f"✅ 使用缓存统计: {stats_path} (feature_dim={feature_dim})")
         else:
-            print(f"⚠️ 统计维度不匹配 ({mean.shape[0]} -> {feat_dim_est})，重新计算")
+            print(
+                f"⚠️ 统计维度不足 ({mean_full.shape[0]} < {feature_dim})，重新计算"
+            )
     if need_recompute:
         mesh_mm = _load_or_build_decimated_mm(sample_file, target_cells=10000)
         mesh = mesh_mm.copy(deep=True)
@@ -376,11 +393,12 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
         mesh, *_ = normalize_mesh_units(mesh)
         mesh = mesh.triangulate()
         feats = extract_features(mesh).astype(np.float32, copy=False)
+        feats = trim_feature_dim(feats, feature_dim)
         mean = feats.mean(axis=0).astype(np.float32, copy=False)
         std = np.clip(feats.std(axis=0), 1e-6, None).astype(np.float32, copy=False)
         stats_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(stats_path, mean=mean, std=std)
-        print(f"[overfit] built sample stats -> {stats_path}")
+        print(f"[overfit] built sample stats -> {stats_path} (feature_dim={feature_dim})")
 
     # 创建单样本数据集
     single_dataset = SingleSampleDataset(
@@ -391,6 +409,7 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
         gingiva_src_label=DEFAULT_GINGIVA_SRC,
         gingiva_class_id=DEFAULT_GINGIVA_CLASS_ID,
         keep_void_zero=DEFAULT_KEEP_VOID_ZERO,
+        feature_dim=feature_dim,
     )
     remap_debug = getattr(single_dataset, "remap_debug", None)
 
@@ -403,10 +422,13 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
     # 注意：features 和 pos 格式是 (C, N)，需要转置为 (N, C) 以便对比
     train_arrays_path = Path("outputs/segmentation/overfit/_train_arrays.npz")
     train_arrays_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(str(train_arrays_path),
-             feats=features.transpose(0, 1).numpy(),  # (15, N) -> (N, 15)
-             pos=pos.transpose(0, 1).numpy())          # (3, N) -> (N, 3)
-    print(f"💾 保存训练侧数组: {train_arrays_path} (shape: feats={features.shape}->{features.transpose(0,1).shape}, pos={pos.shape}->{pos.transpose(0,1).shape})")
+    feats_np = features.transpose(0, 1).numpy()
+    pos_np = pos.transpose(0, 1).numpy()
+    np.savez(str(train_arrays_path), feats=feats_np, pos=pos_np)
+    print(
+        f"💾 保存训练侧数组: {train_arrays_path} "
+        f"(shape: feats={features.shape}->{feats_np.shape}, pos={pos.shape}->{pos_np.shape})"
+    )
     single_dataset.train_arrays_path = train_arrays_path.resolve()
     
     # 🔬 保存训练时的采样索引（用于推理端复用）
@@ -449,8 +471,20 @@ def setup_single_sample_training(sample_name: str, dataset_root: Path) -> Tuple[
 class OverfitTrainer:
     """单样本过拟合训练器"""
     
-    def __init__(self, model: nn.Module, dataloader: DataLoader, num_classes: int, device: torch.device, 
-                 mean: np.ndarray = None, std: np.ndarray = None):
+    def __init__(
+        self,
+        model: nn.Module,
+        dataloader: DataLoader,
+        num_classes: int,
+        device: torch.device,
+        mean: np.ndarray = None,
+        std: np.ndarray = None,
+        *,
+        boundary_lambda: float = 2.0,
+        boundary_knn_k: int = 16,
+        interior_tv_lambda: float = 0.1,
+        laplacian_lambda: float = 0.03,
+    ):
         self.model = model.to(device)
         self.dataloader = dataloader
         self.num_classes = num_classes
@@ -460,7 +494,13 @@ class OverfitTrainer:
         
         # 设置损失函数
         self.dice_loss = GeneralizedDiceLoss()
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.focal_tversky_loss = FocalTverskyLoss().to(device)
+        self.ce_weight_tensor: torch.Tensor | None = None
+        self.boundary_lambda = float(max(0.0, boundary_lambda))
+        self.boundary_knn_k = max(1, int(boundary_knn_k))
+        self.interior_tv_lambda = float(max(0.0, interior_tv_lambda))
+        self.lap_weight = float(max(0.0, laplacian_lambda))
+        self.stn_weight = 1e-3
         
         # 设置优化器 - 使用较大的学习率进行快速过拟合
         self.optimizer = torch.optim.Adam(
@@ -480,6 +520,7 @@ class OverfitTrainer:
             'loss': [],
             'dice_loss': [],
             'ce_loss': [],
+            'ft_loss': [],
             'dsc': [],
             'accuracy': [],
             'train_bg0': [],  # 训练集背景比例
@@ -488,8 +529,109 @@ class OverfitTrainer:
             'val_entropy': [],  # 验证集预测熵
             'bf1': [],
             'ger': [],
-            'ilr': []
+            'ilr': [],
+            'val_loss': [],
+            'val_sen': [],
+            'val_ppv': [],
         }
+
+    def _compute_ce_loss(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        point_weights: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        与主训练保持一致的逐点 CE 计算（含 label smoothing / class weights）。
+        """
+        weight = self.ce_weight_tensor
+        loss_map = F.cross_entropy(
+            logits,
+            targets,
+            weight=weight,
+            reduction="none",
+            label_smoothing=0.05,
+        )
+        if point_weights is None:
+            return loss_map.mean()
+        weights = point_weights.float()
+        return torch.sum(loss_map * weights) / torch.clamp(weights.sum(), min=1e-6)
+
+    def _compute_boundary_info(self, labels: torch.Tensor, pos: torch.Tensor):
+        require_boundary = self.boundary_lambda > 0 or self.interior_tv_lambda > 0
+        if not require_boundary:
+            return None, None, None
+        with torch.no_grad():
+            idx = knn_graph(pos.float(), k=self.boundary_knn_k)
+            labels_float = labels.unsqueeze(1).float()
+            neigh_labels = index_points(labels_float, idx).squeeze(1).long()
+            boundary_mask = (neigh_labels != labels.unsqueeze(-1)).any(dim=-1).float()
+        return idx, boundary_mask, neigh_labels
+
+    def _compute_losses(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        pos: torch.Tensor,
+    ):
+        dice_loss = self.dice_loss(logits, labels)
+        idx_tv, boundary_mask, neigh_labels = self._compute_boundary_info(labels, pos)
+        boundary_weights = None
+        if boundary_mask is not None and self.boundary_lambda > 0:
+            boundary_weights = 1.0 + boundary_mask * self.boundary_lambda
+
+        ce_loss = self._compute_ce_loss(logits, labels, boundary_weights)
+        focal_loss = self.focal_tversky_loss(
+            logits,
+            labels,
+            weights=boundary_weights if boundary_weights is not None else None,
+        )
+
+        total_loss = 0.3 * dice_loss + 1.0 * ce_loss + 0.2 * focal_loss
+
+        lap_reg = logits.new_tensor(0.0)
+        if logits.size(-1) > 0:
+            p = F.softmax(logits, dim=1)
+            with torch.no_grad():
+                idx_lap = knn_graph(pos.float(), k=8)
+            nbr = index_points(p, idx_lap)
+            lap_reg = (nbr.mean(dim=-1) - p).pow(2).mean()
+
+        stn_reg = logits.new_tensor(0.0)
+        fstn = getattr(self.model, "fstn", None)
+        trans = getattr(self.model, "_last_fstn", None)
+        if fstn is not None and trans is not None:
+            I = torch.eye(trans.size(1), device=trans.device).unsqueeze(0).expand_as(trans)
+            stn_reg = ((trans @ trans.transpose(1, 2) - I) ** 2).sum(dim=(1, 2)).mean()
+
+        tv_reg = logits.new_tensor(0.0)
+        if self.interior_tv_lambda > 0 and idx_tv is not None and boundary_mask is not None:
+            p_tv = F.softmax(logits.float(), dim=1)
+            p_nei_tv = index_points(p_tv, idx_tv)
+            same_cls = (neigh_labels == labels.unsqueeze(-1)).float()
+            interior_mask = (1.0 - boundary_mask).unsqueeze(-1)
+            weight_mask = same_cls * interior_mask
+            weight_sum = weight_mask.sum()
+            if torch.isfinite(weight_sum).item() and weight_sum.item() > 0:
+                diff_tv = (p_tv.unsqueeze(-1) - p_nei_tv).pow(2).sum(dim=1)
+                tv_reg = (diff_tv * weight_mask).sum() / weight_sum.clamp_min(1e-6)
+        total_loss = (
+            total_loss
+            + self.lap_weight * lap_reg
+            + self.stn_weight * stn_reg
+            + self.interior_tv_lambda * tv_reg
+        )
+
+        return (
+            total_loss,
+            dice_loss,
+            ce_loss,
+            focal_loss,
+            lap_reg,
+            stn_reg,
+            tv_reg,
+            boundary_mask,
+        )
         
     def train_epoch(self) -> dict:
         """训练一个epoch"""
@@ -499,6 +641,7 @@ class OverfitTrainer:
             'loss': 0.0,
             'dice_loss': 0.0,
             'ce_loss': 0.0,
+            'ft_loss': 0.0,
             'correct': 0,
             'total': 0
         }
@@ -518,24 +661,40 @@ class OverfitTrainer:
             if self.use_amp:
                 with autocast(self.device_type):
                     logits = self.model(features, pos)
-                    dice_loss = self.dice_loss(logits, labels)
-                    ce_loss = self.ce_loss(logits, labels)
-                    total_loss = dice_loss + ce_loss
-                
+                    (
+                        total_loss,
+                        dice_loss_t,
+                        ce_loss_t,
+                        ft_loss_t,
+                        lap_reg_t,
+                        stn_reg_t,
+                        tv_reg_t,
+                        boundary_mask,
+                    ) = self._compute_losses(
+                        logits, labels, pos
+                    )
                 assert self.scaler is not None
                 self.scaler.scale(total_loss).backward()
                 self.scaler.unscale_(self.optimizer)
-                clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                clip_grad_norm_(self.model.parameters(), max_norm=2.0)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 logits = self.model(features, pos)
-                dice_loss = self.dice_loss(logits, labels)
-                ce_loss = self.ce_loss(logits, labels)
-                total_loss = dice_loss + ce_loss
-                
+                (
+                    total_loss,
+                    dice_loss_t,
+                    ce_loss_t,
+                    ft_loss_t,
+                    lap_reg_t,
+                    stn_reg_t,
+                    tv_reg_t,
+                    boundary_mask,
+                ) = self._compute_losses(
+                    logits, labels, pos
+                )
                 total_loss.backward()
-                clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                clip_grad_norm_(self.model.parameters(), max_norm=2.0)
                 self.optimizer.step()
             
             # 计算准确率
@@ -557,8 +716,9 @@ class OverfitTrainer:
             
             # 累积指标
             epoch_metrics['loss'] += total_loss.item()
-            epoch_metrics['dice_loss'] += dice_loss.item()
-            epoch_metrics['ce_loss'] += ce_loss.item()
+            epoch_metrics['dice_loss'] += dice_loss_t.item()
+            epoch_metrics['ce_loss'] += ce_loss_t.item()
+            epoch_metrics['ft_loss'] += ft_loss_t.item()
             epoch_metrics['correct'] += correct
             epoch_metrics['total'] += total
             epoch_metrics['bg_ratio'] += bg_ratio
@@ -569,6 +729,7 @@ class OverfitTrainer:
         epoch_metrics['loss'] /= num_batches
         epoch_metrics['dice_loss'] /= num_batches
         epoch_metrics['ce_loss'] /= num_batches
+        epoch_metrics['ft_loss'] /= num_batches
         epoch_metrics['accuracy'] = epoch_metrics['correct'] / epoch_metrics['total']
         epoch_metrics['bg_ratio'] /= num_batches
         epoch_metrics['entropy'] /= num_batches
@@ -583,6 +744,11 @@ class OverfitTrainer:
         all_bg_ratios = []
         all_entropy = []
         pos_mm_np: Optional[np.ndarray] = None
+        loss_sum = 0.0
+        dice_sum = 0.0
+        ce_sum = 0.0
+        ft_sum = 0.0
+        batch_count = 0
         
         with torch.no_grad():
             for batch_data in self.dataloader:
@@ -603,6 +769,21 @@ class OverfitTrainer:
                 
                 preds = torch.argmax(logits, dim=1)
                 probs = torch.softmax(logits, dim=1)
+                (
+                    total_loss,
+                    dice_loss_t,
+                    ce_loss_t,
+                    ft_loss_t,
+                    _lap,
+                    _stn,
+                    _tv,
+                    _,
+                ) = self._compute_losses(logits, labels, pos)
+                loss_sum += float(total_loss.item())
+                dice_sum += float(dice_loss_t.item())
+                ce_sum += float(ce_loss_t.item())
+                ft_sum += float(ft_loss_t.item())
+                batch_count += 1
                 
                 # 计算诊断指标
                 bg_ratio = (preds == 0).float().mean().item()
@@ -637,6 +818,10 @@ class OverfitTrainer:
             'ilr': ilr,
             'boundary_precision': precision,
             'boundary_recall': recall,
+            'loss': loss_sum / max(batch_count, 1),
+            'dice_loss': dice_sum / max(batch_count, 1),
+            'ce_loss': ce_sum / max(batch_count, 1),
+            'ft_loss': ft_sum / max(batch_count, 1),
         }
     
     def _save_training_evidence(self, save_dir: Path, sample_name: str):
@@ -895,63 +1080,89 @@ class OverfitTrainer:
         
         save_dir.mkdir(parents=True, exist_ok=True)
         best_dsc = 0.0
+        log_path = save_dir / "train_log.csv"
+        log_file = log_path.open("w", newline="")
+        log_writer = csv.writer(log_file)
+        log_writer.writerow(
+            ["epoch", "train_loss", "val_loss", "val_dsc", "val_dsc_perm", "val_sen", "val_ppv", "lr"]
+        )
         
-        for epoch in range(1, epochs + 1):
-            # 训练
-            train_metrics = self.train_epoch()
-            
-            # ⚡ 优化：只在特定 epoch 进行评估（减少验证开销）
-            should_evaluate = (epoch == 1 or epoch % 10 == 0 or epoch == epochs)
-            
-            if should_evaluate:
-                # 评估
-                eval_metrics = self.evaluate()
-                
-                # 记录历史
-                self.history['loss'].append(train_metrics['loss'])
-                self.history['dice_loss'].append(train_metrics['dice_loss'])
-                self.history['ce_loss'].append(train_metrics['ce_loss'])
-                self.history['dsc'].append(eval_metrics['dsc'])
-                self.history['accuracy'].append(train_metrics['accuracy'])
-                self.history['train_bg0'].append(train_metrics['bg_ratio'])
-                self.history['train_entropy'].append(train_metrics['entropy'])
-                self.history['val_bg0'].append(eval_metrics['bg_ratio'])
-                self.history['val_entropy'].append(eval_metrics['entropy'])
-                self.history['bf1'].append(eval_metrics['bf1'])
-                self.history['ger'].append(eval_metrics['ger'])
-                self.history['ilr'].append(eval_metrics['ilr'])
-                
-                # 保存最佳模型（包含完整的 pipeline 元数据契约）
-                if eval_metrics['dsc'] > best_dsc:
-                    best_dsc = eval_metrics['dsc']
-                    self._save_checkpoint_with_pipeline(
-                        save_dir / f"best_overfit_{sample_name}.pt",
-                        sample_name,
-                        epoch,
-                        eval_metrics['dsc']
+        try:
+            for epoch in range(1, epochs + 1):
+                train_metrics = self.train_epoch()
+                should_evaluate = (epoch == 1 or epoch % 10 == 0 or epoch == epochs)
+
+                if should_evaluate:
+                    eval_metrics = self.evaluate()
+
+                    self.history['loss'].append(train_metrics['loss'])
+                    self.history['dice_loss'].append(train_metrics['dice_loss'])
+                    self.history['ce_loss'].append(train_metrics['ce_loss'])
+                    self.history['ft_loss'].append(train_metrics['ft_loss'])
+                    self.history['dsc'].append(eval_metrics['dsc'])
+                    self.history['accuracy'].append(train_metrics['accuracy'])
+                    self.history['train_bg0'].append(train_metrics['bg_ratio'])
+                    self.history['train_entropy'].append(train_metrics['entropy'])
+                    self.history['val_bg0'].append(eval_metrics['bg_ratio'])
+                    self.history['val_entropy'].append(eval_metrics['entropy'])
+                    self.history['bf1'].append(eval_metrics['bf1'])
+                    self.history['ger'].append(eval_metrics['ger'])
+                    self.history['ilr'].append(eval_metrics['ilr'])
+                    self.history['val_loss'].append(eval_metrics['loss'])
+                    self.history['val_sen'].append(eval_metrics['sensitivity'])
+                    self.history['val_ppv'].append(eval_metrics['ppv'])
+
+                    if eval_metrics['dsc'] > best_dsc:
+                        best_dsc = eval_metrics['dsc']
+                        self._save_checkpoint_with_pipeline(
+                            save_dir / f"best_overfit_{sample_name}.pt",
+                            sample_name,
+                            epoch,
+                            eval_metrics['dsc'],
+                        )
+
+                    lr = self.optimizer.param_groups[0]['lr']
+                    log_writer.writerow(
+                        [
+                            epoch,
+                            f"{train_metrics['loss']:.6f}",
+                            f"{eval_metrics['loss']:.6f}",
+                            f"{eval_metrics['dsc']:.6f}",
+                            f"{eval_metrics['dsc']:.6f}",
+                            f"{eval_metrics['sensitivity']:.6f}",
+                            f"{eval_metrics['ppv']:.6f}",
+                            f"{lr:.6e}",
+                        ]
                     )
-                
-                # 打印进度（包含新诊断指标）
-                print(f"Epoch {epoch:3d}/{epochs} | "
-                      f"Loss: {train_metrics['loss']:.6f} | "
-                      f"DSC: {eval_metrics['dsc']:.4f} | "
-                      f"Acc: {train_metrics['accuracy']:.4f} | "
-                      f"🔍 Train BG0: {train_metrics['bg_ratio']:.3f} | "
-                      f"Train Ent: {train_metrics['entropy']:.3f} | "
-                      f"Val BG0: {eval_metrics['bg_ratio']:.3f} | "
-                      f"Val Ent: {eval_metrics['entropy']:.3f} | "
-                      f"BF1@0.2: {eval_metrics['bf1']:.4f} | "
-                      f"GER: {eval_metrics['ger']*100:.2f}% | "
-                      f"ILR: {eval_metrics['ilr']*100:.2f}%", flush=True)
-            else:
-                # 快速模式：只打印训练指标，不做评估
-                if epoch % 5 == 0:  # 每 5 个 epoch 打印一次
-                    print(f"Epoch {epoch:3d}/{epochs} | "
-                          f"Loss: {train_metrics['loss']:.6f} | "
-                          f"Acc: {train_metrics['accuracy']:.4f} | "
-                          f"🔍 BG0: {train_metrics['bg_ratio']:.3f} | "
-                          f"Ent: {train_metrics['entropy']:.3f}", flush=True)
-        
+                    log_file.flush()
+
+                    print(
+                        f"Epoch {epoch:3d}/{epochs} | "
+                        f"Loss: {train_metrics['loss']:.6f} | "
+                        f"DSC: {eval_metrics['dsc']:.4f} | "
+                        f"Acc: {train_metrics['accuracy']:.4f} | "
+                        f"🔍 Train BG0: {train_metrics['bg_ratio']:.3f} | "
+                        f"Train Ent: {train_metrics['entropy']:.3f} | "
+                        f"Val BG0: {eval_metrics['bg_ratio']:.3f} | "
+                        f"Val Ent: {eval_metrics['entropy']:.3f} | "
+                        f"BF1@0.2: {eval_metrics['bf1']:.4f} | "
+                        f"GER: {eval_metrics['ger']*100:.2f}% | "
+                        f"ILR: {eval_metrics['ilr']*100:.2f}%",
+                        flush=True,
+                    )
+                else:
+                    if epoch % 5 == 0:
+                        print(
+                            f"Epoch {epoch:3d}/{epochs} | "
+                            f"Loss: {train_metrics['loss']:.6f} | "
+                            f"Acc: {train_metrics['accuracy']:.4f} | "
+                            f"🔍 BG0: {train_metrics['bg_ratio']:.3f} | "
+                            f"Ent: {train_metrics['entropy']:.3f}",
+                            flush=True,
+                        )
+        finally:
+            log_file.close()
+
         print(f"\n✅ 过拟合训练完成! 最佳DSC: {best_dsc:.4f}")
         
         # 🔬 决策树节点1：保存最终 epoch 的 logits 和 labels
@@ -974,6 +1185,8 @@ class OverfitTrainer:
         plt.plot(epochs, self.history['loss'], 'b-', label='Total Loss')
         plt.plot(epochs, self.history['dice_loss'], 'r-', label='Dice Loss')
         plt.plot(epochs, self.history['ce_loss'], 'g-', label='CE Loss')
+        plt.plot(epochs, self.history['ft_loss'], 'm-', label='Focal-Tversky Loss')
+        plt.plot(epochs, self.history['val_loss'], 'k--', label='Val Loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.title('Training Loss')
@@ -983,6 +1196,8 @@ class OverfitTrainer:
         # DSC curve
         plt.subplot(3, 3, 2)
         plt.plot(epochs, self.history['dsc'], 'b-', label='DSC')
+        plt.plot(epochs, self.history['val_sen'], 'g--', label='Sensitivity')
+        plt.plot(epochs, self.history['val_ppv'], 'r--', label='PPV')
         plt.xlabel('Epoch')
         plt.ylabel('DSC')
         plt.title('Dice Similarity Coefficient')
@@ -1044,6 +1259,8 @@ class OverfitTrainer:
             plt.plot(last_50, self.history['loss'][-50:], 'b-', label='Total Loss')
             plt.plot(last_50, self.history['dice_loss'][-50:], 'r-', label='Dice Loss')
             plt.plot(last_50, self.history['ce_loss'][-50:], 'g-', label='CE Loss')
+            plt.plot(last_50, self.history['ft_loss'][-50:], 'm-', label='Focal-Tversky Loss')
+            plt.plot(last_50, self.history['val_loss'][-50:], 'k--', label='Val Loss')
             plt.xlabel('Epoch')
             plt.ylabel('Loss')
             plt.title('Last 50 Epochs - Loss')
@@ -1054,6 +1271,8 @@ class OverfitTrainer:
         if len(epochs) > 50:
             plt.subplot(3, 3, 8)
             plt.plot(last_50, self.history['dsc'][-50:], 'b-', label='DSC')
+            plt.plot(last_50, self.history['val_sen'][-50:], 'g--', label='Sensitivity')
+            plt.plot(last_50, self.history['val_ppv'][-50:], 'r--', label='PPV')
             plt.xlabel('Epoch')
             plt.ylabel('DSC')
             plt.title('Last 50 Epochs - DSC')
@@ -1143,6 +1362,16 @@ def main():
                        help="数据集根目录")
     parser.add_argument("--device", type=str, default="auto",
                        help="设备 (cuda/cpu/auto)")
+    parser.add_argument("--feature-dim", type=int, default=18,
+                       help="特征维度 (推荐 18 = 论文+三几何增强；可切换 15 做 ablation)")
+    parser.add_argument("--boundary-lambda", type=float, default=2.0,
+                       help="边界样本的额外交叉熵权重 λ（默认 2.0，可改 1.5/2.5 做 ablation）")
+    parser.add_argument("--boundary-knn", type=int, default=16,
+                       help="边界/TV 正则使用的近邻数量 k")
+    parser.add_argument("--interior-tv-lambda", type=float, default=0.1,
+                       help="同类 interior TV 正则权重（默认 0.1）")
+    parser.add_argument("--laplacian-lambda", type=float, default=0.03,
+                       help="Graph Laplacian 平滑正则权重（默认 0.03）")
     
     args = parser.parse_args()
     
@@ -1152,6 +1381,8 @@ def main():
     print(f"样本: {args.sample}")
     print(f"Epochs: {args.epochs}")
     print(f"数据集: {args.dataset_root}")
+    feature_dim = max(1, args.feature_dim)
+    print(f"特征维度: {feature_dim}")
     
     # 设置设备
     if args.device == "auto":
@@ -1162,14 +1393,37 @@ def main():
     
     # 设置数据
     dataset_root = Path(args.dataset_root)
-    dataloader, num_classes, mean, std = setup_single_sample_training(args.sample, dataset_root)
+    dataloader, num_classes, mean, std = setup_single_sample_training(
+        args.sample,
+        dataset_root,
+        feature_dim=feature_dim,
+    )
     
     # 创建模型
     print(f"\n🏗️  创建模型 (类别数: {num_classes})")
-    model = iMeshSegNet(num_classes=num_classes, with_dropout=False, use_feature_stn=False)
+    model = iMeshSegNet(
+        num_classes=num_classes,
+        with_dropout=False,
+        dropout_p=0.1,
+        use_feature_stn=False,
+        k_short=6,
+        k_long=12,
+        in_channels=feature_dim,
+    )
     
     # 创建训练器（传入 mean, std 用于保存 pipeline 契约）
-    trainer = OverfitTrainer(model, dataloader, num_classes, device, mean, std)
+    trainer = OverfitTrainer(
+        model,
+        dataloader,
+        num_classes,
+        device,
+        mean,
+        std,
+        boundary_lambda=args.boundary_lambda,
+        boundary_knn_k=max(1, args.boundary_knn),
+        interior_tv_lambda=max(0.0, args.interior_tv_lambda),
+        laplacian_lambda=max(0.0, args.laplacian_lambda),
+    )
     
     # 输出目录
     output_dir = Path("outputs/segmentation/overfit") / args.sample

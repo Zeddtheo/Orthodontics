@@ -474,6 +474,22 @@ def extract_features(mesh: pv.PolyData) -> np.ndarray:
     return np.hstack([vertex_coords, cell_normals, relative_positions, extra_feats]).astype(np.float32, copy=False)
 
 
+def trim_feature_dim(array: np.ndarray, feature_dim: int) -> np.ndarray:
+    """Slice the last dimension to the requested feature_dim.
+
+    保持论文要求的特征维度（15 或 18）。默认返回视图，调用方可自行 copy。
+    """
+    if feature_dim <= 0:
+        raise ValueError(f"feature_dim must be positive, got {feature_dim}")
+    if array.shape[-1] < feature_dim:
+        raise ValueError(
+            f"feature_dim={feature_dim} exceeds available channels {array.shape[-1]}"
+        )
+    if array.shape[-1] == feature_dim:
+        return array
+    return array[..., :feature_dim]
+
+
 def random_transform(points: np.ndarray) -> np.ndarray:
     """Apply a random similarity transform for augmentation."""
     theta = np.radians(random.uniform(-10, 10))
@@ -546,13 +562,16 @@ def validate_and_split_by_subject(
 # =============================================================================
 
 
-def load_stats(stats_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+def load_stats(stats_path: Path, feature_dim: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
     if not stats_path.exists():
         raise FileNotFoundError(f"stats file not found: {stats_path}")
     with np.load(stats_path) as data:
         mean = data["mean"].astype(np.float32)
         std = data["std"].astype(np.float32)
     std = np.clip(std, 1e-6, None)
+    if feature_dim is not None:
+        mean = trim_feature_dim(mean, feature_dim).astype(np.float32, copy=False)
+        std = trim_feature_dim(std, feature_dim).astype(np.float32, copy=False)
     return mean, std
 
 
@@ -615,6 +634,7 @@ class DataConfig:
     gingiva_class_id: int = 15
     keep_void_zero: bool = False
     seed: int = 42
+    feature_dim: int = 15
 
 
 # =============================================================================
@@ -622,7 +642,11 @@ class DataConfig:
 # =============================================================================
 
 
-def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple[np.ndarray, np.ndarray]:
+def compute_feature_stats(
+    file_paths: Sequence[str],
+    target_cells: int,
+    feature_dim: int = 18,
+) -> Tuple[np.ndarray, np.ndarray]:
     if not file_paths:
         raise ValueError("Training file list is empty; cannot compute statistics.")
 
@@ -646,10 +670,11 @@ def compute_feature_stats(file_paths: Sequence[str], target_cells: int) -> Tuple
             mesh = mesh.decimate_pro(reduction, feature_angle=45, preserve_topology=True)
 
         features = extract_features(mesh).astype(np.float64)
+        features = trim_feature_dim(features, feature_dim).astype(np.float64, copy=False)
         if sum_vec is None or sum_sq_vec is None:
-            feature_dim = features.shape[1]
-            sum_vec = np.zeros(feature_dim, dtype=np.float64)
-            sum_sq_vec = np.zeros(feature_dim, dtype=np.float64)
+            feat_dim = features.shape[1]
+            sum_vec = np.zeros(feat_dim, dtype=np.float64)
+            sum_sq_vec = np.zeros(feat_dim, dtype=np.float64)
 
         sum_vec += features.sum(axis=0)
         sum_sq_vec += (features ** 2).sum(axis=0)
@@ -757,7 +782,11 @@ def prepare_module0(
         raise ValueError("No training files available to compute statistics.")
 
     print("[Module0] 正在计算训练集特征统计 (mean/std)...")
-    mean, std = compute_feature_stats(train_files, config.target_cells)
+    mean, std = compute_feature_stats(
+        train_files,
+        config.target_cells,
+        feature_dim=config.feature_dim,
+    )
     config.stats_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(config.stats_path, mean=mean, std=std)
     print(f"[Module0] 统计文件已写入: {config.stats_path.resolve()}")
@@ -783,10 +812,15 @@ class SegmentationDataset(Dataset):
         gingiva_src_label: int,
         gingiva_class_id: int,
         keep_void_zero: bool,
+        feature_dim: int,
     ):
         self.file_paths = file_paths
-        self.mean = torch.from_numpy(mean).float()
-        self.std = torch.from_numpy(std).float()
+        feat_dim = int(feature_dim)
+        mean_np = trim_feature_dim(np.asarray(mean, dtype=np.float32), feat_dim)
+        std_np = trim_feature_dim(np.asarray(std, dtype=np.float32), feat_dim)
+        std_np = np.clip(std_np, 1e-6, None)
+        self.mean = torch.from_numpy(mean_np).float()
+        self.std = torch.from_numpy(std_np).float()
         self.arch_frames = arch_frames
         self.target_cells = target_cells
         self.sample_cells = sample_cells
@@ -798,6 +832,7 @@ class SegmentationDataset(Dataset):
         self.keep_void_zero = keep_void_zero
         self._single_arch_maps: Optional[Dict[str, Dict[int, int]]] = None
         self.min_samples_per_class = 160  # 小类保底采样数量（侧重边界牙）
+        self.feature_dim = feat_dim
         self.boundary_focus_fraction = 0.4  # 采样时优先保留的边界占比
         self.sampler_mode = "boundary_balanced" if self.boundary_focus_fraction > 0 else "random"
         self._mirror_pairs_single_arch: Dict[str, List[Tuple[int, int]]] = {}
@@ -953,6 +988,7 @@ class SegmentationDataset(Dataset):
             mesh.points = rotated_points
 
         features = extract_features(mesh).astype(np.float32)
+        features = trim_feature_dim(features, self.feature_dim).astype(np.float32, copy=False)
 
         pos_raw = mesh.cell_centers().points.astype(np.float32)
         scale_pos = diag_after if diag_after > 1e-6 else 1.0
@@ -1030,7 +1066,7 @@ class SegmentationDataset(Dataset):
 
         features_tensor = torch.from_numpy(features)
         features_tensor = (features_tensor - self.mean) / self.std
-        features_tensor = features_tensor.transpose(0, 1).contiguous()  # (15, N)
+        features_tensor = features_tensor.transpose(0, 1).contiguous()  # (feature_dim, N)
 
         pos_tensor = torch.from_numpy(pos_raw).transpose(0, 1).contiguous()  # (3, N)
 
@@ -1073,7 +1109,7 @@ class SegmentationDataset(Dataset):
 def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
     train_files, val_files = load_split_lists(config.split_path)
 
-    mean, std = load_stats(config.stats_path)
+    mean, std = load_stats(config.stats_path, feature_dim=config.feature_dim)
     arch_frames = load_arch_frames(config.arch_frames_path)
 
     train_dataset = SegmentationDataset(
@@ -1088,6 +1124,7 @@ def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         gingiva_src_label=config.gingiva_src_label,
         gingiva_class_id=config.gingiva_class_id,
         keep_void_zero=config.keep_void_zero,
+        feature_dim=config.feature_dim,
     )
 
     val_dataset = SegmentationDataset(
@@ -1102,6 +1139,7 @@ def get_dataloaders(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         gingiva_src_label=config.gingiva_src_label,
         gingiva_class_id=config.gingiva_class_id,
         keep_void_zero=config.keep_void_zero,
+        feature_dim=config.feature_dim,
     )
 
     train_loader = DataLoader(
@@ -1216,6 +1254,7 @@ def main() -> None:
     parser.add_argument("--jaw", type=str, default="L", help="Jaw flag when inspecting (L or U)")
     parser.add_argument("--target-cells", type=int, help="Override DataConfig.target_cells")
     parser.add_argument("--sample-cells", type=int, help="Override DataConfig.sample_cells")
+    parser.add_argument("--feature-dim", type=int, help="Override DataConfig.feature_dim (15 or 18)")
     args = parser.parse_args()
 
     if args.inspect is not None:
@@ -1227,6 +1266,8 @@ def main() -> None:
         config_kwargs["target_cells"] = args.target_cells
     if args.sample_cells is not None:
         config_kwargs["sample_cells"] = args.sample_cells
+    if args.feature_dim is not None:
+        config_kwargs["feature_dim"] = args.feature_dim
 
     config = DataConfig(**config_kwargs)
     prepare_module0(

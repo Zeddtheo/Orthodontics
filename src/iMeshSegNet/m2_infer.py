@@ -16,6 +16,7 @@ from imeshsegnet import iMeshSegNet
 from m0_dataset import (
     SEG_NUM_CLASSES,
     extract_features,
+    trim_feature_dim,
     normalize_mesh_units,
     _load_or_build_decimated_mm,
     _decim_cache_path,
@@ -200,13 +201,19 @@ def _features_and_pos_for_contract(mesh10k_mm: pv.PolyData, meta: dict) -> Tuple
     if meta["div_by_diag"]:
         pos_norm10k /= scale
 
-    feats10k = extract_features(feat_mesh).astype(np.float32, copy=False)  # (N,15)
+    feats10k = extract_features(feat_mesh).astype(np.float32, copy=False)
+    in_ch = int(meta.get("in_channels", feats10k.shape[1]))
+    feats10k = trim_feature_dim(feats10k, in_ch).astype(np.float32, copy=False)
     normals10k = None
     if "Normals" in feat_mesh.cell_data:
         normals10k = np.asarray(feat_mesh.cell_data["Normals"], dtype=np.float32)
     elif hasattr(feat_mesh, "cell_normals"):
         normals10k = np.asarray(feat_mesh.cell_normals, dtype=np.float32)
     if meta["zscore_apply"] and meta["mean"] is not None and meta["std"] is not None:
+        if meta["mean"].shape[0] != in_ch or meta["std"].shape[0] != in_ch:
+            raise RuntimeError(
+                f"Pipeline stats dim mismatch: mean={meta['mean'].shape[0]}, std={meta['std'].shape[0]}, in_ch={in_ch}"
+            )
         feats10k = (feats10k - meta["mean"].reshape(1, -1)) / np.clip(meta["std"], 1e-6, None).reshape(1, -1)
 
     return feats10k, pos_norm10k, pos_mm10k, scale, normals10k
@@ -317,8 +324,8 @@ def _infer_one(
                     )
                 print(f"[Check#4] 训练/推理前处理一致: Δfeat={feat_diff:.2e}, Δpos={pos_diff:.2e}")
         else:
-            print(f"[Check#4] 训练侧数组缺失: {arr_fp}")
-    x = torch.from_numpy(feats10k[ids6k].T).unsqueeze(0).to(device)    # (B,15,N6)
+            raise FileNotFoundError(f"[Check#4] 训练侧数组缺失: {arr_fp}")
+    x = torch.from_numpy(feats10k[ids6k].T).unsqueeze(0).to(device)    # (B,in_ch,N6)
     p = torch.from_numpy(pos_norm10k[ids6k].T).unsqueeze(0).to(device) # (B,3,N6)
 
     # 前向
@@ -346,25 +353,28 @@ def _infer_one(
         cfg.min_component_size = 0
         cfg.min_component_size_full = 0
     else:
-        cfg.gc_beta = 0.8
-        cfg.gc_k = 4
-        cfg.gc_iterations = 1
-        kk = meta.get("knn_k", {"to10k": 3, "tofull": 3})
-        cfg.knn_10k = max(3, int(kk.get("to10k", 3)))
-        cfg.knn_full = max(3, int(kk.get("tofull", 3)))
-        cfg.clean_component_neighbors = 6
-        cfg.low_conf_neighbors = 6
-        cfg.min_component_size = 40
-        cfg.min_component_size_full = 0
-        cfg.tiny_component_size = 0
-        cfg.fill_radius = 0.0
-        cfg.low_conf_threshold = 0.0
-        cfg.seed_conf_th = 0.95
-        cfg.svm_max_train = 0
-        cfg.gingiva_dilate_iters = 0
-        cfg.gingiva_label = max(int(meta.get("num_classes", 1)) - 1, 0)
-        cfg.gingiva_protect_seeds = True
-        cfg.gingiva_protect_conf = 0.95
+        kk = meta.get("knn_k", {"to10k": cfg.knn_10k, "tofull": cfg.knn_full})
+        cfg.knn_10k = max(3, int(kk.get("to10k", cfg.knn_10k)))
+        cfg.knn_full = max(3, int(kk.get("tofull", cfg.knn_full)))
+        cfg.gc_beta = float(meta.get("gc_beta", cfg.gc_beta))
+        cfg.gc_k = int(meta.get("gc_k", cfg.gc_k))
+        cfg.gc_iterations = int(meta.get("gc_iterations", cfg.gc_iterations))
+        cfg.seed_conf_th = float(meta.get("seed_conf_th", cfg.seed_conf_th))
+        cfg.bg_seed_th = float(meta.get("bg_seed_th", cfg.bg_seed_th))
+        cfg.min_component_size = int(meta.get("min_component_size", cfg.min_component_size))
+        cfg.clean_component_neighbors = int(meta.get("clean_component_neighbors", cfg.clean_component_neighbors))
+        cfg.min_component_size_full = int(meta.get("min_component_size_full", cfg.min_component_size_full))
+        cfg.tiny_component_size = int(meta.get("tiny_component_size", cfg.tiny_component_size))
+        cfg.low_conf_threshold = float(meta.get("low_conf_threshold", cfg.low_conf_threshold))
+        cfg.low_conf_neighbors = int(meta.get("low_conf_neighbors", cfg.low_conf_neighbors))
+        cfg.fill_radius = float(meta.get("fill_radius", cfg.fill_radius))
+        cfg.svm_max_train = int(meta.get("svm_max_train", cfg.svm_max_train))
+        cfg.gingiva_label = max(int(meta.get("gingiva_label", cfg.gingiva_label)), 0)
+        cfg.gingiva_dilate_iters = int(meta.get("gingiva_dilate_iters", cfg.gingiva_dilate_iters))
+        cfg.gingiva_dilate_thresh = float(meta.get("gingiva_dilate_thresh", cfg.gingiva_dilate_thresh))
+        cfg.gingiva_dilate_k = int(meta.get("gingiva_dilate_k", cfg.gingiva_dilate_k))
+        cfg.gingiva_protect_seeds = bool(meta.get("gingiva_protect_seeds", cfg.gingiva_protect_seeds))
+        cfg.gingiva_protect_conf = float(meta.get("gingiva_protect_conf", cfg.gingiva_protect_conf))
     # 从 decimated 10k 里取映射（两种可能的字段名都支持）
     orig_ids = None
     assign_ids = None
