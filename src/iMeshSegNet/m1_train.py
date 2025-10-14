@@ -37,7 +37,7 @@ from m0_dataset import (
     load_stats,
     set_seed,
 )
-from imeshsegnet import iMeshSegNet
+from imeshsegnet import iMeshSegNet, index_points, knn_graph
 
 SEGMENTATION_ROOT = Path("outputs/segmentation")
 FINAL_SEG_PT_DIR = SEGMENTATION_ROOT / "final_pt"
@@ -301,6 +301,7 @@ class Trainer:
             targets,
             weight=weight,
             reduction="none",
+            label_smoothing=0.05,
         )
         if point_weights is None:
             return loss_map.mean()
@@ -346,7 +347,14 @@ class Trainer:
                         loss_dice = self.dice_loss(logits, y)
                         loss_ce = self._compute_ce_loss(logits, y)
                         loss_ft = self.focal_tversky_loss(logits, y)
-                        loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft
+                        lap_reg = logits.new_tensor(0.0)
+                        if logits.size(-1) > 0:
+                            # 邻域平滑：Graph Laplacian 正则防止椒盐噪声
+                            p = F.softmax(logits, dim=1)
+                            idx = knn_graph(pos.float(), k=8)
+                            nbr = index_points(p, idx)
+                            lap_reg = (nbr.mean(dim=-1) - p).pow(2).mean()
+                        loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + 0.03 * lap_reg
             else:
                 # 训练阶段保持原有逻辑
                 with autocast(self.device.type, enabled=self.amp_enabled):
@@ -354,6 +362,14 @@ class Trainer:
                     loss_dice = self.dice_loss(logits, y)
                     loss_ce = self._compute_ce_loss(logits, y, boundary_weights)
                     loss_ft = self.focal_tversky_loss(logits, y, weights=boundary_weights)
+                    lap_reg = logits.new_tensor(0.0)
+                    if logits.size(-1) > 0:
+                        # 邻域平滑：Graph Laplacian 正则，抑制局部孤立预测
+                        p = F.softmax(logits, dim=1)
+                        with torch.no_grad():
+                            idx = knn_graph(pos.float(), k=8)
+                        nbr = index_points(p, idx)
+                        lap_reg = (nbr.mean(dim=-1) - p).pow(2).mean()
                     
                     # ========== 修复2: STN 正交正则（防止越位变形）==========
                     stn_reg = 0.0
@@ -365,7 +381,7 @@ class Trainer:
                         stn_reg = ((trans @ trans.transpose(1, 2) - I) ** 2).sum(dim=(1, 2)).mean()
                     
                     # ← 更新：加入 Focal Tversky 提升召回
-                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + 1e-3 * stn_reg
+                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + 0.03 * lap_reg + 1e-3 * stn_reg
 
                 # ========== 修复4: NaN/Inf 哨兵（防飙车）==========
                 if not torch.isfinite(loss):
@@ -488,6 +504,10 @@ class Trainer:
                 if changed:
                     print(f"[Data] Augmentation stage -> {aug_stage} at epoch {epoch}")
 
+            base_lambda = float(self.config.boundary_lambda)
+            warm_ratio = min(1.0, max(0.0, (epoch - 1) / 8.0))
+            self.boundary_lambda = 1.0 * (1.0 - warm_ratio) + base_lambda * warm_ratio
+
             epoch_start = time.time()
             train_metrics = self._run_epoch(self.train_loader, is_train=True)
             (
@@ -592,6 +612,12 @@ class Trainer:
                 self._save_checkpoint(self.config.checkpoint_dir / "best.pt")
             else:
                 self.epochs_since_best += 1
+
+            hopeless = epoch >= 16 and self.best_val_dsc < 0.82
+            plateau = self.epochs_since_best >= 7 and val_dsc < self.best_val_dsc + 0.008
+            if hopeless or plateau:
+                print(f"[PlateauGuard] early stop at epoch {epoch} | best_dsc={self.best_val_dsc:.4f}")
+                break
 
             self.scheduler.step()
 

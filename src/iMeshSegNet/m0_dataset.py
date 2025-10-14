@@ -613,7 +613,7 @@ class DataConfig:
     label_mode: str = "single_arch_16"  # "single_arch_16" | "full_fdi"
     gingiva_src_label: int = 0
     gingiva_class_id: int = 15
-    keep_void_zero: bool = True
+    keep_void_zero: bool = False
     seed: int = 42
 
 
@@ -1012,7 +1012,21 @@ class SegmentationDataset(Dataset):
             labels = labels[indices]
             boundary_flags = boundary_flags[indices]
         else:
-            indices = np.arange(features.shape[0], dtype=np.int64)
+            total_cells = features.shape[0]
+            if total_cells < self.sample_cells:
+                if total_cells == 0:
+                    raise ValueError(f"{file_path} produced an empty mesh after preprocessing.")
+                base = np.arange(total_cells, dtype=np.int64)
+                deficit = self.sample_cells - total_cells
+                extra = np.random.choice(total_cells, size=deficit, replace=True)
+                indices = np.concatenate([base, extra])
+                np.random.shuffle(indices)
+                features = features[indices]
+                pos_raw = pos_raw[indices]
+                labels = labels[indices]
+                boundary_flags = boundary_flags[indices]
+            else:
+                indices = np.arange(total_cells, dtype=np.int64)
 
         features_tensor = torch.from_numpy(features)
         features_tensor = (features_tensor - self.mean) / self.std
