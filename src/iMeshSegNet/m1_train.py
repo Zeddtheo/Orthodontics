@@ -215,6 +215,29 @@ class Trainer:
         self.focal_tversky_loss = FocalTverskyLoss().to(self.device)
         self.boundary_lambda = float(getattr(self.config, "boundary_lambda", 0.0))
         self.boundary_knn_k = int(getattr(self.config, "boundary_knn_k", 12))
+        self._boundary_schedule: List[Tuple[Optional[int], float]] = []
+        for item in getattr(self.config, "boundary_lambda_warmup", ()):
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                cutoff, value = item
+                cutoff_val = None if cutoff is None else int(cutoff)
+                self._boundary_schedule.append((cutoff_val, float(value)))
+        self._last_boundary_lambda: Optional[float] = None
+
+        restore_epoch = getattr(self.config, "classifier_bias_restore_epoch", None)
+        if restore_epoch is not None:
+            restore_epoch = int(restore_epoch)
+            if restore_epoch <= 0:
+                restore_epoch = None
+        self.classifier_bias_restore_epoch = restore_epoch
+        restore_bias = getattr(self.config, "classifier_bias_warmup_bias", None)
+        self._classifier_bias_restore: Optional[torch.Tensor] = None
+        if restore_bias is not None:
+            self._classifier_bias_restore = torch.tensor(
+                restore_bias,
+                dtype=torch.float32,
+                device=self.device,
+            )
+        self._classifier_bias_restored = False
 
     def _build_checkpoint_payload(self) -> dict:
         mean = np.asarray(self.stats_mean, dtype=np.float32)
@@ -522,9 +545,36 @@ class Trainer:
                 if changed:
                     print(f"[Data] Augmentation stage -> {aug_stage} at epoch {epoch}")
 
+            if (
+                not self._classifier_bias_restored
+                and self._classifier_bias_restore is not None
+                and self.classifier_bias_restore_epoch is not None
+                and epoch >= self.classifier_bias_restore_epoch
+            ):
+                classifier = getattr(self.model, "classifier", None)
+                target_bias = None
+                if classifier is not None and len(classifier) > 0:
+                    last_layer = classifier[-1]
+                    target_bias = getattr(last_layer, "bias", None)
+                if target_bias is not None:
+                    with torch.no_grad():
+                        target_bias.copy_(self._classifier_bias_restore.to(target_bias.device))
+                    self._classifier_bias_restored = True
+                    print(f"[BiasWarmup] Restored classifier bias at epoch {epoch}")
+
             base_lambda = float(self.config.boundary_lambda)
-            warm_ratio = min(1.0, max(0.0, (epoch - 1) / 8.0))
-            self.boundary_lambda = 1.0 * (1.0 - warm_ratio) + base_lambda * warm_ratio
+            boundary_lambda = base_lambda
+            for cutoff, value in self._boundary_schedule:
+                if cutoff is None or epoch <= cutoff:
+                    boundary_lambda = value
+                    break
+            self.boundary_lambda = float(boundary_lambda)
+            if (
+                self._last_boundary_lambda is None
+                or not math.isclose(self._last_boundary_lambda, self.boundary_lambda, rel_tol=1e-6, abs_tol=1e-6)
+            ):
+                print(f"[Loss] boundary_lambda -> {self.boundary_lambda:.3f} at epoch {epoch}")
+                self._last_boundary_lambda = self.boundary_lambda
 
             epoch_start = time.time()
             train_metrics = self._run_epoch(self.train_loader, is_train=True)
@@ -673,9 +723,17 @@ class TrainConfig:
     augment_warmup_epochs: int = 20
     augment_light_epochs: int = 6
     boundary_lambda: float = 2.0
+    boundary_lambda_warmup: Sequence[Tuple[int, float]] = field(
+        default_factory=lambda: ((10, 0.5), (20, 1.0))
+    )
     boundary_knn_k: int = 16
     interior_tv_lambda: float = 0.1
     laplacian_lambda: float = 0.03
+    classifier_bias_restore_epoch: Optional[int] = 20
+    classifier_bias_warmup_bias: Optional[Sequence[float]] = None
+    classifier_bias_max_abs: float = 0.5
+    gingiva_weight_scale: float = 0.65
+    tooth_weight_scale: float = 1.08
     early_stop_patience: int = 18
     seed: Optional[int] = None
     deterministic: bool = False
@@ -707,6 +765,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--boundary-knn", type=int, help="k used for boundary-aware neighborhood weighting.")
     parser.add_argument("--interior-tv-lambda", type=float, help="Weight for same-class interior TV regularizer.")
     parser.add_argument("--laplacian-lambda", type=float, help="Weight for Laplacian smoothing regularizer.")
+    parser.add_argument("--classifier-bias-restore-epoch", type=int, help="Epoch to restore classifier bias logits (<=0 keeps zero).")
+    parser.add_argument("--gingiva-weight-scale", type=float, help="Multiplier for gingiva CE weight before renormalisation.")
+    parser.add_argument("--tooth-weight-scale", type=float, help="Multiplier for tooth CE weights before renormalisation.")
     parser.add_argument("--batch-size", type=int, help="Training batch size.")
     parser.add_argument("--num-workers", type=int, help="Number of DataLoader workers.")
     parser.add_argument("--seed", type=int, help="Random seed override.")
@@ -744,12 +805,18 @@ def main() -> None:
         config.boundary_lambda = args.boundary_lambda
     if args.boundary_knn is not None:
         config.boundary_knn_k = args.boundary_knn
+    if args.classifier_bias_restore_epoch is not None:
+        config.classifier_bias_restore_epoch = args.classifier_bias_restore_epoch
     if args.interior_tv_lambda is not None:
         config.interior_tv_lambda = max(0.0, args.interior_tv_lambda)
     if args.laplacian_lambda is not None:
         config.laplacian_lambda = max(0.0, args.laplacian_lambda)
     if args.disable_amp:
         config.enable_amp = False
+    if args.gingiva_weight_scale is not None:
+        config.gingiva_weight_scale = max(0.0, args.gingiva_weight_scale)
+    if args.tooth_weight_scale is not None:
+        config.tooth_weight_scale = max(0.0, args.tooth_weight_scale)
     if args.batch_size is not None:
         config.data_config.batch_size = max(1, args.batch_size)
     if args.num_workers is not None:
@@ -810,6 +877,27 @@ def main() -> None:
     if config.ce_class_weights is None:
         print("Estimating class frequencies for CE weights...")
         ce_weights = build_ce_class_weights(class_hist, clip_min=0.3, clip_max=3.0)
+        gingiva_idx_cfg = getattr(config.data_config, "gingiva_class_id", None)
+        gingiva_idx = int(gingiva_idx_cfg) if gingiva_idx_cfg is not None else -1
+        gingiva_scale = float(getattr(config, "gingiva_weight_scale", 0.65))
+        tooth_scale = float(getattr(config, "tooth_weight_scale", 1.08))
+        applied_manual = False
+        if 0 <= gingiva_idx < len(ce_weights):
+            if gingiva_scale > 0:
+                ce_weights[gingiva_idx] *= gingiva_scale
+                applied_manual = True
+            if tooth_scale > 0:
+                for cls_idx in range(len(ce_weights)):
+                    if cls_idx == 0 or cls_idx == gingiva_idx:
+                        continue
+                    ce_weights[cls_idx] *= tooth_scale
+                applied_manual = True
+        if applied_manual:
+            ce_weights /= ce_weights.mean()
+            print(
+                "Applied manual CE weight tweaks: "
+                f"gingiva x{gingiva_scale:.2f}, teeth x{tooth_scale:.2f} (renormalised)."
+            )
         config.ce_class_weights = ce_weights.tolist()
         print(
             f"CrossEntropy class weights prepared: min={ce_weights.min():.3f}, "
@@ -863,13 +951,28 @@ def main() -> None:
     priors = np.maximum(class_hist, 1) / max(class_hist.sum(), 1)   # 平滑一下，避免 0
     logit_bias = torch.log(torch.tensor(priors, dtype=torch.float32, device=device))
     logit_bias = logit_bias - logit_bias.mean()
-    with torch.no_grad():
-        # classifier 的最后一层是 Sequential 的倒数第一项 Conv1d
-        model.classifier[-1].bias = nn.Parameter(logit_bias.clone())
-    print(
-        "✨ Initialized classifier bias with zero-mean log priors: "
-        f"min={logit_bias.min():.3f}, max={logit_bias.max():.3f}"
-    )
+    max_bias = float(getattr(config, "classifier_bias_max_abs", 0.5))
+    if max_bias > 0:
+        logit_bias = torch.clamp(logit_bias, min=-max_bias, max=max_bias)
+    classifier_module = getattr(model, "classifier", None)
+    bias_param = None
+    if classifier_module is not None and len(classifier_module) > 0:
+        bias_param = getattr(classifier_module[-1], "bias", None)
+    if bias_param is not None:
+        with torch.no_grad():
+            bias_param.zero_()
+        config.classifier_bias_warmup_bias = logit_bias.cpu().tolist()
+        restore_epoch = getattr(config, "classifier_bias_restore_epoch", None)
+        restore_msg = (
+            f" | will restore at epoch {restore_epoch}" if restore_epoch else " | restore disabled"
+        )
+        print(
+            "✨ Zeroed classifier bias for warmup; stored clipped log-prior target"
+            f" (|bias|≤{max_bias:.2f}){restore_msg}."
+        )
+    else:
+        print("[Warning] Classifier bias parameter not found; skip bias warmup.")
+        config.classifier_bias_warmup_bias = None
 
     optimizer = Adam(
         model.parameters(),

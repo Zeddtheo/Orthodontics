@@ -12,33 +12,37 @@ from sklearn.svm import SVC
 class PPConfig:
     knn_10k: int = 5
     knn_full: int = 7
-    seed_conf_th: float = 0.55
-    bg_seed_th: float = 0.98
-    gc_beta: float = 30.0
-    gc_k: int = 8
-    gc_iterations: int = 4
+    seed_conf_th: float = 0.80
+    bg_seed_th: float = 0.995
+    gc_beta: float = 10.0
+    gc_k: int = 4
+    gc_iterations: int = 2
+    full_gc_lambda: float = 6.0
+    full_gc_iterations: int = 2
+    full_gc_enabled: bool = True
     normal_gamma: float = 10.0
-    svm_max_train: int = 20000
+    svm_max_train: int = 0
     svm_c: float = 1.0
     svm_gamma: float | str = "scale"
     svm_random_state: Optional[int] = 42
-    fill_radius: float = 0.2
-    fill_majority: float = 0.7
-    fill_max_neighbors: int = 12
-    min_component_size: int = 200
+    fill_radius: float = 0.30
+    fill_majority: float = 0.70
+    fill_max_neighbors: int = 18
+    min_component_size: int = 800
     clean_component_neighbors: int = 12
-    min_component_size_full: int = 1200
+    min_component_size_full: int = 2000
     enforce_single_component: bool = True
     softmax_temp_full: float = 0.75
-    low_conf_threshold: float = 0.55
-    low_conf_neighbors: int = 12
+    low_conf_threshold: float = 0.65
+    low_conf_neighbors: int = 16
+    low_conf_delta_th: float = 0.15
     tiny_component_size: int = 10
-    gingiva_dilate_iters: int = 1
-    gingiva_dilate_thresh: float = 0.5
+    gingiva_dilate_iters: int = 2
+    gingiva_dilate_thresh: float = 0.58
     gingiva_dilate_k: int = 12
     gingiva_label: int = 0
     gingiva_protect_seeds: bool = True
-    gingiva_protect_conf: float = 0.92
+    gingiva_protect_conf: float = 0.96
 
 
 def softmax_np(logits: np.ndarray) -> np.ndarray:
@@ -129,6 +133,27 @@ def build_cell_adjacency(mesh: pv.PolyData) -> List[np.ndarray]:
     return [np.fromiter(neigh, dtype=np.int32) if neigh else np.empty(0, dtype=np.int32) for neigh in adjacency]
 
 
+def adjacency_to_edge_list(adjacency: Optional[List[np.ndarray]]) -> np.ndarray:
+    if adjacency is None:
+        return np.zeros((0, 2), dtype=np.int32)
+    edges: List[Tuple[int, int]] = []
+    total = len(adjacency)
+    for i, neigh in enumerate(adjacency):
+        if neigh is None:
+            continue
+        neigh_arr = np.asarray(neigh, dtype=np.int64)
+        if neigh_arr.size == 0:
+            continue
+        for j in neigh_arr:
+            if j < 0 or j >= total:
+                continue
+            if i < int(j):
+                edges.append((i, int(j)))
+    if not edges:
+        return np.zeros((0, 2), dtype=np.int32)
+    return np.asarray(edges, dtype=np.int32)
+
+
 # ==== NEW: ICM optimizer for Potts model (no external deps) ====
 def _icm_potts(unary: np.ndarray,
                edges: np.ndarray,
@@ -185,6 +210,7 @@ def _graphcut_refine(
     iterations: int,
     normals_np: Optional[np.ndarray] = None,
     normal_gamma: float = 10.0,  # 保留签名兼容，实际未再使用
+    edges: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     把网络 softmax 输出 prob_np (N,C) 变成离散标签，再依据论文的局部光滑项
@@ -200,13 +226,24 @@ def _graphcut_refine(
     eps = 1e-6
     unary = -np.log(np.clip(prob_np.astype(np.float32), eps, 1.0))
 
-    # kNN 边与权
-    edges = _knn_edges(pos_mm_np.astype(np.float32), int(max(1, k)))
-    w_ij = _pairwise_weights_dihedral(pos_mm_np.astype(np.float32), normals_np, edges)
+    if edges is None or edges.size == 0:
+        edges_used = _knn_edges(pos_mm_np.astype(np.float32), int(max(1, k)))
+    else:
+        edges_used = np.asarray(edges, dtype=np.int32)
+        if edges_used.ndim != 2 or edges_used.shape[1] != 2:
+            raise ValueError("edges must be (E,2) array")
+    w_ij = _pairwise_weights_dihedral(pos_mm_np.astype(np.float32), normals_np, edges_used)
 
     # 初值：最大似然
     init_labels = np.argmax(prob_np, axis=1).astype(np.int32)
-    labels = _icm_potts(unary, edges, w_ij, lam=float(beta), init_labels=init_labels, max_iter=int(max(1, iterations)))
+    labels = _icm_potts(
+        unary,
+        edges_used,
+        w_ij,
+        lam=float(beta),
+        init_labels=init_labels,
+        max_iter=int(max(1, iterations)),
+    )
 
     # 回写为 one-hot 概率（与现有 seed/conf 逻辑兼容）
     refined = np.zeros_like(prob_np, dtype=np.float32)
@@ -321,6 +358,9 @@ def _majority_filter_low_conf(
     conf: np.ndarray,
     threshold: float,
     k: int,
+    *,
+    prob: Optional[np.ndarray] = None,
+    delta_thresh: float = 0.0,
 ) -> np.ndarray:
     if labels.size == 0 or conf is None:
         return labels
@@ -334,7 +374,18 @@ def _majority_filter_low_conf(
     neighbors = nn.kneighbors(return_distance=False)
     out = labels.astype(np.int32, copy=True)
     max_label = int(labels.max()) if labels.size else 0
+    use_prob = prob is not None and isinstance(prob, np.ndarray) and prob.shape[0] == labels.shape[0]
     for idx in np.nonzero(mask)[0]:
+        if use_prob:
+            vec = np.asarray(prob[idx], dtype=np.float32)
+            if vec.ndim == 1 and vec.size > 0:
+                top1 = float(vec.max())
+                if vec.size > 1:
+                    top2 = float(np.partition(vec, -2)[-2])
+                else:
+                    top2 = 0.0
+                if delta_thresh > 0.0 and (top1 - top2) < float(delta_thresh):
+                    continue
         neigh_labels = labels[neighbors[idx]]
         counts = np.bincount(neigh_labels, minlength=max_label + 1)
         out[idx] = int(counts.argmax())
@@ -490,44 +541,63 @@ def _cleanup_small_components(
         return labels
 
     labels_out = labels.astype(np.int32, copy=True)
-    visited = np.zeros(labels_out.shape[0], dtype=bool)
     protect = None
     if protect_mask is not None:
         protect_arr = np.asarray(protect_mask, dtype=bool)
         if protect_arr.shape[0] == labels_out.shape[0]:
             protect = protect_arr
 
-    for idx in range(labels_out.shape[0]):
-        label = labels_out[idx]
-        if label <= 0 or visited[idx]:
+    N = labels_out.shape[0]
+    for cls in np.unique(labels_out):
+        if cls <= 0:
             continue
-        stack = [idx]
-        component = []
-        visited[idx] = True
-        while stack:
-            current = stack.pop()
-            component.append(current)
-            for nbr in neighbors[current]:
-                if labels_out[nbr] == label and not visited[nbr]:
-                    visited[nbr] = True
-                    stack.append(nbr)
-        if len(component) >= min_size:
+        idx_cls = np.where(labels_out == cls)[0]
+        if idx_cls.size == 0:
             continue
-        if protect is not None and np.any(protect[component]):
+        visited = np.zeros(N, dtype=bool)
+        components: List[np.ndarray] = []
+        for start in idx_cls:
+            if visited[start]:
+                continue
+            stack = [int(start)]
+            comp: List[int] = []
+            visited[start] = True
+            while stack:
+                current = stack.pop()
+                comp.append(current)
+                nbrs = neighbors[current]
+                for nbr in nbrs:
+                    if nbr < 0 or nbr >= N:
+                        continue
+                    if not visited[nbr] and labels_out[nbr] == cls:
+                        visited[nbr] = True
+                        stack.append(int(nbr))
+            components.append(np.asarray(comp, dtype=np.int64))
+
+        if not components:
             continue
-        boundary_labels = []
-        for node in component:
-            for nbr in neighbors[node]:
-                nb_label = labels_out[nbr]
-                if nb_label != label:
-                    boundary_labels.append(nb_label)
-        if boundary_labels:
+        components.sort(key=lambda c: c.size, reverse=True)
+        for comp_idx, comp_arr in enumerate(components):
+            if comp_idx == 0:
+                continue  # 保留最大连通域，即便它小于 min_size
+            if comp_arr.size >= min_size:
+                continue
+            if protect is not None and np.any(protect[comp_arr]):
+                continue
+            boundary_labels: List[int] = []
+            for node in comp_arr:
+                nbrs = neighbors[node]
+                for nbr in nbrs:
+                    if nbr < 0 or nbr >= N:
+                        continue
+                    nb_label = labels_out[nbr]
+                    if nb_label != cls:
+                        boundary_labels.append(int(nb_label))
+            if not boundary_labels:
+                continue
             uniq, counts = np.unique(boundary_labels, return_counts=True)
             majority_label = int(uniq[counts.argmax()])
-        else:
-            majority_label = 0
-        for node in component:
-            labels_out[node] = majority_label
+            labels_out[comp_arr] = majority_label
     return labels_out
 
 
@@ -726,12 +796,14 @@ def postprocess_6k_10k_full(
     pos_full: np.ndarray,
     *,
     normals6: Optional[np.ndarray] = None,
+    normals10: Optional[np.ndarray] = None,
     orig_cell_ids: Optional[np.ndarray],
     assign_ids: Optional[np.ndarray] = None,
     assign_indices: Optional[np.ndarray] = None,
     assign_weights: Optional[np.ndarray] = None,
     cfg: PPConfig,
     full_adjacency: Optional[List[np.ndarray]] = None,
+    adjacency10: Optional[List[np.ndarray]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
     logs: Dict[str, float] = {}
 
@@ -874,20 +946,34 @@ def postprocess_6k_10k_full(
                 fill_conf = float(getattr(cfg, "seed_conf_th", 0.7)) * 0.5
                 seed_conf[unl_indices[take]] = np.maximum(seed_conf[unl_indices[take]], fill_conf)
 
-    # ---------- SVM 收尾（仅用 full 种子训练） ----------
+    # ---------- 余量 KNN 填补（禁用 SVM，保持软传递一致） ----------
     if np.any(seed_full < 0):
-        train_pos = pos_full[seed_full >= 0]
-        train_lab = seed_full[seed_full >= 0]
-        pred_full = svm_upsample(
-            train_pos=train_pos,
-            train_labels=train_lab,
-            query_pos=pos_full,
-            cfg=cfg,
-        )
-        mask_seed = seed_full >= 0
-        pred_full[mask_seed] = seed_full[mask_seed]
-    else:
-        pred_full = seed_full.copy()
+        train_mask = seed_full >= 0
+        if np.count_nonzero(train_mask) > 0:
+            fallback = knn_transfer(
+                pos_full[train_mask],
+                seed_full[train_mask],
+                pos_full,
+                max(int(cfg.knn_full), 1),
+                src_conf=seed_conf[train_mask],
+            )
+            if fallback is not None:
+                if isinstance(fallback, tuple):
+                    fallback_labels = fallback[0]
+                    fallback_conf = fallback[1] if len(fallback) > 1 else None
+                else:
+                    fallback_labels = fallback
+                    fallback_conf = None
+                if fallback_labels is not None:
+                    missing = seed_full < 0
+                    seed_full[missing] = fallback_labels[missing].astype(np.int32, copy=False)
+                    if fallback_conf is not None:
+                        seed_conf[missing] = np.maximum(seed_conf[missing], fallback_conf[missing].astype(np.float32, copy=False))
+        remaining = seed_full < 0
+        if np.any(remaining):
+            seed_full[remaining] = 0
+            seed_conf[remaining] = np.maximum(seed_conf[remaining], 0.0)
+    pred_full = seed_full.copy()
 
     # ---------- Full 级小连通域清理 ----------
     protect_general = seed_full >= 0
@@ -907,6 +993,57 @@ def postprocess_6k_10k_full(
             protect_mask=protect_general,
             adjacency=full_adjacency,
         )
+
+    if (
+        getattr(cfg, "full_gc_enabled", True)
+        and N_full > 0
+        and num_classes > 0
+    ):
+        prob_for_icm: Optional[np.ndarray]
+        if (
+            prob_full_knn is not None
+            and prob_full_knn.shape[0] == N_full
+            and prob_full_knn.shape[1] == num_classes
+        ):
+            prob_for_icm = prob_full_knn.astype(np.float32, copy=True)
+            row_sum = prob_for_icm.sum(axis=1, keepdims=True)
+            np.divide(
+                prob_for_icm,
+                np.clip(row_sum, 1e-8, None),
+                out=prob_for_icm,
+                where=row_sum > 0,
+            )
+        else:
+            prob_for_icm = np.zeros((N_full, num_classes), dtype=np.float32)
+            valid = (pred_full >= 0) & (pred_full < num_classes)
+            if np.any(valid):
+                idx_valid = np.nonzero(valid)[0]
+                prob_for_icm[idx_valid, pred_full[idx_valid]] = 1.0
+            invalid = ~valid
+            if np.any(invalid):
+                prob_for_icm[invalid] = 1.0 / float(num_classes)
+        strong_mask = (seed_conf >= float(cfg.seed_conf_th)) & (pred_full >= 0) & (pred_full < num_classes)
+        if np.any(strong_mask):
+            idx_strong = np.nonzero(strong_mask)[0]
+            prob_for_icm[idx_strong] = 0.0
+            prob_for_icm[idx_strong, pred_full[idx_strong]] = 1.0
+
+        edges_full = adjacency_to_edge_list(full_adjacency)
+        if edges_full.size == 0:
+            edges_full = _knn_edges(pos_full.astype(np.float32), max(int(cfg.knn_full), 1))
+        lam_full = float(getattr(cfg, "full_gc_lambda", 8.0))
+        max_iter_full = int(getattr(cfg, "full_gc_iterations", 2))
+        if edges_full.size > 0 and lam_full > 0.0 and max_iter_full > 0:
+            w_full = _pairwise_weights_dihedral(pos_full.astype(np.float32), None, edges_full)
+            unary_full = -np.log(np.clip(prob_for_icm, 1e-6, 1.0))
+            pred_full = _icm_potts(
+                unary=unary_full,
+                edges=edges_full,
+                w_ij=w_full,
+                lam=lam_full,
+                init_labels=pred_full,
+                max_iter=max_iter_full,
+            )
 
     gingiva_iters = int(getattr(cfg, "gingiva_dilate_iters", 0))
     if gingiva_iters > 0:
