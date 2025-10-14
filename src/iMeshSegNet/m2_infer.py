@@ -125,6 +125,23 @@ def _load_pipeline(ckpt_path: Path, args=None):
         "num_classes": int(ckpt.get("num_classes", SEG_NUM_CLASSES)),
         "in_channels": int(ckpt.get("in_channels", 15)),
     }
+    gingiva_label_meta = P.get("gingiva_label", ckpt.get("gingiva_label"))
+    try:
+        meta["gingiva_label"] = int(gingiva_label_meta) if gingiva_label_meta is not None else 15
+    except (TypeError, ValueError):
+        meta["gingiva_label"] = 15
+    if meta["gingiva_label"] <= 0:
+        meta["gingiva_label"] = 15
+    if "gingiva_dilate_iters" in P:
+        meta["gingiva_dilate_iters"] = int(P["gingiva_dilate_iters"])
+    if "gingiva_dilate_thresh" in P:
+        meta["gingiva_dilate_thresh"] = float(P["gingiva_dilate_thresh"])
+    if "gingiva_dilate_k" in P:
+        meta["gingiva_dilate_k"] = int(P["gingiva_dilate_k"])
+    if "gingiva_protect_seeds" in P:
+        meta["gingiva_protect_seeds"] = _to_bool(P["gingiva_protect_seeds"], default=True)
+    if "gingiva_protect_conf" in P:
+        meta["gingiva_protect_conf"] = float(P["gingiva_protect_conf"])
     arch_raw = ckpt.get("arch", {}) if isinstance(ckpt, dict) else {}
     fstn_flag = arch_raw.get("use_feature_stn")
     if fstn_flag is None and arch_raw.get("fstn") is not None:
@@ -294,6 +311,11 @@ def _infer_one(
     mesh10k = _read_decimated(stem, meta, inp_path)
     if mesh10k.n_cells != int(meta["target_cells"]):
         print(f"[Warn] decimated cells ≠ 契约 target ({mesh10k.n_cells} vs {meta['target_cells']})，按实际N继续")
+    try:
+        mesh10k_tri = mesh10k.triangulate()
+    except Exception:
+        mesh10k_tri = mesh10k
+    adjacency10 = build_cell_adjacency(mesh10k_tri)
 
     # 提取 10k 特征与位置（严格对齐训练）
     feats10k, pos_norm10k, pos_mm10k, _, normals10k = _features_and_pos_for_contract(mesh10k, meta)
@@ -375,6 +397,11 @@ def _infer_one(
         cfg.gingiva_dilate_k = int(meta.get("gingiva_dilate_k", cfg.gingiva_dilate_k))
         cfg.gingiva_protect_seeds = bool(meta.get("gingiva_protect_seeds", cfg.gingiva_protect_seeds))
         cfg.gingiva_protect_conf = float(meta.get("gingiva_protect_conf", cfg.gingiva_protect_conf))
+        cfg.gc_apply_on_6k = bool(meta.get("gc_apply_on_6k", cfg.gc_apply_on_6k))
+        cfg.gc_blend_alpha = float(meta.get("gc_blend_alpha", cfg.gc_blend_alpha))
+        cfg.gc_margin_delta = float(meta.get("gc_margin_delta", cfg.gc_margin_delta))
+        cfg.gc_blend_alpha = min(max(cfg.gc_blend_alpha, 0.0), 1.0)
+        cfg.gc_margin_delta = max(0.0, cfg.gc_margin_delta)
     # 从 decimated 10k 里取映射（两种可能的字段名都支持）
     orig_ids = None
     assign_ids = None
@@ -423,12 +450,14 @@ def _infer_one(
         pos10=pos10_mm,
         pos_full=pos_full_mm,
         normals6=normals6,
+        normals10=normals10k,
         orig_cell_ids=orig_ids,
         assign_ids=assign_ids,
         assign_indices=assign_indices,
         assign_weights=assign_weights,
         cfg=cfg,
         full_adjacency=full_adjacency,
+        adjacency10=adjacency10,
     )
     soft_ratio = logs.get('soft_seed_ratio', logs.get('seed_ratio', 0.0))
     print(f"[Post] conf10_mean={logs.get('conf10_mean', -1):.3f}, seed_ratio={logs.get('seed_ratio', 0.0):.3f}, soft_seed={soft_ratio:.3f}")

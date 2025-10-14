@@ -279,6 +279,7 @@ class Trainer:
             "train_arrays_path": None,
             "decim_cache_vtp": None,
             "knn_k": {"to10k": 5, "tofull": 7},
+            "gingiva_label": int(getattr(self.config.data_config, "gingiva_class_id", 15)),
             "diag_mode": "cells",
             "seed": 42,
         }
@@ -533,17 +534,24 @@ class Trainer:
             dataset_obj = getattr(self.train_loader, "dataset", None)
             aug_stage = None
             if dataset_obj is not None and hasattr(dataset_obj, "set_augment_stage"):
-                warm = self.config.augment_warmup_epochs
-                light_span = max(0, getattr(self.config, "augment_light_epochs", 0))
-                aug_stage = "off"
-                if epoch > warm:
-                    if light_span > 0 and epoch <= warm + light_span:
-                        aug_stage = "light"
-                    else:
-                        aug_stage = "full"
-                changed = dataset_obj.set_augment_stage(aug_stage)
-                if changed:
-                    print(f"[Data] Augmentation stage -> {aug_stage} at epoch {epoch}")
+                base_aug_enabled = bool(getattr(self.config.data_config, "augment", True))
+                if base_aug_enabled:
+                    warm = self.config.augment_warmup_epochs
+                    light_span = max(0, getattr(self.config, "augment_light_epochs", 0))
+                    aug_stage = "off"
+                    if epoch > warm:
+                        if light_span > 0 and epoch <= warm + light_span:
+                            aug_stage = "light"
+                        else:
+                            aug_stage = "full"
+                    changed = dataset_obj.set_augment_stage(aug_stage)
+                    if changed:
+                        print(f"[Data] Augmentation stage -> {aug_stage} at epoch {epoch}")
+                else:
+                    aug_stage = "off"
+                    changed = dataset_obj.set_augment_stage(aug_stage)
+                    if changed:
+                        print(f"[Data] Augmentation stage -> {aug_stage} (forced off)")
 
             if (
                 not self._classifier_bias_restored
@@ -681,11 +689,12 @@ class Trainer:
             else:
                 self.epochs_since_best += 1
 
-            hopeless = epoch >= 16 and self.best_val_dsc < 0.82
-            plateau = self.epochs_since_best >= 7 and val_dsc < self.best_val_dsc + 0.008
-            if hopeless or plateau:
-                print(f"[PlateauGuard] early stop at epoch {epoch} | best_dsc={self.best_val_dsc:.4f}")
-                break
+            # PlateauGuard 暂时关闭，避免基线在 0.6 左右过早终止
+            # hopeless = epoch >= 16 and self.best_val_dsc < 0.82
+            # plateau = self.epochs_since_best >= 7 and val_dsc < self.best_val_dsc + 0.008
+            # if hopeless or plateau:
+            #     print(f"[PlateauGuard] early stop at epoch {epoch} | best_dsc={self.best_val_dsc:.4f}")
+            #     break
 
             self.scheduler.step()
 
@@ -720,6 +729,7 @@ class TrainConfig:
     num_classes: int = SEG_NUM_CLASSES
     ce_class_weights: Optional[Sequence[float]] = None
     enable_amp: bool = True
+    use_feature_stn: bool = False
     augment_warmup_epochs: int = 20
     augment_light_epochs: int = 6
     boundary_lambda: float = 2.0
@@ -773,6 +783,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, help="Random seed override.")
     parser.add_argument("--deterministic", action="store_true", help="Enable deterministic cuDNN (may slow training).")
     parser.add_argument("--feature-dim", type=int, help="Feature dimension to use (15 or 18).")
+    parser.add_argument("--enable-feature-stn", action="store_true", help="Enable feature STN module during training.")
     return parser.parse_args()
 
 
@@ -823,6 +834,11 @@ def main() -> None:
         config.data_config.num_workers = max(0, args.num_workers)
     if args.feature_dim is not None:
         config.data_config.feature_dim = max(1, args.feature_dim)
+    if args.enable_feature_stn:
+        config.use_feature_stn = True
+    if float(getattr(config, "boundary_lambda", 0.0)) <= 0.0:
+        config.boundary_lambda = 0.0
+        config.boundary_lambda_warmup = ()
     if args.seed is not None:
         config.seed = args.seed
     if args.deterministic:
@@ -935,7 +951,7 @@ def main() -> None:
 
     # Model + Optimizer + Scheduler
     print("Initializing model, loss function, optimizer, and scheduler...")
-    # ========== 快改开关1：关掉重度 Dropout，开启 STN ==========
+    # ========== 快改开关1：关掉重度 Dropout，STN 默认关闭 ==========
     model = iMeshSegNet(
         num_classes=config.num_classes,
         glm_impl="edgeconv",
@@ -943,7 +959,7 @@ def main() -> None:
         k_long=12,
         with_dropout=False,        # ← 改1：先关闭 Dropout（或改成 0.1）
         dropout_p=0.1,             # ← 如果 with_dropout=True，用更轻的值
-        use_feature_stn=True,      # ← 改2：开启特征 STN，抵消增强带来的旋转
+        use_feature_stn=bool(config.use_feature_stn),
         in_channels=int(config.data_config.feature_dim),
     ).to(device)
 

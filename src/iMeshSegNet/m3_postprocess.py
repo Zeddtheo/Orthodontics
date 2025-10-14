@@ -14,9 +14,12 @@ class PPConfig:
     knn_full: int = 7
     seed_conf_th: float = 0.80
     bg_seed_th: float = 0.995
-    gc_beta: float = 10.0
+    gc_beta: float = 2.5
     gc_k: int = 4
-    gc_iterations: int = 2
+    gc_iterations: int = 1
+    gc_apply_on_6k: bool = False
+    gc_blend_alpha: float = 0.35
+    gc_margin_delta: float = 0.12
     full_gc_lambda: float = 6.0
     full_gc_iterations: int = 2
     full_gc_enabled: bool = True
@@ -40,7 +43,7 @@ class PPConfig:
     gingiva_dilate_iters: int = 2
     gingiva_dilate_thresh: float = 0.58
     gingiva_dilate_k: int = 12
-    gingiva_label: int = 0
+    gingiva_label: int = 15
     gingiva_protect_seeds: bool = True
     gingiva_protect_conf: float = 0.96
 
@@ -211,20 +214,40 @@ def _graphcut_refine(
     normals_np: Optional[np.ndarray] = None,
     normal_gamma: float = 10.0,  # 保留签名兼容，实际未再使用
     edges: Optional[np.ndarray] = None,
+    blend_alpha: float = 0.35,
+    margin_delta: float = 0.12,
 ) -> np.ndarray:
     """
     把网络 softmax 输出 prob_np (N,C) 变成离散标签，再依据论文的局部光滑项
     w_ij = -log(theta/pi) * phi 进行 Potts 模型优化（ICM 近似）。
-    返回 one-hot 概率，以便下游 seed/conf 逻辑不变。
+    仅在低置信（margin<delta）的点上更新标签，并与原概率按 blend_alpha 线性融合。
     论文公式见 Eq.(2)(3)。
     """
     if prob_np.size == 0 or pos_mm_np is None or pos_mm_np.size == 0:
         return prob_np
 
     N, C = prob_np.shape
+
+    # 若传播权或迭代无效，直接返回
+    if beta <= 0.0 or iterations <= 0:
+        return prob_np.astype(np.float32, copy=False)
+
+    # margin 判定：仅针对不确定点运行 ICM
+    prob32 = prob_np.astype(np.float32, copy=False)
+    max1 = prob32.max(axis=1)
+    if C >= 2:
+        second = np.partition(prob32, -2, axis=1)[:, -2]
+    else:
+        second = np.zeros_like(max1)
+    margin = max1 - second
+    margin_thr = max(float(margin_delta), 0.0)
+    ambiguous = margin < margin_thr
+    if not np.any(ambiguous):
+        return prob32
+
     # 数据项：D_i(c) = -log( p_i(c) + eps )
     eps = 1e-6
-    unary = -np.log(np.clip(prob_np.astype(np.float32), eps, 1.0))
+    unary = -np.log(np.clip(prob32, eps, 1.0))
 
     if edges is None or edges.size == 0:
         edges_used = _knn_edges(pos_mm_np.astype(np.float32), int(max(1, k)))
@@ -235,7 +258,7 @@ def _graphcut_refine(
     w_ij = _pairwise_weights_dihedral(pos_mm_np.astype(np.float32), normals_np, edges_used)
 
     # 初值：最大似然
-    init_labels = np.argmax(prob_np, axis=1).astype(np.int32)
+    init_labels = np.argmax(prob32, axis=1).astype(np.int32)
     labels = _icm_potts(
         unary,
         edges_used,
@@ -245,9 +268,21 @@ def _graphcut_refine(
         max_iter=int(max(1, iterations)),
     )
 
-    # 回写为 one-hot 概率（与现有 seed/conf 逻辑兼容）
-    refined = np.zeros_like(prob_np, dtype=np.float32)
-    refined[np.arange(N), labels] = 1.0
+    # 仅更新不确定区域，其他保持原预测
+    labels_refined = init_labels.copy()
+    labels_refined[ambiguous] = labels[ambiguous]
+
+    alpha = float(np.clip(blend_alpha, 0.0, 1.0))
+    refined = prob32.copy()
+    if alpha > 0.0:
+        hard = np.zeros_like(refined, dtype=np.float32)
+        hard[np.arange(N), labels_refined] = 1.0
+        if alpha >= 1.0:
+            refined[ambiguous] = hard[ambiguous]
+        else:
+            refined[ambiguous] = alpha * hard[ambiguous] + (1.0 - alpha) * refined[ambiguous]
+        row_sum = refined.sum(axis=1, keepdims=True)
+        np.divide(refined, np.clip(row_sum, 1e-8, None), out=refined)
     return refined
 
 
@@ -810,31 +845,61 @@ def postprocess_6k_10k_full(
     # ---- 6k 概率 -> 10k 标签/置信度（带平滑）----
     prob6 = softmax_np(logits6)
     num_classes = prob6.shape[1]
-    prob6_ref = _graphcut_refine(
-        prob6,
-        pos6,
-        beta=cfg.gc_beta,
-        k=cfg.gc_k,
-        iterations=cfg.gc_iterations,
-        normals_np=normals6,
-        normal_gamma=cfg.normal_gamma,
-    )
+    if (
+        bool(getattr(cfg, "gc_apply_on_6k", False))
+        and float(cfg.gc_beta) > 0.0
+        and int(cfg.gc_iterations) > 0
+    ):
+        prob6_ref = _graphcut_refine(
+            prob6,
+            pos6,
+            beta=cfg.gc_beta,
+            k=cfg.gc_k,
+            iterations=cfg.gc_iterations,
+            normals_np=normals6,
+            normal_gamma=cfg.normal_gamma,
+            blend_alpha=cfg.gc_blend_alpha,
+            margin_delta=cfg.gc_margin_delta,
+        )
+    else:
+        prob6_ref = prob6.astype(np.float32, copy=True)
     labels6 = np.argmax(prob6_ref, axis=1).astype(np.int32)
     conf6 = prob6_ref[np.arange(prob6_ref.shape[0]), labels6].astype(np.float32)
 
-    labels10, conf10, prob10 = knn_transfer(
+    labels10_knn, conf10_knn, prob10 = knn_transfer(
         pos6, labels6,
         pos10, cfg.knn_10k,
         src_conf=conf6,
         src_extra=prob6_ref,
     )
-    if conf10 is None:
-        conf10 = np.ones(labels10.shape[0], dtype=np.float32)
+    if conf10_knn is None:
+        conf10_knn = np.ones(labels10_knn.shape[0], dtype=np.float32)
     if prob10 is None:
-        prob10 = np.eye(num_classes, dtype=np.float32)[labels10]
+        prob10 = np.eye(num_classes, dtype=np.float32)[labels10_knn]
     else:
         row_sum = prob10.sum(axis=1, keepdims=True)
         np.divide(prob10, np.clip(row_sum, 1e-8, None), out=prob10)
+
+    edges10 = adjacency_to_edge_list(adjacency10)
+    if (
+        edges10.size > 0
+        and float(cfg.gc_beta) > 0.0
+        and int(cfg.gc_iterations) > 0
+    ):
+        prob10 = _graphcut_refine(
+            prob10,
+            pos10,
+            beta=cfg.gc_beta,
+            k=cfg.gc_k,
+            iterations=cfg.gc_iterations,
+            normals_np=normals10,
+            edges=edges10,
+            blend_alpha=cfg.gc_blend_alpha,
+            margin_delta=cfg.gc_margin_delta,
+        )
+
+    labels10 = np.argmax(prob10, axis=1).astype(np.int32)
+    conf10 = prob10[np.arange(prob10.shape[0]), labels10].astype(np.float32)
     logs["conf10_mean"] = float(np.mean(conf10))
 
     labels10 = _cleanup_small_components(
@@ -863,41 +928,45 @@ def postprocess_6k_10k_full(
         k=cfg.knn_full,
         src_conf=conf10,
     )
+    if labels_knn is None:
+        labels_knn = np.full(N_full, -1, dtype=np.int32)
+    else:
+        labels_knn = labels_knn.astype(np.int32, copy=False)
     if conf_knn is None:
         conf_knn = np.ones(N_full, dtype=np.float32)
+    else:
+        conf_knn = conf_knn.astype(np.float32, copy=False)
 
     prob_full_knn = _soft_assign_probabilities(prob10, assign_indices, assign_weights)
     used_soft = False
     if (
-        assign_indices is not None
-        and assign_weights is not None
-        and assign_indices.shape[0] == N_full
-        and assign_indices.shape == assign_weights.shape
+        prob_full_knn is not None
+        and prob_full_knn.shape[0] == N_full
+        and prob_full_knn.shape[1] == num_classes
     ):
         used_soft = True
-        vote_bins = np.zeros((N_full, num_classes), dtype=np.float32)
-        idx_range = np.arange(N_full, dtype=np.int32)
-        for k in range(assign_indices.shape[1]):
-            lbl = labels10[assign_indices[:, k]]
-            np.add.at(vote_bins, (idx_range, lbl), assign_weights[:, k])
-        knn_labels = np.argmax(vote_bins, axis=1).astype(np.int32)
-        weight_sum = vote_bins.sum(axis=1, keepdims=True)
-        knn_conf = vote_bins[np.arange(N_full), knn_labels]
-        knn_conf = np.divide(knn_conf, np.clip(weight_sum.squeeze(), 1e-8, None))
-        if prob_full_knn is not None and prob_full_knn.shape[0] == N_full:
-            vote_bins = prob_full_knn  # 保留软概率供后续调试/日志
-        thresh = float(getattr(cfg, 'low_conf_threshold', 0.0))
-        if thresh > 0.0:
-            knn_labels = _majority_filter_low_conf(
-                pos_full, knn_labels, knn_conf, threshold=thresh, k=int(getattr(cfg, 'low_conf_neighbors', 12))
-            )
-            knn_conf = np.clip(knn_conf, 0.0, 1.0)
+        seed_full = np.argmax(prob_full_knn, axis=1).astype(np.int32)
+        seed_conf = prob_full_knn[np.arange(N_full), seed_full].astype(np.float32)
+        zero_mask = seed_conf <= 1e-6
+        if np.any(zero_mask):
+            seed_full[zero_mask] = labels_knn[zero_mask]
+            seed_conf[zero_mask] = conf_knn[zero_mask]
     else:
-        knn_labels = labels_knn.astype(np.int32, copy=False)
-        knn_conf = conf_knn.astype(np.float32, copy=False)
+        seed_full = labels_knn.astype(np.int32, copy=False)
+        seed_conf = conf_knn.astype(np.float32, copy=False)
 
-    seed_full = knn_labels.astype(np.int32, copy=False)
-    seed_conf = knn_conf.astype(np.float32, copy=False)
+    thresh = float(getattr(cfg, 'low_conf_threshold', 0.0))
+    if thresh > 0.0:
+        seed_full = _majority_filter_low_conf(
+            pos_full,
+            seed_full,
+            seed_conf,
+            threshold=thresh,
+            k=int(getattr(cfg, 'low_conf_neighbors', 12)),
+            prob=prob_full_knn if used_soft else None,
+            delta_thresh=float(getattr(cfg, 'low_conf_delta_th', 0.0)),
+        )
+        seed_conf = np.clip(seed_conf, 0.0, 1.0)
 
     if orig_ids_valid is not None:
         for oid, lab, cf in zip(orig_ids_valid, orig_labs_valid, orig_conf_valid):
@@ -905,7 +974,7 @@ def postprocess_6k_10k_full(
                 seed_full[oid] = int(lab)
                 seed_conf[oid] = float(cf)
 
-    mask_knn = knn_conf >= float(cfg.seed_conf_th)
+    mask_knn = seed_conf >= float(cfg.seed_conf_th)
     if used_soft:
         logs['soft_seed_ratio'] = float(np.mean(mask_knn))
 
