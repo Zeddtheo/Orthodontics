@@ -203,6 +203,8 @@ class Trainer:
         self.stats_std = np.clip(self.stats_std[:in_ch], 1e-6, None)
         self.epochs_since_best = 0
         self.best_epoch = 0
+        self.best_val_gingiva = -1.0
+        self.best_gingiva_epoch = 0
 
         self.dice_loss = GeneralizedDiceLoss().to(self.device)
         self.ce_weight_tensor: Optional[torch.Tensor] = None
@@ -309,6 +311,7 @@ class Trainer:
             "ce_class_weights": self.config.ce_class_weights,
             "label_book": label_book,
             "label_mode": getattr(self.config.data_config, "label_mode", "single_arch_16"),
+            "gingiva_label": gingiva_idx,
         }
         return payload
 
@@ -374,14 +377,15 @@ class Trainer:
                         loss_dice = self.dice_loss(logits, y)
                         loss_ce = self._compute_ce_loss(logits, y)
                         loss_ft = self.focal_tversky_loss(logits, y)
+                        lap_coeff = float(self.config.laplacian_lambda)
                         lap_reg = logits.new_tensor(0.0)
-                        if logits.size(-1) > 0:
+                        if lap_coeff > 0.0 and logits.size(-1) > 0:
                             # 邻域平滑：Graph Laplacian 正则防止椒盐噪声
                             p = F.softmax(logits, dim=1)
                             idx = knn_graph(pos.float(), k=8)
                             nbr = index_points(p, idx)
                             lap_reg = (nbr.mean(dim=-1) - p).pow(2).mean()
-                        loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + float(self.config.laplacian_lambda) * lap_reg
+                        loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + lap_coeff * lap_reg
             else:
                 # 训练阶段保持原有逻辑
                 with autocast(self.device.type, enabled=self.amp_enabled):
@@ -389,8 +393,9 @@ class Trainer:
                     loss_dice = self.dice_loss(logits, y)
                     loss_ce = self._compute_ce_loss(logits, y, boundary_weights)
                     loss_ft = self.focal_tversky_loss(logits, y, weights=boundary_weights)
+                    lap_coeff = float(self.config.laplacian_lambda)
                     lap_reg = logits.new_tensor(0.0)
-                    if logits.size(-1) > 0:
+                    if lap_coeff > 0.0 and logits.size(-1) > 0:
                         # 邻域平滑：Graph Laplacian 正则，抑制局部孤立预测
                         p = F.softmax(logits, dim=1)
                         with torch.no_grad():
@@ -408,7 +413,7 @@ class Trainer:
                         stn_reg = ((trans @ trans.transpose(1, 2) - I) ** 2).sum(dim=(1, 2)).mean()
                     
                     # ← 更新：加入 Focal Tversky 提升召回
-                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + float(self.config.laplacian_lambda) * lap_reg + 1e-3 * stn_reg
+                    loss = 0.3 * loss_dice + 1.0 * loss_ce + 0.2 * loss_ft + lap_coeff * lap_reg + 1e-3 * stn_reg
 
                 if self.config.interior_tv_lambda > 0:
                     with torch.no_grad():
@@ -522,10 +527,33 @@ class Trainer:
         )
 
     def train(self) -> None:
+        def _fmt4(value: float) -> str:
+            if value is None:
+                return "nan"
+            try:
+                if math.isnan(value):
+                    return "nan"
+            except TypeError:
+                pass
+            if isinstance(value, (int, float)) and value < 0:
+                return "nan"
+            return f"{value:.4f}"
+
         with open(self.log_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             # 简化CSV头：
-            writer.writerow(["epoch", "train_loss", "val_loss", "val_dsc", "val_dsc_perm", "lr"])
+            writer.writerow(
+                [
+                    "epoch",
+                    "train_loss",
+                    "val_loss",
+                    "val_dsc",
+                    "val_dsc_all",
+                    "val_dsc_gingiva",
+                    "val_dsc_perm",
+                    "lr",
+                ]
+            )
 
         for epoch in range(1, self.config.epochs + 1):
             if self.amp_enabled:
@@ -615,14 +643,25 @@ class Trainer:
                 val_confusions,
                 val_per_class,
             ) = val_metrics
+            val_dsc_all = float("nan")
+            val_dsc_gingiva = float("nan")
+            if val_per_class:
+                arr = np.asarray(val_per_class, dtype=np.float64)
+                if arr.size > 0:
+                    valid = arr[~np.isnan(arr)]
+                    if valid.size > 0:
+                        val_dsc_all = float(np.mean(valid))
+                gingiva_idx = int(getattr(self.config.data_config, "gingiva_class_id", -1))
+                if 0 <= gingiva_idx < len(arr):
+                    val_dsc_gingiva = float(arr[gingiva_idx])
             current_lr = self.optimizer.param_groups[0]["lr"]
             perm_display = "nan" if math.isnan(val_perm_dsc) else f"{val_perm_dsc:.4f}"
             aug_display = f" | Aug:{aug_stage}" if aug_stage is not None else ""
-
             print(
                 f"Epoch {epoch}/{self.config.epochs} | "
                 f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                f"Val DSC: {val_dsc:.4f} | Val DSC_perm: {perm_display} | "
+                f"Val DSC: {val_dsc:.4f} | Val DSC_all: {_fmt4(val_dsc_all)} | "
+                f"Gingiva DSC: {_fmt4(val_dsc_gingiva)} | Val DSC_perm: {perm_display} | "
                 f"Val SEN: {val_sen:.4f} | Val PPV: {val_ppv:.4f} | "
                 f"Val BG%: {val_bg:.3f} | Val Ent: {val_ent:.3f} | "
                 f"Time: {epoch_time:.1f}s | PeakMem: {train_peak_mem:.1f}MB | LR: {current_lr:.6f}"
@@ -645,12 +684,27 @@ class Trainer:
             with open(self.log_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 # 简化记录内容：
-                writer.writerow([epoch, train_loss, val_loss, val_dsc, val_perm_dsc, current_lr])
+                writer.writerow(
+                    [
+                        epoch,
+                        train_loss,
+                        val_loss,
+                        val_dsc,
+                        val_dsc_all,
+                        val_dsc_gingiva,
+                        val_perm_dsc,
+                        current_lr,
+                    ]
+                )
 
             if self.writer is not None:
                 self.writer.add_scalar("loss/train", train_loss, epoch)
                 self.writer.add_scalar("loss/val", val_loss, epoch)
                 self.writer.add_scalar("metrics/dsc", val_dsc, epoch)
+                if not math.isnan(val_dsc_all):
+                    self.writer.add_scalar("metrics/dsc_with_bg", val_dsc_all, epoch)
+                if not math.isnan(val_dsc_gingiva):
+                    self.writer.add_scalar("metrics/dsc_gingiva", val_dsc_gingiva, epoch)
                 if not math.isnan(val_perm_dsc):
                     self.writer.add_scalar("metrics/dsc_perm", val_perm_dsc, epoch)
                 self.writer.add_scalar("metrics/sensitivity", val_sen, epoch)
@@ -680,12 +734,24 @@ class Trainer:
 
             self._save_checkpoint(self.config.checkpoint_dir / "last.pt")
             # 简化保存最佳模型的逻辑：
-            if val_dsc > self.best_val_dsc:
+            main_improved = val_dsc > self.best_val_dsc
+            if main_improved:
                 self.best_val_dsc = val_dsc
                 self.best_epoch = epoch
+            gingiva_improved = False
+            if not math.isnan(val_dsc_gingiva) and val_dsc_gingiva > self.best_val_gingiva:
+                self.best_val_gingiva = val_dsc_gingiva
+                self.best_gingiva_epoch = epoch
+                gingiva_improved = True
+            if main_improved:
                 self.epochs_since_best = 0
                 print(f"✨ New best model found! DSC: {val_dsc:.4f}. Saving to best.pt")
                 self._save_checkpoint(self.config.checkpoint_dir / "best.pt")
+                if gingiva_improved:
+                    print(f"    ↳ Gingiva DSC improved to {val_dsc_gingiva:.4f}")
+            elif gingiva_improved:
+                self.epochs_since_best = 0
+                print(f"[Gingiva] Validation DSC improved to {val_dsc_gingiva:.4f}.")
             else:
                 self.epochs_since_best += 1
 
@@ -700,14 +766,22 @@ class Trainer:
 
             if self.epochs_since_best >= self.config.early_stop_patience:
                 print(
-                    f"Early stopping at epoch {epoch}: no improvement for {self.epochs_since_best} epochs."
+                    "Early stopping at epoch "
+                    f"{epoch}: no improvement for {self.epochs_since_best} epochs "
+                    f"(best DSC={self.best_val_dsc:.4f}, "
+                    f"best gingiva DSC={_fmt4(self.best_val_gingiva)})."
                 )
                 break
 
         if self.writer is not None:
             self.writer.flush()
             self.writer.close()
-        print(f"Training finished. Best validation DSC: {self.best_val_dsc:.4f}")
+        print(
+            "Training finished. Best validation DSC: "
+            f"{self.best_val_dsc:.4f} (epoch {self.best_epoch}); "
+            f"best gingiva DSC: {_fmt4(self.best_val_gingiva)}"
+            f"{'' if self.best_gingiva_epoch == 0 else f' (epoch {self.best_gingiva_epoch})'}"
+        )
 
 
 # =============================================================================
@@ -732,18 +806,18 @@ class TrainConfig:
     use_feature_stn: bool = False
     augment_warmup_epochs: int = 20
     augment_light_epochs: int = 6
-    boundary_lambda: float = 2.0
+    boundary_lambda: float = 1.0
     boundary_lambda_warmup: Sequence[Tuple[int, float]] = field(
         default_factory=lambda: ((10, 0.5), (20, 1.0))
     )
     boundary_knn_k: int = 16
-    interior_tv_lambda: float = 0.1
-    laplacian_lambda: float = 0.03
+    interior_tv_lambda: float = 0.0
+    laplacian_lambda: float = 0.01
     classifier_bias_restore_epoch: Optional[int] = 20
     classifier_bias_warmup_bias: Optional[Sequence[float]] = None
     classifier_bias_max_abs: float = 0.5
-    gingiva_weight_scale: float = 0.65
-    tooth_weight_scale: float = 1.08
+    gingiva_weight_scale: float = 1.15
+    tooth_weight_scale: float = 1.00
     early_stop_patience: int = 18
     seed: Optional[int] = None
     deterministic: bool = False
@@ -895,8 +969,8 @@ def main() -> None:
         ce_weights = build_ce_class_weights(class_hist, clip_min=0.3, clip_max=3.0)
         gingiva_idx_cfg = getattr(config.data_config, "gingiva_class_id", None)
         gingiva_idx = int(gingiva_idx_cfg) if gingiva_idx_cfg is not None else -1
-        gingiva_scale = float(getattr(config, "gingiva_weight_scale", 0.65))
-        tooth_scale = float(getattr(config, "tooth_weight_scale", 1.08))
+        gingiva_scale = float(getattr(config, "gingiva_weight_scale", 1.15))
+        tooth_scale = float(getattr(config, "tooth_weight_scale", 1.00))
         applied_manual = False
         if 0 <= gingiva_idx < len(ce_weights):
             if gingiva_scale > 0:
@@ -920,6 +994,10 @@ def main() -> None:
             f"max={ce_weights.max():.3f}"
         )
 
+    lap_coeff = float(getattr(config, "laplacian_lambda", 0.0))
+    if lap_coeff <= 0.0:
+        print("[Loss] Laplacian smoothing term disabled (λ=0).")
+
     stats_mean, stats_std = load_stats(
         config.data_config.stats_path,
         feature_dim=config.data_config.feature_dim,
@@ -940,7 +1018,7 @@ def main() -> None:
                 ds.boundary_focus_fraction = float(max(0.0, min(1.0, 0.60)))
                 adjusted = True
             if hasattr(ds, "min_samples_per_class"):
-                ds.min_samples_per_class = int(max(0, 240))
+                ds.min_samples_per_class = int(max(0, 180))
                 adjusted = True
         if adjusted:
             root_ds = targets[-1]

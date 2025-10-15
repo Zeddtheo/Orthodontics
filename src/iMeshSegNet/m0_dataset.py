@@ -624,7 +624,7 @@ class DataConfig:
     num_workers: int = field(default_factory=_default_workers)  # type: ignore[misc]
     persistent_workers: bool = True
     target_cells: int = 10000
-    sample_cells: int = 6000
+    sample_cells: int = 9000
     augment: bool = True
     pin_memory: bool = True
     drop_last: bool = False

@@ -27,7 +27,7 @@ from m3_postprocess import PPConfig, postprocess_6k_10k_full, build_cell_adjacen
 
 # ---------------- 色表（0..14） ----------------
 LABEL_COLORS = {
-    0:  [160,160,160],   # background / gingiva
+    0:  [160,160,160],   # background
     1:  [255,  69,   0], # 21 - orange red
     2:  [255, 165,   0], # 22 - orange
     3:  [255, 215,   0], # 23 - gold
@@ -42,6 +42,7 @@ LABEL_COLORS = {
     12: [255, 105, 180], # 15 - hot pink
     13: [205,  92,  92], # 16 - indian red
     14: [255, 140,   0], # 17 - dark orange
+    15: [255, 228, 196], # gingiva - bisque
 }
 
 def _softmax_np(x: np.ndarray) -> np.ndarray:
@@ -363,6 +364,11 @@ def _infer_one(
 
     # 后处理：6k -> 10k -> full
     cfg = PPConfig()
+    gingiva_meta = meta.get("gingiva_label", cfg.gingiva_label)
+    try:
+        cfg.gingiva_label = max(int(gingiva_meta), 0)
+    except (TypeError, ValueError):
+        cfg.gingiva_label = 15
     if use_exact:
         cfg.knn_10k = 1
         cfg.knn_full = 1
@@ -391,7 +397,6 @@ def _infer_one(
         cfg.low_conf_neighbors = int(meta.get("low_conf_neighbors", cfg.low_conf_neighbors))
         cfg.fill_radius = float(meta.get("fill_radius", cfg.fill_radius))
         cfg.svm_max_train = int(meta.get("svm_max_train", cfg.svm_max_train))
-        cfg.gingiva_label = max(int(meta.get("gingiva_label", cfg.gingiva_label)), 0)
         cfg.gingiva_dilate_iters = int(meta.get("gingiva_dilate_iters", cfg.gingiva_dilate_iters))
         cfg.gingiva_dilate_thresh = float(meta.get("gingiva_dilate_thresh", cfg.gingiva_dilate_thresh))
         cfg.gingiva_dilate_k = int(meta.get("gingiva_dilate_k", cfg.gingiva_dilate_k))
