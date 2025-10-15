@@ -634,7 +634,7 @@ class DataConfig:
     gingiva_class_id: int = 15
     keep_void_zero: bool = False
     seed: int = 42
-    feature_dim: int = 15
+    feature_dim: int = 18
 
 
 # =============================================================================

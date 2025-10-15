@@ -805,18 +805,18 @@ class TrainConfig:
     enable_amp: bool = True
     use_feature_stn: bool = False
     augment_warmup_epochs: int = 20
-    augment_light_epochs: int = 6
-    boundary_lambda: float = 1.0
+    augment_light_epochs: int = 0
+    boundary_lambda: float = 0.5
     boundary_lambda_warmup: Sequence[Tuple[int, float]] = field(
-        default_factory=lambda: ((10, 0.5), (20, 1.0))
+        default_factory=tuple
     )
     boundary_knn_k: int = 16
     interior_tv_lambda: float = 0.0
-    laplacian_lambda: float = 0.01
+    laplacian_lambda: float = 0.0
     classifier_bias_restore_epoch: Optional[int] = 20
     classifier_bias_warmup_bias: Optional[Sequence[float]] = None
     classifier_bias_max_abs: float = 0.5
-    gingiva_weight_scale: float = 1.15
+    gingiva_weight_scale: float = 1.0
     tooth_weight_scale: float = 1.00
     early_stop_patience: int = 18
     seed: Optional[int] = None
@@ -969,7 +969,7 @@ def main() -> None:
         ce_weights = build_ce_class_weights(class_hist, clip_min=0.3, clip_max=3.0)
         gingiva_idx_cfg = getattr(config.data_config, "gingiva_class_id", None)
         gingiva_idx = int(gingiva_idx_cfg) if gingiva_idx_cfg is not None else -1
-        gingiva_scale = float(getattr(config, "gingiva_weight_scale", 1.15))
+        gingiva_scale = float(getattr(config, "gingiva_weight_scale", 1.0))
         tooth_scale = float(getattr(config, "tooth_weight_scale", 1.00))
         applied_manual = False
         if 0 <= gingiva_idx < len(ce_weights):

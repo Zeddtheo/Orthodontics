@@ -241,12 +241,18 @@ def infer_one_tooth(
                 lm_global = lm_local + offset if offset is not None else lm_local.copy()
                 active_mask = None
                 if mask_np is not None:
-                    active_mask = mask_np[b]
-                    inactive = ~active_mask
-                    lm_local = lm_local.copy()
-                    lm_local[inactive] = np.nan
-                    lm_global = lm_global.copy()
-                    lm_global[inactive] = np.nan
+                    candidate = mask_np[b]
+                    if candidate.dtype != np.bool_:
+                        candidate = candidate > 0.5
+                    if np.any(candidate):
+                        active_mask = candidate.astype(bool, copy=False)
+                        inactive = ~active_mask
+                        lm_local = lm_local.copy()
+                        lm_local[inactive] = np.nan
+                        lm_global = lm_global.copy()
+                        lm_global[inactive] = np.nan
+                    else:
+                        active_mask = None
 
                 out_path = out_root / f"{case_id}.json"
                 payload = {}
