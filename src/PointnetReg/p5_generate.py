@@ -147,12 +147,25 @@ def _ensure_preprocessed(case_id: str, samples_root: Path, skip: bool) -> List[P
         candidates.add(f"{int(case_id):03d}")
     patterns = [f"{cid}_*_t*.npz" for cid in candidates]
     seen: Dict[Path, None] = {}
-    for pat in patterns:
-        for path in samples_root.glob(pat):
-            seen[path] = None
-    existing = sorted(seen.keys())
+    def _refresh_existing() -> List[Path]:
+        seen.clear()
+        for pat in patterns:
+            for path in samples_root.glob(pat):
+                seen[path] = None
+        return sorted(seen.keys())
+
+    existing = _refresh_existing()
     if existing:
-        return existing
+        teeth_found = set(_discover_teeth(existing))
+        missing_teeth = [tid for tid in DEFAULT_TOOTH_IDS if tid not in teeth_found]
+        if not missing_teeth:
+            return existing
+        if skip:
+            raise RuntimeError(
+                f"{case_id} 样本缺少牙位: {', '.join(missing_teeth)}; "
+                "如需自动生成完整样本，请移除 --skip-preprocess"
+            )
+
     if skip:
         raise FileNotFoundError(
             f"未找到 {case_id} 的 NPZ：{samples_root}，尝试模式 {', '.join(patterns)}"
@@ -161,11 +174,15 @@ def _ensure_preprocessed(case_id: str, samples_root: Path, skip: bool) -> List[P
     made, arches = preprocess.process_case(case_id=case_id, arches=None, for_infer=True)  # type: ignore[attr-defined]
     if made <= 0:
         raise RuntimeError(f"预处理未产生任何样本：case={case_id} arches={arches}")
-    seen.clear()
-    for pat in patterns:
-        for path in samples_root.glob(pat):
-            seen[path] = None
-    existing = sorted(seen.keys())
+    existing = _refresh_existing()
+    if existing:
+        teeth_found = set(_discover_teeth(existing))
+        missing_teeth = [tid for tid in DEFAULT_TOOTH_IDS if tid not in teeth_found]
+        if missing_teeth:
+            raise RuntimeError(
+                f"预处理后仍缺少牙位: {', '.join(missing_teeth)}；"
+                "请确认原始数据是否包含对应颌面"
+            )
     if not existing:
         raise RuntimeError(
             f"预处理后仍未找到样本：{samples_root}，已尝试模式 {', '.join(patterns)}"

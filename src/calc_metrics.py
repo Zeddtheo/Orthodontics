@@ -648,6 +648,169 @@ def _merge_landmarks(*dicts: Dict[str, List[float]]) -> Dict[str, List[float]]:
     out = {};  [out.update(d or {}) for d in dicts];  return out
 
 # ---- Public API ----
+def make_doctor_cn_simple(
+    landmarks: Dict[str, List[float]],
+    frame_ops: Dict[str, Any],
+    cfg: Optional[Dict] = None
+) -> Dict[str, Any]:
+    """
+    医生端简洁版导出：复用各 compute_* 指标，仅重组输出字段。
+    """
+    cfg = cfg or {}
+    frame, ops, wt = frame_ops['frame'], frame_ops['ops'], frame_ops['wt']
+
+    arch_form = compute_arch_form(landmarks, frame, ops)
+    arch_width = compute_arch_width(landmarks, ops)
+    bolton = compute_bolton(landmarks, ops, wt)
+    canine = compute_canine_relationship(landmarks, ops)
+    crossbite = compute_crossbite(landmarks, ops)
+    crowding = compute_crowding(landmarks, ops, wt)
+    spee_val = compute_spee(landmarks, ops)
+    midline = compute_midline_alignment(landmarks, ops)
+    molar = compute_molar_relationship(landmarks, ops, wt)
+    overbite = compute_overbite(landmarks, ops)
+    overjet = compute_overjet(landmarks, ops)
+
+    def _ok(d: Any, key: Optional[str] = None) -> bool:
+        if not isinstance(d, dict):
+            return False
+        if d.get('quality') == 'missing':
+            return False
+        if key is not None and d.get(key) is None:
+            return False
+        return True
+
+    out: Dict[str, Any] = {}
+
+    # 1) 牙弓形态
+    out['Arch_Form'] = arch_form.get('form') if _ok(arch_form) else '缺失'
+
+    # 2) 牙弓宽度
+    if _ok(arch_width):
+        out['Arch_Width'] = '上牙弓较窄' if arch_width.get('upper_is_narrow') else '未见上牙弓较窄'
+    else:
+        out['Arch_Width'] = '缺失'
+
+    # 3) Bolton（前牙比换算成小数）
+    bolton_ratio = None
+    if _ok(bolton, 'anterior'):
+        ratio = (bolton.get('anterior') or {}).get('ratio')
+        if isinstance(ratio, (int, float)):
+            bolton_ratio = ratio / 100.0
+    out['Bolton_Ratio'] = f"{bolton_ratio:.2f}" if bolton_ratio is not None else '缺失'
+
+    # 4) 尖牙关系
+    if _ok(canine):
+        right = (canine.get('right') or {}).get('class')
+        left = (canine.get('left') or {}).get('class')
+        out['Canine_Relationship_Right'] = right if right else '缺失'
+        out['Canine_Relationship_Left'] = left if left else '缺失'
+    else:
+        out['Canine_Relationship_Right'] = '缺失'
+        out['Canine_Relationship_Left'] = '缺失'
+
+    # 5) 锁牙合
+    if _ok(crossbite):
+        right_cb = crossbite.get('right') or {}
+        left_cb = crossbite.get('left') or {}
+
+        def _is_clear(section: Dict[str, Any]) -> bool:
+            return section.get('premolar') == '无' and section.get('m1') == '无'
+
+        if _is_clear(right_cb) and _is_clear(left_cb):
+            out['Crossbite'] = '无'
+        else:
+            def _side_text(label: str, section: Dict[str, Any]) -> Optional[str]:
+                if not section:
+                    return None
+                premolar = section.get('premolar')
+                molar = section.get('m1')
+                parts: List[str] = []
+                if premolar in ('正锁', '反锁'):
+                    parts.append('第一前磨牙')
+                if molar in ('正锁', '反锁'):
+                    parts.append('第一磨牙')
+                if not parts:
+                    return None
+                typ = molar if molar in ('正锁', '反锁') else premolar
+                if typ is None:
+                    return None
+                joined = '、'.join(parts)
+                return f"{label}侧{typ}（累及{joined}）"
+
+            segments = [
+                _side_text('右', right_cb),
+                _side_text('左', left_cb),
+            ]
+            segments = [seg for seg in segments if seg]
+            out['Crossbite'] = '；'.join(segments) if segments else '无'
+    else:
+        out['Crossbite'] = '缺失'
+
+    # 6) 拥挤度（数值：正=拥挤，负=间隙）
+    def _ald(which: str) -> Optional[float]:
+        if not _ok(crowding):
+            return None
+        section = crowding.get(which) or {}
+        val = section.get('ald_mm')
+        if isinstance(val, (int, float)):
+            return float(round(val, 1))
+        return None
+
+    out['Crowding_Up'] = _ald('upper')
+    out['Crowding_Down'] = _ald('lower')
+
+    # 7) Spee
+    out['Curve_of_Spee'] = f"{spee_val:.1f}mm" if isinstance(spee_val, (int, float)) else '缺失'
+
+    # 8) 中线
+    if _ok(midline):
+        raw = midline.get('summary_text', '')
+        text = '缺失'
+        if isinstance(raw, str):
+            if '*:' in raw:
+                text = raw.split('*:', 1)[1].strip()
+            elif ':' in raw:
+                text = raw.split(':', 1)[1].strip()
+            else:
+                text = raw.strip() or '缺失'
+        out['Midline_Alignment'] = text
+    else:
+        out['Midline_Alignment'] = '缺失'
+
+    # 9) 第一磨牙关系
+    if _ok(molar):
+        right_molar = (molar.get('right') or {}).get('label')
+        left_molar = (molar.get('left') or {}).get('label')
+        out['Molar_Relationship_Right'] = right_molar if right_molar else '缺失'
+        out['Molar_Relationship_Left'] = left_molar if left_molar else '缺失'
+    else:
+        out['Molar_Relationship_Right'] = '缺失'
+        out['Molar_Relationship_Left'] = '缺失'
+
+    # 10) Overbite
+    if _ok(overbite):
+        category = overbite.get('category') or '缺失'
+        if cfg.get('ob_simple', True):
+            out['Overbite'] = '正常' if category in ('对刃', '轻度覆𬌗') else category
+        else:
+            out['Overbite'] = category
+    else:
+        out['Overbite'] = '缺失'
+
+    # 11) Overjet
+    if _ok(overjet):
+        value = overjet.get('value_mm')
+        category = overjet.get('category')
+        if isinstance(value, (int, float)) and isinstance(category, str) and category:
+            out['Overjet'] = f"{abs(float(value)):.1f}mm_{category}"
+        else:
+            out['Overjet'] = '缺失'
+    else:
+        out['Overjet'] = '缺失'
+
+    return out
+
 def generate_metrics(
     upper_stl_path: str,
     lower_stl_path: str,
@@ -673,9 +836,14 @@ def generate_metrics(
                 json.dump(kv, f, ensure_ascii=False, indent=2)
         return kv
 
-    # 3) 组装 brief → kv
-    brief = make_brief_report(landmarks, frame_ops)
-    kv = _brief_lines_to_kv(brief)
+    cfg = cfg or {}
+    profile = cfg.get('profile', 'brief')
+
+    if profile == 'doctor_cn_simple':
+        kv = make_doctor_cn_simple(landmarks, frame_ops, cfg=cfg)
+    else:
+        brief = make_brief_report(landmarks, frame_ops)
+        kv = _brief_lines_to_kv(brief)
 
     # 4) 可选落盘
     if out_path:
