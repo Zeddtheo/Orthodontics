@@ -12,7 +12,7 @@ import shutil
 import time
 from sklearn.svm import SVC # uncomment this line if you don't install thudersvm
 # from thundersvm import SVC 
-from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neighbors import KNeighborsRegressor, NearestNeighbors
 import warnings
 try:
     from pygco import cut_from_graph
@@ -49,13 +49,13 @@ MODEL_FILES = {
 }
 
 _BASE_MIRROR_PAIRS = (
-    (1, 8),
-    (2, 9),
-    (3, 10),
+    (1, 14),
+    (2, 13),
+    (3, 12),
     (4, 11),
-    (5, 12),
-    (6, 13),
-    (7, 14),
+    (5, 10),
+    (6, 9),
+    (7, 8),
 )
 MIRROR_LABEL_MAP = {
     arch: {
@@ -397,19 +397,11 @@ if __name__ == '__main__':
             scale = 70
             coarse_unaries = (-scale * np.log(coarse_probs)).astype(np.int32)
 
-            compat = np.full((num_classes, num_classes), 2, dtype=np.int32)
+            compat = np.ones((num_classes, num_classes), dtype=np.int32)
             np.fill_diagonal(compat, 0)
-            if num_classes > 1:
-                for tooth in range(1, num_classes):
-                    for neigh in (tooth - 1, tooth + 1):
-                        if 1 <= neigh < num_classes:
-                            compat[tooth, neigh] = 1
-                            compat[neigh, tooth] = 1
-                compat[0, 1:] = 2
-                compat[1:, 0] = 2
             pairwise = np.ascontiguousarray(compat, dtype=np.int32)
 
-            background_bias = int(scale * 0.6)
+            background_bias = int(scale * 0.4)
             coarse_unaries[:, 0] += background_bias
             coarse_unaries = np.ascontiguousarray(coarse_unaries, dtype=np.int32)
 
@@ -480,11 +472,27 @@ if __name__ == '__main__':
             coarse_centers_norm = (coarse_barycenters - bary_min) / bary_span
             fine_centers_norm = (fine_barycenters - bary_min) / bary_span
 
+            gum_label = 0
             alpha = 3.0
-            coarse_features = np.hstack([coarse_centers_norm, alpha * normals_coarse_feats])
-            fine_features = np.hstack([fine_centers_norm, alpha * normals_fine_feats])
+            coarse_labels_flat = refine_labels.reshape(-1)
+            coarse_is_gum = (coarse_labels_flat == gum_label).astype(np.float32)
+            coarse_features = np.hstack([
+                coarse_centers_norm,
+                alpha * normals_coarse_feats,
+                coarse_is_gum[:, None],
+            ])
 
-            knn = KNeighborsRegressor(n_neighbors=3, weights='distance')
+            nn_lookup = NearestNeighbors(n_neighbors=1)
+            nn_lookup.fit(coarse_centers_norm)
+            nearest_idx = nn_lookup.kneighbors(fine_centers_norm, return_distance=False).reshape(-1)
+            fine_is_gum_hint = coarse_is_gum[nearest_idx][:, None]
+            fine_features = np.hstack([
+                fine_centers_norm,
+                alpha * normals_fine_feats,
+                fine_is_gum_hint,
+            ])
+
+            knn = KNeighborsRegressor(n_neighbors=5, weights='distance')
             knn.fit(coarse_features, coarse_probs)
             fine_probs = np.clip(knn.predict(fine_features), 1.0e-10, 1.0)
             fine_probs = fine_probs / np.maximum(fine_probs.sum(axis=1, keepdims=True), 1.0e-12)
@@ -561,24 +569,25 @@ if __name__ == '__main__':
             # narrow band dilation guided by probabilities
             if fine_probs is not None and fine_probs.shape[0] == lab.shape[0]:
                 new_lab = lab.copy()
-                log_threshold = -0.3
+                log_threshold = 0.6
                 for idx, current in enumerate(lab):
                     if current != gum_label:
                         continue
-                    neigh_labels = [lab[v] for v in adjacency[idx] if lab[v] != gum_label]
-                    if not neigh_labels:
+                    unique_neighbors = {lab[v] for v in adjacency[idx] if lab[v] != gum_label}
+                    if len(unique_neighbors) != 1:
                         continue
+                    candidate_label = next(iter(unique_neighbors))
                     probs_row = fine_probs[idx]
                     gum_p = max(probs_row[gum_label], 1.0e-12)
                     tooth_slice = probs_row[1:]
                     if tooth_slice.size == 0:
                         continue
                     tooth_idx = int(np.argmax(tooth_slice) + 1)
+                    if tooth_idx != candidate_label:
+                        continue
                     tooth_p = max(probs_row[tooth_idx], 1.0e-12)
                     if np.log(tooth_p) - np.log(gum_p) > log_threshold:
-                        majority = np.bincount(np.asarray(neigh_labels, dtype=np.int32)).argmax()
-                        if majority != gum_label:
-                            new_lab[idx] = majority
+                        new_lab[idx] = candidate_label
                 lab = new_lab
 
             visited_gum = np.zeros(mesh.ncells, dtype=bool)
@@ -607,38 +616,91 @@ if __name__ == '__main__':
                     maj = np.bincount(np.asarray(neighbors, dtype=np.int32)).argmax()
                     lab[comp] = maj
 
-            max_tooth_island = 250
-            if num_classes > 1 and max_tooth_island > 0:
+            if num_classes > 1:
                 visited_tooth = np.zeros(mesh.ncells, dtype=bool)
+                components = {}
                 for start in range(mesh.ncells):
                     if visited_tooth[start]:
                         continue
                     label_here = lab[start]
-                    if label_here == gum_label:
-                        continue
                     visited_tooth[start] = True
-                    comp = [start]
                     queue = [start]
+                    comp = [start]
+                    neighbor_labels = []
                     while queue:
                         u = queue.pop()
                         for v in adjacency[u]:
-                            if not visited_tooth[v] and lab[v] == label_here:
-                                visited_tooth[v] = True
-                                queue.append(v)
-                                comp.append(v)
-                    if len(comp) > max_tooth_island:
-                        continue
-                    boundary_labels = []
-                    for u in comp:
-                        for v in adjacency[u]:
-                            neigh_label = lab[v]
-                            if neigh_label != label_here:
-                                boundary_labels.append(neigh_label)
-                    if boundary_labels:
-                        replacement = np.bincount(np.asarray(boundary_labels, dtype=np.int32)).argmax()
-                        lab[comp] = replacement
+                            if lab[v] == label_here:
+                                if not visited_tooth[v]:
+                                    visited_tooth[v] = True
+                                    queue.append(v)
+                                    comp.append(v)
+                            else:
+                                neighbor_labels.append(lab[v])
+                    components.setdefault(label_here, []).append((comp, neighbor_labels))
 
-            fine_labels = lab.reshape(-1, 1)
+                for label_val, entries in components.items():
+                    if label_val == gum_label or len(entries) <= 1:
+                        continue
+                    sizes = [len(comp) for comp, _ in entries]
+                    keep_idx = int(np.argmax(sizes))
+                    for idx_entry, (comp, neighbors) in enumerate(entries):
+                        if idx_entry == keep_idx:
+                            continue
+                        neighbor_labels = [n for n in neighbors if n != label_val]
+                        if neighbor_labels:
+                            replacement = int(np.bincount(np.asarray(neighbor_labels, dtype=np.int32)).argmax())
+                        else:
+                            replacement = label_val
+                        lab[np.asarray(comp, dtype=np.int32)] = replacement
+
+            labels_flat = lab
+            if fine_barycenters.shape[0] == labels_flat.shape[0]:
+                tooth_labels = [lbl for lbl in np.unique(labels_flat) if lbl > gum_label]
+                if tooth_labels:
+                    max_tooth_id = num_classes - 1
+                    tooth_means = {
+                        lbl: float(fine_barycenters[labels_flat == lbl, 0].mean())
+                        for lbl in tooth_labels
+                    }
+                    sorted_labels = sorted(tooth_labels, key=lambda lbl: tooth_means[lbl])
+                    mapping = {gum_label: gum_label}
+                    for new_idx, lbl in enumerate(sorted_labels, start=1):
+                        mapping[lbl] = min(new_idx, max_tooth_id)
+                    remapped = labels_flat.copy()
+                    for old_lbl, new_lbl in mapping.items():
+                        remapped[labels_flat == old_lbl] = new_lbl
+                    labels_flat = remapped
+            max_tooth_id = num_classes - 1
+            for _ in range(5):
+                changed = False
+                label_counts = np.bincount(labels_flat, minlength=num_classes)
+                for cell_idx, neighbors in enumerate(adjacency):
+                    current_label = labels_flat[cell_idx]
+                    if current_label <= gum_label:
+                        continue
+                    for neigh_idx in neighbors:
+                        neigh_label = labels_flat[neigh_idx]
+                        if neigh_label <= gum_label or neigh_label == current_label:
+                            continue
+                        if abs(current_label - neigh_label) <= 1:
+                            continue
+                        if label_counts[current_label] <= label_counts[neigh_label]:
+                            src_label = current_label
+                            target_label = neigh_label - 1 if neigh_label > current_label else neigh_label + 1
+                        else:
+                            src_label = neigh_label
+                            target_label = current_label - 1 if current_label > neigh_label else current_label + 1
+                        target_label = max(1, min(max_tooth_id, target_label))
+                        if target_label == src_label:
+                            continue
+                        labels_flat[labels_flat == src_label] = target_label
+                        label_counts = np.bincount(labels_flat, minlength=num_classes)
+                        changed = True
+                if not changed:
+                    break
+
+            fine_labels = labels_flat.reshape(-1, 1)
             # -------------------------------------------
 
             mesh = attach_label_data(mesh, fine_labels)

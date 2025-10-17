@@ -1,0 +1,16 @@
+name: pointnetreg
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=2.0.*
+  - scipy
+  - scikit-learn
+  - tqdm
+  - pyvista
+  - vedo
+  - pytorch=2.3.*
+  - pytorch-cuda=12.1

@@ -6,10 +6,7 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
-
-import numpy as np
-import pyvista as pv
+from typing import Dict, Iterable, List, Optional
 
 
 def _ensure_repo_root() -> Dict[str, Path]:
@@ -99,72 +96,6 @@ def _cleanup_samples(samples_root: Path, case_id: str) -> None:
         npz_path.unlink(missing_ok=True)
 
 
-def _load_min_faces() -> int:
-    repo_root = Path(__file__).resolve().parents[1]
-    repo_path = str(repo_root)
-    cleanup = False
-    if repo_path not in sys.path:
-        sys.path.insert(0, repo_path)
-        cleanup = True
-    try:
-        import datasets.landmarks_dataset.preprocess as preprocess_module  # type: ignore
-
-        return int(getattr(preprocess_module, "MIN_FACES", 800))
-    finally:
-        if cleanup:
-            sys.path.remove(repo_path)
-
-
-MIN_FACES = _load_min_faces()
-
-
-def _load_toothmap(path: Path) -> Dict[str, Dict[str, int]]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    toothmap: Dict[str, Dict[str, int]] = {}
-    for arch, mapping in data.items():
-        if isinstance(mapping, dict):
-            toothmap[arch.upper()] = {str(k): int(v) for k, v in mapping.items()}
-    return toothmap
-
-
-def _count_faces_by_label(mesh: pv.PolyData) -> Dict[int, int]:
-    if "Label" in mesh.cell_data:
-        labels = np.asarray(mesh.cell_data["Label"], dtype=np.int32)
-    elif "PredictedID" in mesh.cell_data:
-        labels = np.asarray(mesh.cell_data["PredictedID"], dtype=np.int32)
-    else:
-        raise RuntimeError("VTP 缺少 Label/PredictedID 数据，无法校验面片数")
-    unique, counts = np.unique(labels, return_counts=True)
-    return {int(label): int(count) for label, count in zip(unique, counts)}
-
-
-def _validate_arch_vtp(
-    vtp_path: Path,
-    arch: str,
-    toothmap: Dict[str, Dict[str, int]],
-    min_faces: int,
-) -> List[Tuple[int, int]]:
-    if not vtp_path.exists():
-        return []
-    mesh = pv.read(str(vtp_path))
-    counts = _count_faces_by_label(mesh)
-    arch_key = arch.upper()
-    mapping = toothmap.get(arch_key)
-    if not mapping:
-        return []
-    labels_are_fdi = any(label >= 20 for label in counts if label not in (0,))
-    missing: List[Tuple[int, int]] = []
-    for fdi_str, class_id in mapping.items():
-        fdi = int(fdi_str)
-        if labels_are_fdi:
-            face_count = counts.get(fdi, 0)
-        else:
-            face_count = counts.get(int(class_id), 0)
-        if face_count < min_faces:
-            missing.append((fdi, face_count))
-    return missing
-
-
 def run_pointnet_pipeline(
     case_id: str,
     upper_vtp: Optional[Path],
@@ -200,37 +131,6 @@ def run_pointnet_pipeline(
     lower_present = _copy_arch_vtp(lower_vtp, raw_case_dir / f"{case_id}_L.vtp")
     if not upper_present and not lower_present:
         raise FileNotFoundError("未提供任何 VTP 输入")
-
-    defaults = _default_paths(paths)
-    toothmap = _load_toothmap(defaults["toothmap"])
-    issues: List[str] = []
-    if upper_present:
-        upper_missing = _validate_arch_vtp(
-            raw_case_dir / f"{case_id}_U.vtp",
-            "U",
-            toothmap,
-            MIN_FACES,
-        )
-        if upper_missing:
-            issues.append(
-                "上颌缺少面片：" + ", ".join(f"FDI {fdi} faces={faces}" for fdi, faces in upper_missing)
-            )
-    if lower_present:
-        lower_missing = _validate_arch_vtp(
-            raw_case_dir / f"{case_id}_L.vtp",
-            "L",
-            toothmap,
-            MIN_FACES,
-        )
-        if lower_missing:
-            issues.append(
-                "下颌缺少面片：" + ", ".join(f"FDI {fdi} faces={faces}" for fdi, faces in lower_missing)
-            )
-    if issues:
-        raise RuntimeError(
-            "输入 VTP 面片数不足（每个牙位至少需要 "
-            f"{MIN_FACES} 个面片）：{'；'.join(issues)}"
-        )
 
     samples_root.mkdir(parents=True, exist_ok=True)
     infer_root.mkdir(parents=True, exist_ok=True)
