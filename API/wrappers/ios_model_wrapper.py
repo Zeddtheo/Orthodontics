@@ -19,7 +19,7 @@ def _ensure_ios_module() -> Tuple[Path, Path]:
     candidates = [
         repo_root / "vendor" / "ios-model",
         repo_root / "models" / "ios-model",
-        repo_root.parent / "src" / "ios_model-release" / "torchscript" / "teeth_seg_torchscript",
+        repo_root.parent / "src" / "IOS-Model" / "teeth_seg",
     ]
     ios_module_dir = None
     for path in candidates:
