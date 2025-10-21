@@ -10,12 +10,15 @@ from typing import Dict, List
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 ROOT = Path(os.environ.get("API_ROOT", str(DEFAULT_ROOT))).resolve()
 WRAPPERS = ROOT / "wrappers"
-DEFAULT_PREFIX = Path(__file__).resolve().parents[2] / ".micromamba"
-ROOT_PREFIX = Path(os.environ.get("MAMBA_ROOT_PREFIX", str(DEFAULT_PREFIX))).resolve()
+_default_prefix = DEFAULT_ROOT / ".micromamba"
+if not _default_prefix.exists():
+    _default_prefix = Path.home() / ".micromamba"
+ROOT_PREFIX = Path(os.environ.get("MAMBA_ROOT_PREFIX", str(_default_prefix))).resolve()
 _MICROMAMBA_CANDIDATES = [
     os.environ.get("MICROMAMBA_EXE"),
     "micromamba",
     str(Path.cwd() / "tools" / "micromamba.exe"),
+    str(DEFAULT_ROOT / "build-tools" / "micromamba-linux"),
     str(Path(__file__).resolve().parents[2] / "tools" / "micromamba.exe"),
 ]
 
@@ -63,19 +66,19 @@ def run_pipeline(
 
     vtp_a = workdir / "A.vtp"
     vtp_b = workdir / "B.vtp"
-    meshsegnet_wrapper = WRAPPERS / "meshsegnet_wrapper.py"
+    ios_wrapper = WRAPPERS / "ios_model_wrapper.py"
     base_cmd = [MICROMAMBA, "run", "--root-prefix", str(ROOT_PREFIX)]
 
-    meshseg_cmd = (
+    ios_cmd = (
         base_cmd
         + [
             "-n",
-            "meshsegnet",
+            "ios_model",
             "python",
-            str(meshsegnet_wrapper),
+            str(ios_wrapper),
         ]
     )
-    meshseg_cmd += [
+    ios_cmd += [
         "--upper_stl",
         str(stl_a),
         "--upper_out",
@@ -84,10 +87,8 @@ def run_pipeline(
         str(stl_b),
         "--lower_out",
         str(vtp_b),
-        "--model_dir",
-        str(ROOT / "models" / "meshsegnet"),
     ]
-    _run(meshseg_cmd)
+    _run(ios_cmd)
 
     json_a = workdir / "A.json"
     json_b = workdir / "B.json"

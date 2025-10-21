@@ -8,3 +8,10 @@ MeshSegNet/.venv
 venv/
 __pycache__/
 .micromamba
+API/.micromamba/
+API/release/*.tar
+API/release-linux/envs-linux/*.tgz
+API/release-linux/envs-linux/*.tar.gz
+API/release-linux/tools/micromamba*
+*.zip
+*.7z

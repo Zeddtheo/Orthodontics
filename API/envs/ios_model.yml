@@ -1,0 +1,21 @@
+name: ios_model
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=1.23.5
+  - scipy=1.15.*
+  - scikit-learn
+  - cython
+  - pytorch=2.2.*
+  - pytorch-cuda=12.1
+  - psutil
+  - pip:
+      - vedo==2023.4.3
+      - pygco==0.0.16
+      - DracoPy==1.2.0
+      - trimesh==4.8.3
+      - open3d==0.18.0

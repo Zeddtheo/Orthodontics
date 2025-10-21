@@ -1,69 +1,77 @@
-# MeshSegNet → PointNet-Reg Quickstart
+# ios-model → PointNet-Reg CLI
 
-这份 API 做的事情很简单：给它一对已经分好上下颌的 STL，里面会先跑 MeshSegNet 做分割，再把结果交给 PointNet-Reg 生成牙位 landmark，最后把上颌、下颌的 JSON 一起返回给你。
+给定一对分好上下颌的 STL，本工具会先跑 ios-model TorchScript 完成分割，再调用 PointNet-Reg 得到牙位 landmark 坐标，直接输出 JSON 结果。无需再启动 FastAPI 或 Docker。
 
-## 准备工作
-- 把 `API/` 整个目录解压到一台带 CUDA 的机器上。
-- 模型权重已经放在 `API/models/` 下；如果需要更新自己训练的模型，只要替换同名文件即可。
-
-## 运行方式
-### 方式 1：Docker（推荐）
+## Docker 快速运行
 ```bash
 cd API
-docker build -t mesh-workflow:latest .
-docker run --rm -it --gpus '"device=0"' -e CUDA_VISIBLE_DEVICES=0 -p 8000:8000 mesh-workflow:latest
+docker build -t ios-pointnet-cli:latest .
+docker run --rm --gpus all \
+  -v /abs/data:/data \
+  -e UPPER_STL=/data/319_U.stl \
+  -e LOWER_STL=/data/319_L.stl \
+  -e OUTPUT_JSON=/data/319_result.json \
+  ios-pointnet-cli:latest
 ```
-容器会在 `8000` 端口启动 FastAPI。想用本地数据就把目录挂载进来，比如 `-v /data/cases:/data`。
+如需保留中间产物，加上 `-e KEEP_INTERMEDIATE=1`；用 `-e PRETTY_JSON=1` 可输出排版好的 JSON。容器中的 `/app` 即 `API/` 目录拷贝，可按需挂载输入或自定义权重。
 
-### 方式 2：本地环境
+## 手动准备环境
+1. 确保机器安装了 NVIDIA 驱动和 CUDA，对应 GPU 能被 `nvidia-smi` 识别。
+2. 在 `API/` 目录中，用 micromamba 创建 3 个环境：
+   ```bash
+   cd API
+   micromamba create -n ios_model -f envs/ios_model.yml
+   micromamba create -n pointnetreg -f envs/pointnetreg.yml
+   micromamba create -n calc -f envs/calc.yml
+   micromamba run -n ios_model pip install --no-cache-dir torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.2.2+cu121.html
+   micromamba run -n ios_model pip install --no-cache-dir torch_geometric==2.5.3
+   ```
+   如果使用 `release-linux/` 的离线包，先执行 `API/release-linux/bootstrap.sh`，上述环境会自动解压到 `API/.micromamba/` 下。
+
+模型权重都已经内置：PointNet-Reg 在 `API/models/pointnetreg/`，ios-model TorchScript 权重在 `API/models/ios-model/`（仅保留 `.pt`），对应脚本在 `API/vendor/ios-model/`。
+
+### 集成测试（Linux）
+
 ```bash
 cd API
-micromamba create -n meshsegnet -f envs/meshsegnet.yml
-micromamba create -n pointnetreg -f envs/pointnetreg.yml
-micromamba create -n calc -f envs/calc.yml
-micromamba run -n calc pip install -r requirements.api.txt
-micromamba run -n calc uvicorn api:app --host 0.0.0.0 --port 8000
+tests/run_api_tests.sh
 ```
 
-## 调用接口
-唯一的入口是 `POST /infer`，请求体需要告诉服务上下颌 STL 的绝对路径：
+脚本会自动准备 `calc`、`ios_model`、`pointnetreg` 三个 micromamba 环境（默认安装在 `API/.micromamba/`），随后对 `tests/319_[UL].stl` 运行整套管线，并校验输出 JSON 是否包含完整的牙位坐标。如果只想快速检查，也可以继续使用 `tests/smoke_test.sh`。
+
+## 本地一行命令跑完
 ```bash
-curl -X POST http://localhost:8000/infer \
-  -H "Content-Type: application/json" \
-  -d '{
-        "path_a": "/data/case001_U.stl",
-        "path_b": "/data/case001_L.stl",
-        "include_intermediate": true
-      }'
+micromamba run -n calc python run_pipeline.py \
+  --upper /abs/path/to/upper.stl \
+  --lower /abs/path/to/lower.stl \
+  --output /abs/path/to/result.json
 ```
+等价地，也可以直接执行 `./run.sh --upper ... --lower ...`，脚本会自动查找 micromamba。
 
-返回示例：
+默认只写出 landmark 字典（结构类似 `dots.json`）。如需保留中间产物（VTP/JSON 和工作目录），加上 `--keep`：
+```bash
+micromamba run -n calc python run_pipeline.py \
+  --upper /data/319_U.stl \
+  --lower /data/319_L.stl \
+  --output /tmp/319_result.json \
+  --keep --pretty
+```
+此时输出 JSON 会包含：
 ```json
 {
-  "status": "success",
-  "result": {
-    "up": {
-      "11m": [-8.64, -0.22, 21.40],
-      "11ma": [-5.34, -0.22, 21.79],
-      "...": "..."
-    },
-    "low": {
-      "31m": [0.60, -0.03, 20.10],
-      "31ma": [-1.85, -0.13, 19.54],
-      "...": "..."
-    }
-  },
+  "result": { "...牙位...": [x, y, z], "...": [...] },
   "artifacts": {
-    "vtp_a": "/app/runs/7b5ad4c8f9c4/A.vtp",
-    "vtp_b": "/app/runs/7b5ad4c8f9c4/B.vtp",
-    "json_a": "/app/runs/7b5ad4c8f9c4/A.json",
-    "json_b": "/app/runs/7b5ad4c8f9c4/B.json"
+    "workdir": "/absolute/path/to/runs/<uuid>",
+    "vtp_a": ".../A.vtp",
+    "vtp_b": ".../B.vtp",
+    "json_a": ".../A.json",
+    "json_b": ".../B.json"
   }
 }
 ```
-把 `include_intermediate` 设为 `false` 时，流程会在返回前自动清理 VTP/JSON 以及整 个工作目录，只保留响应里的 landmark JSON。
 
-## 常见问题
-- **STL 路径在哪找？** 把文件挂载进容器或直接用绝对路径，确保 API 进程能读到就行。
-- **想要 metrics 吗？** 默认不算。如果需要，只要在代码里调用 `run_pipeline(..., run_metrics=True)`，或自己复用 `wrappers/calc_metrics_wrapper.py`。
-- **临时文件在哪里？** 默认会在 `API/runs/` 下建一个随机目录。如果不请求中间产物，接口会在 返回后自动清理该目录。
+## 其它说明
+- 脚本无额外日志，失败时会在 stderr 打印错误并返回非 0。
+- 中间文件默认保存在 `API/runs/<uuid>/`，`--keep` 关闭自动清理，方便自行检查。
+- 如果需要计算指标，可直接调用 `utils.runner.run_pipeline(..., run_metrics=True)` 或 `wrappers/calc_metrics_wrapper.py`。
+- 推荐把上述命令写入 `start.sh`/`make` 之类的包装脚本，方便他人调用。

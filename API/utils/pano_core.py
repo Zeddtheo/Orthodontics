@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, List
 
-import orjson
+import json
 
 from .runner import run_pipeline
 
@@ -35,14 +35,18 @@ def core(path_a: str, path_b: str, include_intermediate: bool = False) -> Dict:
     workdir_path = Path(outputs["workdir"])
     json_a_path = Path(outputs["json_a"])
     json_b_path = Path(outputs["json_b"])
-    up_payload = orjson.loads(json_a_path.read_bytes())
-    low_payload = orjson.loads(json_b_path.read_bytes())
+    up_payload = json.loads(json_a_path.read_text(encoding="utf-8"))
+    low_payload = json.loads(json_b_path.read_text(encoding="utf-8"))
+
+    up_landmarks = _extract_landmarks(up_payload)
+    low_landmarks = _extract_landmarks(low_payload)
+    landmarks: Dict[str, List[float]] = {}
+    landmarks.update(up_landmarks)
+    landmarks.update(low_landmarks)
 
     response: Dict[str, object] = {
-        "result": {
-            "up": _extract_landmarks(up_payload),
-            "low": _extract_landmarks(low_payload),
-        },
+        "result": landmarks,
+        "result_plain": json.dumps(landmarks, ensure_ascii=False),
     }
 
     if include_intermediate:

@@ -27,6 +27,40 @@ CUTOFF_SIGMA = 3.0
 N_PRIME = 3000
 MIN_FACES = 800
 
+# ---------- 颌位辅助 ----------
+ARCH_ALIAS_BASE = {
+    "U": {"u", "upper", "upperjaw", "maxilla", "maxillary"},
+    "L": {"l", "lower", "lowerjaw", "mandible", "mandibular"},
+}
+
+
+def _normalise_arch_name(token: Optional[str]) -> Optional[str]:
+    """将不同写法的颌位字符串统一映射到 U / L。"""
+    if token is None:
+        return None
+    text = str(token).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    for canonical, aliases in ARCH_ALIAS_BASE.items():
+        if lowered == canonical.lower() or lowered in aliases:
+            return canonical
+    return None
+
+
+def _arch_name_variants(canonical: str) -> List[str]:
+    """返回该颌位可能使用的命名别名（用于查找文件）。"""
+    key = canonical.upper()
+    base_tokens = {key.lower()}
+    base_tokens.update(ARCH_ALIAS_BASE.get(key, set()))
+    variants = {key}  # 始终包含大写形式
+    for token in base_tokens:
+        variants.add(token)
+        variants.add(token.upper())
+        variants.add(token.capitalize())
+    return sorted(variants)
+
+
 # ---------- 工具 ----------
 def tooth_names(tooth_key:str):
     return TEMPLATES[PER_TOOTH[tooth_key]]
@@ -156,23 +190,37 @@ def detect_arches(raw_dir: Path) -> List[str]:
         for mesh_path in raw_dir.glob(pattern):
             parts = mesh_path.stem.split("_")
             if len(parts) >= 2:
-                arch = parts[-1].upper()
-                if arch:
-                    arches.add(arch)
-    return sorted(a for a in arches if a in TOOTHMAP)
+                arch_token = parts[-1]
+                arch_norm = _normalise_arch_name(arch_token)
+                if arch_norm and arch_norm in TOOTHMAP:
+                    arches.add(arch_norm)
+    return sorted(arches)
 
 def process_arch(case_id="001", arch="L", for_infer: bool = False):
-    arch = arch.upper()
+    arch_norm = _normalise_arch_name(arch)
+    if arch_norm is None:
+        print(f"[warn] skip arch '{arch}' not recognised")
+        return 0
+    arch = arch_norm
     raw_dir = RAW_BASE / _case_dir_name(case_id)
     if not raw_dir.exists():
         raise FileNotFoundError(f"raw case dir not found: {raw_dir}")
-    mesh_path = next(raw_dir.glob(f"*_{arch}.vtp"), None)
-    if mesh_path is None:
-        mesh_path = next(raw_dir.glob(f"*_{arch}.stl"), None)
+    mesh_path = None
+    for alias in _arch_name_variants(arch):
+        mesh_path = next(raw_dir.glob(f"*_{alias}.vtp"), None)
+        if mesh_path:
+            break
+        mesh_path = next(raw_dir.glob(f"*_{alias}.stl"), None)
+        if mesh_path:
+            break
     if mesh_path is None:
         print(f"[skip] {case_id} arch={arch} missing mesh file (.vtp/.stl) in {raw_dir}")
         return 0
-    jsn = next(raw_dir.glob(f"*_{arch}.json"), None)
+    jsn = None
+    for alias in _arch_name_variants(arch):
+        jsn = next(raw_dir.glob(f"*_{alias}.json"), None)
+        if jsn:
+            break
     if jsn is None and not for_infer:
         print(f"[skip] {case_id} arch={arch} missing landmark json in {raw_dir}")
         return 0
@@ -313,11 +361,11 @@ def process_case(case_id="001", arches: Optional[List[str]] = None, for_infer: b
     else:
         arch_candidates = []
         for arch in arches:
-            arch_upper = arch.upper()
-            if arch_upper not in TOOTHMAP:
+            arch_norm = _normalise_arch_name(arch)
+            if arch_norm is None or arch_norm not in TOOTHMAP:
                 print(f"[warn] skip arch '{arch}' not defined in toothmap")
                 continue
-            arch_candidates.append(arch_upper)
+            arch_candidates.append(arch_norm)
 
     if not arch_candidates:
         raise SystemExit(f"No arches to process for case {case_id}")

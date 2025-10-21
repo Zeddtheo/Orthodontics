@@ -30,13 +30,8 @@ def main() -> None:
 
     from calc_metrics import generate_metrics  # type: ignore  # noqa: WPS433,E402
 
-    generate_metrics(
-        upper_stl_path=str(args.stl_a),
-        lower_stl_path=str(args.stl_b),
-        upper_json_path=str(args.json_a),
-        lower_json_path=str(args.json_b),
-        out_path=str(out_path),
-    )
+    sources = [str(args.json_a), str(args.json_b)]
+    generate_metrics(sources, out_path=str(out_path))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -170,17 +170,22 @@ if __name__ == '__main__':
     else:
         gpu_id = None
 
-    # upsampling_method = 'SVM'
-    upsampling_method = 'KNN'
+    upsampling_method = os.environ.get('MESHSEGNET_UPSAMPLING', 'KNN').upper()
+    if upsampling_method not in {'SVM', 'KNN'}:
+        upsampling_method = 'KNN'
 
-    model_path = './src/MeshSegNet/models'
+    model_path = os.environ.get('MESHSEGNET_MODEL_PATH', './src/MeshSegNet/models')
 
-    mesh_path = './API/tests'
-    sample_filenames = sorted([
-        fname for fname in os.listdir(mesh_path)
-        if fname.lower().endswith('.stl')
-    ])
-    output_path = './outputs'
+    mesh_path = os.environ.get('MESHSEGNET_MESH_PATH', './API/tests')
+    samples_env = os.environ.get('MESHSEGNET_SAMPLES')
+    if samples_env:
+        sample_filenames = [s.strip() for s in samples_env.split(',') if s.strip()]
+    else:
+        sample_filenames = sorted([
+            fname for fname in os.listdir(mesh_path)
+            if fname.lower().endswith('.stl')
+        ])
+    output_path = os.environ.get('MESHSEGNET_OUTPUT_PATH', './outputs')
     os.makedirs(output_path, exist_ok=True)
 
     num_classes = 15
@@ -228,6 +233,7 @@ if __name__ == '__main__':
             print('Predicting Sample filename: {}'.format(i_sample))
             # read image and label (annotation)
             mesh = vedo.load(os.path.join(mesh_path, i_sample))
+            mesh_original = mesh.clone()
 
             # pre-processing: downsampling
             print('\tDownsampling...')
@@ -496,6 +502,7 @@ if __name__ == '__main__':
             knn.fit(coarse_features, coarse_probs)
             fine_probs = np.clip(knn.predict(fine_features), 1.0e-10, 1.0)
             fine_probs = fine_probs / np.maximum(fine_probs.sum(axis=1, keepdims=True), 1.0e-12)
+            fine_argmax_labels = np.argmax(fine_probs, axis=1).astype(np.int32)
 
             fine_unaries = (-scale * np.log(fine_probs)).astype(np.int32)
             gum_bias = int(0.6 * scale)
@@ -548,6 +555,7 @@ if __name__ == '__main__':
                 fine_labels_array = np.zeros(cell_ids_fine.shape[0], dtype=np.int32)
 
             fine_labels = fine_labels_array.reshape(-1)
+            gc_only_labels_fine = fine_labels.copy()
 
             # ---- fill small gum holes on fine mesh ----
             fine_faces = np.asarray(mesh.cells, dtype=np.int32)
@@ -567,7 +575,8 @@ if __name__ == '__main__':
                         edge_owner[e] = ci
 
             # narrow band dilation guided by probabilities
-            if fine_probs is not None and fine_probs.shape[0] == lab.shape[0]:
+            has_fine_probs = fine_probs is not None and fine_probs.shape[0] == lab.shape[0]
+            if has_fine_probs:
                 new_lab = lab.copy()
                 log_threshold = 0.6
                 for idx, current in enumerate(lab):
@@ -591,7 +600,7 @@ if __name__ == '__main__':
                 lab = new_lab
 
             visited_gum = np.zeros(mesh.ncells, dtype=bool)
-            max_hole = 300
+            max_hole = 50
             for start in range(mesh.ncells):
                 if visited_gum[start] or lab[start] != gum_label:
                     continue
@@ -607,14 +616,10 @@ if __name__ == '__main__':
                             comp.append(v)
                 if len(comp) > max_hole:
                     continue
-                neighbors = []
-                for u in comp:
-                    for v in adjacency[u]:
-                        if lab[v] != gum_label:
-                            neighbors.append(lab[v])
-                if neighbors:
-                    maj = np.bincount(np.asarray(neighbors, dtype=np.int32)).argmax()
-                    lab[comp] = maj
+                neighbor_labels = {int(lab[v]) for u in comp for v in adjacency[u] if lab[v] != gum_label}
+                if len(neighbor_labels) == 1:
+                    maj = neighbor_labels.pop()
+                    lab[np.asarray(comp, dtype=np.int32)] = maj
 
             if num_classes > 1:
                 visited_tooth = np.zeros(mesh.ncells, dtype=bool)
@@ -644,15 +649,28 @@ if __name__ == '__main__':
                         continue
                     sizes = [len(comp) for comp, _ in entries]
                     keep_idx = int(np.argmax(sizes))
+                    total_cells = float(sum(sizes))
                     for idx_entry, (comp, neighbors) in enumerate(entries):
                         if idx_entry == keep_idx:
+                            continue
+                        comp_indices = np.asarray(comp, dtype=np.int32)
+                        comp_size = comp_indices.size
+                        keep_by_size = (comp_size >= 0.25 * total_cells) or (comp_size >= 150)
+                        keep_by_prob = False
+                        if not keep_by_size and has_fine_probs and comp_size:
+                            tooth_probs = fine_probs[comp_indices, label_val]
+                            gum_probs = fine_probs[comp_indices, gum_label]
+                            tooth_mean = float(np.clip(tooth_probs.mean(), 1.0e-12, 1.0))
+                            gum_mean = float(np.clip(gum_probs.mean(), 1.0e-12, 1.0))
+                            keep_by_prob = (np.log(tooth_mean) - np.log(gum_mean)) > 0.4
+                        if keep_by_size or keep_by_prob:
                             continue
                         neighbor_labels = [n for n in neighbors if n != label_val]
                         if neighbor_labels:
                             replacement = int(np.bincount(np.asarray(neighbor_labels, dtype=np.int32)).argmax())
                         else:
                             replacement = label_val
-                        lab[np.asarray(comp, dtype=np.int32)] = replacement
+                        lab[comp_indices] = replacement
 
             labels_flat = lab
             if fine_barycenters.shape[0] == labels_flat.shape[0]:
@@ -700,11 +718,27 @@ if __name__ == '__main__':
                 if not changed:
                     break
 
-            fine_labels = labels_flat.reshape(-1, 1)
-            # -------------------------------------------
+            refined_labels_fine = labels_flat.astype(np.int32)
+            fine_mesh_output = attach_label_data(mesh.clone(), refined_labels_fine)
+            vedo.write(fine_mesh_output, os.path.join(output_path, '{}_fine_predicted_refined.vtp'.format(i_sample[:-4])))
 
-            mesh = attach_label_data(mesh, fine_labels)
-            vedo.write(mesh, os.path.join(output_path, '{}_predicted_refined.vtp'.format(i_sample[:-4])))
+            projector = NearestNeighbors(n_neighbors=1)
+            projector.fit(fine_barycenters)
+            orig_barycenters = mesh_original.cell_centers().points.copy()
+            nn_idx = projector.kneighbors(orig_barycenters, return_distance=False).reshape(-1)
+
+            argmax_original = fine_argmax_labels[nn_idx]
+            gc_only_original = gc_only_labels_fine[nn_idx]
+            refined_original = refined_labels_fine[nn_idx]
+
+            mesh_argmax = attach_label_data(mesh_original.clone(), argmax_original)
+            vedo.write(mesh_argmax, os.path.join(output_path, '{}_fine_argmax.vtp'.format(i_sample[:-4])))
+
+            mesh_gc_only = attach_label_data(mesh_original.clone(), gc_only_original)
+            vedo.write(mesh_gc_only, os.path.join(output_path, '{}_gc_only.vtp'.format(i_sample[:-4])))
+
+            mesh_refined = attach_label_data(mesh_original.clone(), refined_original)
+            vedo.write(mesh_refined, os.path.join(output_path, '{}_predicted_refined.vtp'.format(i_sample[:-4])))
 
             #remove tmp folder
             shutil.rmtree(tmp_path)
