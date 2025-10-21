@@ -1,4 +1,4 @@
-# Deepcare Orthodontics Pipeline
+# Dental Orthodontics Pipeline
 
 One-stop pipeline for intraoral 3D scans that delivers tooth segmentation and landmark annotation, already packaged for API deployment.
 
