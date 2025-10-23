@@ -22,7 +22,19 @@ def _extract_landmarks(payload: Dict) -> Dict[str, List[float]]:
     return landmarks
 
 
-def core(path_a: str, path_b: str, include_intermediate: bool = False) -> Dict:
+def _group_landmarks(landmarks: Dict[str, List[float]]) -> Dict[str, Dict[str, List[float]]]:
+    """Group landmarks into upper/lower buckets based on label prefix."""
+
+    grouped: Dict[str, Dict[str, List[float]]] = {"upper": {}, "lower": {}}
+    for label, coords in landmarks.items():
+        if label.startswith(("1", "2")):
+            grouped["upper"][label] = coords
+        elif label.startswith(("3", "4")):
+            grouped["lower"][label] = coords
+    return grouped
+
+
+def core(path_a: str, path_b: str, include_intermediate: bool = False) -> Dict[str, Dict[str, List[float]]]:
     a = Path(path_a)
     b = Path(path_b)
     if not a.exists():
@@ -44,23 +56,12 @@ def core(path_a: str, path_b: str, include_intermediate: bool = False) -> Dict:
     landmarks.update(up_landmarks)
     landmarks.update(low_landmarks)
 
-    response: Dict[str, object] = {
-        "result": landmarks,
-        "result_plain": json.dumps(landmarks, ensure_ascii=False),
-    }
+    grouped = _group_landmarks(landmarks)
 
-    if include_intermediate:
-        response["artifacts"] = {
-            "workdir": str(workdir_path),
-            "vtp_a": outputs["vtp_a"],
-            "vtp_b": outputs["vtp_b"],
-            "json_a": outputs["json_a"],
-            "json_b": outputs["json_b"],
-        }
-    else:
-        if workdir_path.exists():
-            shutil.rmtree(workdir_path, ignore_errors=True)
-    return response
+    if not include_intermediate and workdir_path.exists():
+        shutil.rmtree(workdir_path, ignore_errors=True)
+
+    return grouped
 
 
 __all__ = ["core"]

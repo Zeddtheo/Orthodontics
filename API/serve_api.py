@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, List
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
@@ -35,8 +35,8 @@ class PipelineRequest(BaseModel):
 
 
 class PipelineResponse(BaseModel):
-    result: Dict[str, Any]
-    artifacts: Optional[Dict[str, Any]] = None
+    upper: Dict[str, List[float]] = Field(default_factory=dict)
+    lower: Dict[str, List[float]] = Field(default_factory=dict)
 
 
 @app.get("/healthz", tags=["system"])
@@ -46,7 +46,7 @@ def health_check() -> Dict[str, str]:
 
 
 @app.post("/pipeline", response_model=PipelineResponse, tags=["pipeline"])
-def run_pipeline(request: PipelineRequest) -> Dict[str, Any]:
+def run_pipeline(request: PipelineRequest) -> Dict[str, Dict[str, List[float]]]:
     """
     Execute the segmentation + landmark pipeline.
     """
@@ -61,4 +61,4 @@ def run_pipeline(request: PipelineRequest) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return dict(payload)
+    return payload

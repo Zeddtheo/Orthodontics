@@ -29,7 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--keep-intermediate",
         "--keep",
         action="store_true",
-        help="Keep intermediate artifacts in the result instead of auto-cleaning.",
+        help="Keep intermediate artifacts on disk instead of auto-cleaning.",
     )
     parser.add_argument(
         "--pretty",
@@ -39,11 +39,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _serialize_payload(payload: dict[str, object], keep_intermediate: bool, pretty: bool) -> str:
-    if keep_intermediate:
-        data = payload
-    else:
-        data = payload["result"]
+def _serialize_payload(payload: dict[str, object], pretty: bool) -> str:
+    data = payload
     indent = 2 if pretty else None
     return json.dumps(data, ensure_ascii=False, indent=indent)
 
@@ -64,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[ERROR] Pipeline failed: {exc}", file=sys.stderr)
         return 1
 
-    json_text = _serialize_payload(payload, args.keep_intermediate, args.pretty)
+    json_text = _serialize_payload(payload, args.pretty)
 
     if args.output:
         output_path = Path(args.output).resolve()

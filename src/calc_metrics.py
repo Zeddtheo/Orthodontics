@@ -682,7 +682,7 @@ def compute_spee(landmarks: Dict[str, List[float]], ops: Dict, dec:int=1) -> Dic
 # =========================
 # 8) Midline — 上/下中线 x 偏移
 # =========================
-def compute_midline_alignment(landmarks: Dict[str, List[float]], ops: Dict, dec:int=0) -> Dict:
+def compute_midline_alignment(landmarks: Dict[str, List[float]], ops: Dict, dec:int=1) -> Dict:
     def _mid_star(t1, t2):
         _, a = _star_mid(landmarks, t1); _, b = _star_mid(landmarks, t2)
         if a is None or b is None: return None
@@ -692,7 +692,8 @@ def compute_midline_alignment(landmarks: Dict[str, List[float]], ops: Dict, dec:
         return {'summary_text': 'Midline_Alignment_牙列中线*: 缺失', 'quality':'missing'}
     dU = ops['x'](U);  dL = ops['x'](L)
     def _txt(v, arch):
-        if abs(v) < 1e-6: return f"{arch}中线居中"
+        if abs(v) < 0.5:
+            return f"{arch}中线居中"
         return f"{arch}中线{'右偏' if v>0 else '左偏'}{abs(round(v,dec))}mm"
     return {'summary_text': f"Midline_Alignment_牙列中线*: {_txt(dU,'上')} {_txt(dL,'下')}", 'quality':'ok'}
 
@@ -712,15 +713,22 @@ def compute_molar_relationship(landmarks: Dict[str, List[float]], ops: Dict, wt_
         q = (W/4.0 if W else 2.5)
         h = (W/2.0 if W else 5.0)
         tau = 0.5
-        lab = None
-        if abs(off) <= tau: lab='中性'
-        elif 0 < off < q: lab='中性偏近中'
-        elif -q < off < 0: lab='中性偏远中'
-        elif abs(off - (+q)) <= tau: lab='近中尖对尖'
-        elif abs(off - (-q)) <= tau: lab='远中尖对尖'
-        elif (off >= h - tau): lab='完全近中'
-        elif (off <= -h + tau): lab='完全远中'
-        else: lab='介于分度之间'
+        if abs(off) <= tau:
+            lab = '中性'
+        else:
+            if off > 0:
+                candidates = [
+                    ('完全近中', abs(off - h)),
+                    ('近中尖对尖', abs(off - q)),
+                    ('中性偏近中', abs(off - 0.0)),
+                ]
+            else:
+                candidates = [
+                    ('完全远中', abs(off + h)),
+                    ('远中尖对尖', abs(off + q)),
+                    ('中性偏远中', abs(off - 0.0)),
+                ]
+            lab = min(candidates, key=lambda x: x[1])[0]
         return {'offset_mm': round(off,dec), 'label': lab, 'q_mm': round(q,1), 'h_mm': round(h,1)}
 
     R = _one('16mb','46bg','46mc','46dc')
@@ -1042,18 +1050,108 @@ def make_doctor_cn_simple(
     else:
         out['Crossbite'] = '缺失'
 
-    # 6) 拥挤度（数值：正=拥挤，负=间隙）
-    def _ald(which: str) -> Optional[float]:
-        if not _ok(crowding):
+    # 6) 拥挤度（整弓 + 前牙 3-3）
+    def _crowding_section(which: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(crowding, dict):
             return None
-        section = crowding.get(which) or {}
-        val = section.get('ald_mm')
+        return crowding.get(which) or None
+
+    def _ald(which: str) -> Optional[float]:
+        section = _crowding_section(which)
+        val = section.get('ald_mm') if isinstance(section, dict) else None
         if isinstance(val, (int, float)):
             return float(round(val, 1))
         return None
 
-    out['Crowding_Up'] = _ald('upper')
-    out['Crowding_Down'] = _ald('lower')
+    def _resolve_tag(tag: str) -> Optional[np.ndarray]:
+        if tag.endswith('*') and len(tag) >= 3:
+            _, point = _star_mid(landmarks, tag[:2])
+            return point
+        return _v(landmarks.get(tag))
+
+    anterior_chain = {
+        'upper': ['13m', '12*', '11*', '21*', '22*', '23m'],
+        'lower': ['33m', '32*', '31*', '41*', '42*', '43m'],
+    }
+    anterior_teeth = {
+        'upper': ['13', '12', '11', '21', '22', '23'],
+        'lower': ['33', '32', '31', '41', '42', '43'],
+    }
+
+    def _anterior_ald(which: str) -> Optional[float]:
+        chain = anterior_chain.get(which)
+        teeth = anterior_teeth.get(which)
+        if not chain or not teeth:
+            return None
+        pts = [_resolve_tag(tag) for tag in chain]
+        if any(p is None for p in pts):
+            return None
+        arc = 0.0
+        H = ops.get('H')
+        if not callable(H):
+            return None
+        for a, b in zip(pts[:-1], pts[1:]):
+            arc += H(a, b)
+        if not callable(wt):
+            return None
+        width_sum = 0.0
+        for tooth in teeth:
+            w = wt(tooth, allow_fallback=True)
+            if w is None:
+                return None
+            width_sum += w
+        return float(round(width_sum - arc, 1))
+
+    def _format_full_arch(val: Optional[float]) -> str:
+        if not isinstance(val, (int, float)):
+            return '缺失'
+        v = round(float(val), 1)
+        if v > 0:
+            signed = f"+{v:.1f}"
+            label = '拥挤'
+        elif v < 0:
+            signed = f"{v:.1f}"
+            label = '间隙'
+        else:
+            signed = f"{v:.1f}"
+            label = '无拥挤'
+        return f"{signed}mm_{label}"
+
+    def _format_anterior(val: Optional[float]) -> str:
+        if not isinstance(val, (int, float)):
+            return '缺失'
+        v = round(float(val), 1)
+        if v > 0:
+            signed = f"+{v:.1f}"
+            abs_v = abs(v)
+            if abs_v < 4:
+                grade = 'I度拥挤'
+            elif abs_v < 8:
+                grade = 'II度拥挤'
+            else:
+                grade = 'III度拥挤'
+            label = grade
+        elif v < 0:
+            signed = f"{v:.1f}"
+            label = '间隙'
+        else:
+            signed = f"{v:.1f}"
+            label = '无拥挤'
+        return f"{signed}mm_{label}"
+
+    def _crowding_summary(which: str) -> str:
+        whole_txt = _format_full_arch(_ald(which))
+        anterior_txt = _format_anterior(_anterior_ald(which))
+        if whole_txt == '缺失' and anterior_txt == '缺失':
+            return '缺失'
+        return f'整弓:"{whole_txt}" 前牙:"{anterior_txt}"'
+
+    if _ok(crowding):
+        out['Crowding_Up'] = _crowding_summary('upper')
+        out['Crowding_Down'] = _crowding_summary('lower')
+    else:
+        out['Crowding_Up'] = '缺失'
+        out['Crowding_Down'] = '缺失'
 
     # 7) Spee
     spee_value = spee_info.get('value_mm') if isinstance(spee_info, dict) else None
@@ -1117,11 +1215,14 @@ def make_doctor_cn_simple(
 
     # 10) Overbite
     if _ok(overbite):
-        category = overbite.get('category') or '缺失'
-        if cfg.get('ob_simple', True):
-            out['Overbite'] = '正常' if category in ('对刃', '轻度覆𬌗') else category
+        category = overbite.get('category')
+        value = overbite.get('value_mm')
+        if isinstance(value, (int, float)) and isinstance(category, str) and category:
+            magnitude = abs(float(value))
+            note = '（正常范围）' if category in ('对刃', '轻度覆𬌗') else ''
+            out['Overbite'] = f"{magnitude:.1f}mm_{category}{note}"
         else:
-            out['Overbite'] = category
+            out['Overbite'] = '缺失'
     else:
         out['Overbite'] = '缺失'
 
