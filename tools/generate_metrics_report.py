@@ -18,67 +18,55 @@ def _resolve_src_path() -> Path:
     return repo_root / "src"
 
 
-def _format_metrics_markdown(
+KEY_ORDER = [
+    "Arch_Form",
+    "Arch_Width",
+    "Bolton_Ratio_Front",
+    "Bolton_Ratio_All",
+    "Canine_Relationship_Right",
+    "Canine_Relationship_Left",
+    "Crossbite",
+    "Crowding_Up",
+    "Crowding_Down",
+    "Curve_of_Spee",
+    "Midline_Alignment",
+    "Molar_Relationship_Right",
+    "Molar_Relationship_Left",
+    "Overbite",
+    "Overjet",
+]
+
+
+def _build_report_data(
     report_title: str,
     entries: Iterable[Tuple[str, List[Path], dict]],
-) -> str:
-    lines = [f"# {report_title}", ""]
+) -> List[str]:
+    blocks: List[str] = []
     for label, sources, metrics in entries:
-        lines.append(f"## {label}")
-        lines.append("")
-        if sources:
-            joined = ", ".join(p.as_posix() for p in sources)
-            lines.append(f"_Sources_: {joined}")
-            lines.append("")
-        lines.append("")
-        if not metrics:
-            lines.append("_无可用指标输出_")
-            lines.append("")
-            continue
-        key_order = [
-            "Arch_Form",
-            "Arch_Width",
-            "Bolton_Ratio",
-            "Canine_Relationship_Right",
-            "Canine_Relationship_Left",
-            "Crossbite",
-            "Crowding_Up",
-            "Crowding_Down",
-            "Curve_of_Spee",
-            "Midline_Alignment",
-            "Molar_Relationship_Right",
-            "Molar_Relationship_Left",
-            "Overbite",
-            "Overjet",
-        ]
-        for key in key_order:
-            value = metrics.get(key, "缺失")
-            if key == "Bolton_Ratio":
-                anterior_val = value
+        metrics_payload: Dict[str, Any] = {}
+        for key in KEY_ORDER:
+            if key == "Bolton_Ratio_Front":
+                metrics_payload[key] = str(metrics.get("Bolton_Ratio", "缺失"))
+            elif key == "Bolton_Ratio_All":
                 overall_raw = metrics.get("Bolton_Overall_Ratio")
                 if isinstance(overall_raw, (int, float)):
-                    overall_display = f"{overall_raw / 100:.2f}"
+                    metrics_payload[key] = f"{overall_raw / 100:.2f}"
                 elif overall_raw is None:
-                    overall_display = "缺失"
+                    metrics_payload[key] = "缺失"
                 else:
-                    overall_display = overall_raw
-                if isinstance(anterior_val, str):
-                    anterior_display = f"\"{anterior_val}\""
-                else:
-                    anterior_display = json.dumps(anterior_val, ensure_ascii=False)
-                if isinstance(overall_display, str):
-                    overall_display = f"\"{overall_display}\""
-                else:
-                    overall_display = json.dumps(overall_display, ensure_ascii=False)
-                lines.append(f"- **Bolton_Ratio**: 前牙比:{anterior_display} 全牙比:{overall_display}")
-                continue
-            if isinstance(value, str):
-                rendered = value
+                    metrics_payload[key] = overall_raw
             else:
-                rendered = json.dumps(value, ensure_ascii=False)
-            lines.append(f"- **{key}**: {rendered}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+                metrics_payload[key] = metrics.get(key, "缺失")
+        lines: List[str] = []
+        for key in KEY_ORDER:
+            val = metrics_payload.get(key)
+            if isinstance(val, str):
+                val_str = val
+            else:
+                val_str = json.dumps(val, ensure_ascii=False)
+            lines.append(f"{key}: {val_str}")
+        blocks.append("\n".join(lines))
+    return blocks
 
 
 def main() -> int:
@@ -159,11 +147,10 @@ def main() -> int:
             metrics = calc_metrics.generate_metrics(str(path), cfg=cfg or None)
             entries.append((path.as_posix(), [path], metrics))
 
-    output_md = _format_metrics_markdown(args.title, entries)
-
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(output_md, encoding="utf-8")
+    blocks = _build_report_data(args.title, entries)
+    out_path.write_text("\n\n".join(blocks), encoding="utf-8")
 
     print(f"Wrote metrics for {len(entries)} files → {out_path}")
     return 0
