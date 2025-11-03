@@ -14,6 +14,70 @@ from typing import Dict, List, Optional, Tuple, Any, Union, Set, Iterable
 import numpy as np
 import json, os, re
 
+def _lower_midline_anchor_for_relationships(
+    landmarks: Dict[str, List[float]], ops: Dict, cfg: Optional[Dict[str, Any]] = None
+) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
+    """
+    估计 *用于定向* 的“下颌前段中线锚点” A_L（不影响 compute_midline_alignment）：
+      使用三对对称点（避免 mc/dc）：
+        (41*, 31*), (42*, 32*), (43m, 33m)
+      在 P 面求中点并做加权平均；权重=1/(RMSE^2 + eps0^2)，RMSE 可从 cfg['pt_error_mm'] 注入（键如 '31ma','33m'）。
+    """
+    cfg = cfg or {}
+    pt_error = cfg.get('pt_error_mm', {}) or {}
+    eps0 = float(cfg.get('midline_anchor_eps0_mm', 0.2))
+
+    def _safe_v(p):
+        if isinstance(p, (list, tuple, np.ndarray)) and len(p) == 3:
+            try: return np.asarray(p, float)
+            except Exception: return None
+        return None
+
+    def _label_err(label: str, default_kind: float) -> float:
+        if label in pt_error: return float(pt_error[label])
+        # 粗略后备：按后缀类型给个缺省噪声级
+        for suf, val in (('mc',1.0),('dc',0.9),('ma',0.7),('da',0.7),('mb',0.7),('db',0.7),('ml',0.7),('dl',0.7),('m',0.6),('b',0.6)):
+            if label.endswith(suf): return val
+        return default_kind
+
+    def _pair_center(left_label: str, right_label: str, kind: str) -> Tuple[Optional[np.ndarray], float, List[str]]:
+        used = []
+        if kind == 'star':
+            # 用你已有的 _star_mid；内部已处理缺失回退到 m
+            _, Ls = _star_mid(landmarks, left_label[:-1])   # '41*' -> '41'
+            _, Rs = _star_mid(landmarks, right_label[:-1])
+            L, R = Ls, Rs
+            if L is not None: used.append(left_label)
+            if R is not None: used.append(right_label)
+            eL = min(_label_err(left_label[:-1]+'ma', 0.7), _label_err(left_label[:-1]+'da', 0.7))
+            eR = min(_label_err(right_label[:-1]+'ma',0.7), _label_err(right_label[:-1]+'da',0.7))
+        else:
+            L = _safe_v(landmarks.get(left_label))
+            R = _safe_v(landmarks.get(right_label))
+            if L is not None: used.append(left_label)
+            if R is not None: used.append(right_label)
+            eL = _label_err(left_label, 0.6 if kind in ('m','b') else 0.7)
+            eR = _label_err(right_label, 0.6 if kind in ('m','b') else 0.7)
+
+        if (L is None) or (R is None):
+            return None, 0.0, used
+        center = 0.5*(ops['projP'](L) + ops['projP'](R))
+        eps = 0.5*(eL + eR)
+        w = 1.0 / (eps*eps + eps0*eps0)
+        return center, float(w), used
+
+    pairs = [('41*','31*','star'), ('42*','32*','star'), ('43m','33m','m')]
+    centers, weights, used_pairs = [], [], []
+    for L, R, kind in pairs:
+        c, w, used = _pair_center(L, R, kind)
+        used_pairs.append({'pair': (L,R), 'kind': kind, 'weight': w, 'used': used})
+        if c is not None and w > 0: centers.append(c*w); weights.append(w)
+
+    if not weights or sum(weights) <= 0:
+        return None, {'status': 'missing', 'used_pairs': used_pairs}
+    A_L = np.sum(centers, axis=0) / float(sum(weights))
+    return A_L, {'status': 'ok', 'used_pairs': used_pairs, 'eps0': eps0}
+
 # =========================
 # 工具 & 常量
 # =========================
@@ -58,52 +122,53 @@ def _star_mid(landmarks: Dict[str, List[float]], tooth: str) -> Tuple[List[str],
         return [f"{tooth}m"], m
     return [], None
 
-_JAW_PREFIX_RE = re.compile(r"^(upper|lower)[_\-]?(\d.*)$", flags=re.IGNORECASE)
+def _apply_polarity_guard(
+    landmarks: Dict[str, List[float]],
+    cfg: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    """
+    牙位极性快检：针对 11/21/31/41 的 mc↔dc 极性异常执行就地修补。
+    规则：
+      - 预判阈值 δx（默认 2.5mm），以及最小间距阈值（默认 2.0mm）。
+      - 当触发条件满足且间距足够时，交换 mc 与 dc 的坐标。
+    返回触发记录列表，便于后续记录与排查。
+    """
+    cfg = cfg or {}
+    swap_dx = float(cfg.get('polarity_swap_dx_mm', 2.5))
+    min_gap = float(cfg.get('polarity_min_gap_mm', 2.0))
+    actions: List[Dict[str, Any]] = []
 
-def _robust_ap_offset(landmarks, ops, upper_labels, lower_labels, hard_clip_mm=12.0):
-    """
-    计算“上参考点 vs 下参考点”的前后(Ŷ)位移，使用多个候选点名的组合，
-    - 过滤缺失
-    - 去除绝对异常值（>|hard_clip_mm|）
-    - 以中位数作为偏移量
-    返回 (dy_mm, debug_info)
-    """
-    cand_pairs = []
-    for u_nm in upper_labels:
-        u = _v(landmarks.get(u_nm))
-        if u is None: continue
-        for l_nm in lower_labels:
-            l = _v(landmarks.get(l_nm))
-            if l is None: continue
-            dy = ops['y'](u) - ops['y'](l)
-            cand_pairs.append((u_nm, l_nm, float(dy)))
-    debug = {'pairs': cand_pairs.copy(), 'used_pairs': [], 'IQR_mm': None, 'n': 0}
-    if not cand_pairs:
-        return None, debug
-    # 硬截断
-    cand_pairs = [p for p in cand_pairs if abs(p[2]) <= hard_clip_mm]
-    if not cand_pairs:
-        return None, debug
-    vals = np.array([p[2] for p in cand_pairs], dtype=float)
-    # IQR 去异常
-    q1, q3 = np.percentile(vals, [25, 75])
-    iqr = float(q3 - q1)
-    lo, hi = q1 - 1.5*iqr, q3 + 1.5*iqr
-    keep = [(u,l,v) for (u,l,v) in cand_pairs if lo <= v <= hi]
-    if keep:
-        vals2 = np.array([p[2] for p in keep], dtype=float)
-        med = float(np.median(vals2))
-        debug.update({'used_pairs': keep, 'IQR_mm': float(iqr), 'n': len(keep)})
-        return med, debug
-    # IQR全剔则回退：均值±2.5mm
-    mu = float(np.mean(vals))
-    keep = [(u,l,v) for (u,l,v) in cand_pairs if abs(v - mu) <= 2.5]
-    if keep:
-        vals2 = np.array([p[2] for p in keep], dtype=float)
-        med = float(np.median(vals2))
-        debug.update({'used_pairs': keep, 'IQR_mm': None, 'n': len(keep)})
-        return med, debug
-    return float(np.median(vals)), debug
+    def _swap_if_needed(tooth: str, cond) -> None:
+        key_mc = f"{tooth}mc"
+        key_dc = f"{tooth}dc"
+        pt_mc = landmarks.get(key_mc)
+        pt_dc = landmarks.get(key_dc)
+        if not (_is_xyz(pt_mc) and _is_xyz(pt_dc)):
+            return
+        x_mc = float(pt_mc[0])
+        x_dc = float(pt_dc[0])
+        gap = abs(x_mc - x_dc)
+        if gap < min_gap:
+            return
+        if not cond(x_mc, x_dc):
+            return
+        landmarks[key_mc], landmarks[key_dc] = pt_dc, pt_mc
+        actions.append({
+            'tooth': tooth,
+            'action': 'swap_mc_dc',
+            'x_mc_before_mm': x_mc,
+            'x_dc_before_mm': x_dc,
+            'delta_mm': gap,
+            'swap_dx_mm': swap_dx,
+        })
+
+    _swap_if_needed('11', lambda x_mc, x_dc: x_mc <= x_dc - swap_dx)
+    _swap_if_needed('21', lambda x_mc, x_dc: x_mc >= x_dc + swap_dx)
+    _swap_if_needed('31', lambda x_mc, x_dc: x_mc >= x_dc + swap_dx)
+    _swap_if_needed('41', lambda x_mc, x_dc: x_mc <= x_dc - swap_dx)
+    return actions
+
+_JAW_PREFIX_RE = re.compile(r"^(upper|lower)[_\-]?(\d.*)$", flags=re.IGNORECASE)
 
 def _normalise_label(label: Any) -> Optional[str]:
     if not isinstance(label, str):
@@ -313,139 +378,127 @@ def build_module0(landmarks: Dict[str, List[float]]) -> Dict[str, Any]:
 # =========================
 # 1) Arch Form — 仅犬牙转折角 α_avg
 # =========================
-def compute_arch_form(landmarks: Dict[str, List[float]], frame: Dict, ops: Dict, dec:int=1) -> Dict:
-    def _get(nm: str) -> Optional[np.ndarray]:
-        return _v(landmarks.get(nm))
+def compute_arch_form(landmarks, frame, ops, dec=2, cfg=None):
+    cfg = cfg or {}
+    def _v(nm): 
+        p = landmarks.get(nm); 
+        return np.asarray(p, float) if isinstance(p,(list,tuple,np.ndarray)) and len(p)==3 else None
+    def _mid2(a,b):
+        pa,pb=_v(a),_v(b); 
+        return 0.5*(pa+pb) if (pa is not None and pb is not None) else None
+    def _dist_to_line_P(P, A, B):
+        # all in 3D → 投影到 P
+        Ap, Bp, Pp = ops['projP'](A), ops['projP'](B), ops['projP'](P)
+        u = Bp - Ap; v = Pp - Ap
+        if np.linalg.norm(u) < 1e-9: return None
+        t = np.dot(u, v)/np.dot(u,u); Q = Ap + t*u
+        return float(np.linalg.norm(Pp - Q))
 
-    def _prefer(*names: str) -> Optional[np.ndarray]:
-        for nm in names:
-            pt = _v(landmarks.get(nm))
-            if pt is not None:
-                return pt
-        return None
+    # --- R：宽/深比 ---
+    UCI = _mid2('11ma','21ma'); UCI2 = _mid2('11da','21da')
+    if UCI is None or UCI2 is None:
+        # 回退：星点（脚本已有 *_star_mid）
+        _, s11 = _star_mid(landmarks, '11'); _, s21 = _star_mid(landmarks, '21')
+        if s11 is None or s21 is None: 
+            return {'form':'缺失','summary_text':'Arch_Form_v2*: 缺失','quality':'missing'}
+        UCI = 0.5*(s11+s21)
+    C_R, C_L = _v('13m'), _v('23m')
+    _tmp = _v('16mc')
+    M_R = _tmp if _tmp is not None else _v('16mb')
+    _tmp = _v('26mc')
+    M_L = _tmp if _tmp is not None else _v('26mb')
+    if any(x is None for x in (C_R, C_L, M_R, M_L)):
+        return {'form':'缺失','summary_text':'Arch_Form_v2*: 缺失','quality':'missing'}
+    Wc = ops['H'](C_R, C_L);  Wm = ops['H'](M_R, M_L)
+    Dc = _dist_to_line_P(UCI, C_R, C_L);  Dm = _dist_to_line_P(UCI, M_R, M_L)
+    if any(x is None for x in (Wc, Wm, Dc, Dm)) or min(Wc, Wm, Dc, Dm) < 1e-6:
+        return {'form':'缺失','summary_text':'Arch_Form_v2*: 缺失','quality':'missing'}
+    R = (Wc/Wm)/(Dc/Dm)
 
-    # 侧切缘中点
-    _, U12 = _star_mid(landmarks, '12')
-    _, U22 = _star_mid(landmarks, '22')
-    A_R, A_L = U12, U22
-    # 尖牙尖点
-    B_R = _get('13m')
-    B_L = _get('23m')
-    # C 点：优先 mr → mc → b
-    C_R = _prefer('14mr', '14mc', '14b')
-    C_L = _prefer('24mr', '24mc', '24b')
+    # --- K：前/后段曲率比（基于牙间中点链） ---
+    # 上弓 6–6 牙序
+    U_TEETH_66 = ['16','15','14','13','12','11','21','22','23','24','25','26']
+    # 构造节点：端点 16mc/26mc；中间 0.5*(a.dc + b.mc)；跨中线 0.5*(11mc + 21mc)
+    nodes = []
+    _tmp = _v('16mc')
+    A = _tmp if _tmp is not None else _v('16mb')
+    _tmp = _v('26mc')
+    B = _tmp if _tmp is not None else _v('26mb')
+    if A is None or B is None: 
+        return {'form':'缺失','summary_text':'Arch_Form_v2*: 缺失','quality':'missing'}
+    nodes.append(A)
+    for a,b in zip(U_TEETH_66[:-1], U_TEETH_66[1:]):
+        if a=='11' and b=='21':
+            _tmpm = _mid2('11mc','21mc')
+            mid = _tmpm if _tmpm is not None else _mid2('11m','21m')
+        else:
+            pa = _v(f'{a}dc')
+            if pa is None:
+                pa = _v(f'{a}dr')
+            if pa is None:
+                pa = _v(f'{a}m')
+            pb = _v(f'{b}mc')
+            if pb is None:
+                pb = _v(f'{b}mr')
+            if pb is None:
+                pb = _v(f'{b}m')
+            mid = 0.5*(pa+pb) if (pa is not None and pb is not None) else None
+        if mid is None: return {'form':'缺失','summary_text':'Arch_Form_v2*: 缺失','quality':'missing'}
+        nodes.append(mid)
+    nodes.append(B)
 
-    if any(pt is None for pt in (A_R, A_L, B_R, B_L, C_R, C_L)):
-        return {
-            'form': '缺失',
-            'indices': {},
-            'summary_text': 'Arch_Form_牙弓形态*: 缺失',
-            'quality': 'missing',
-        }
+    # 投影到 P → 2D
+    XY = np.array([[ops['x'](ops['projP'](p)), ops['y'](ops['projP'](p))] for p in nodes], float)
+    # 等弧长插值（Catmull-Rom centripetal）
+    def _catmull_rom(xy, n=300, alpha=0.5):
+        P = xy.copy()
+        if len(P) < 4:  # 端点复制保证至少4点
+            P = np.vstack([P[0], P, P[-1], P[-1]])
+        t = [0.0]
+        for i in range(1, len(P)):
+            t.append(t[-1] + np.linalg.norm(P[i]-P[i-1])**alpha)
+        t = np.array(t)
+        ts = np.linspace(t[1], t[-2], n)
+        out=[]
+        for u in ts:
+            # 找到区间 k: t[k] <= u <= t[k+1], 取 p_{k-1..k+2}
+            k = np.searchsorted(t, u) - 1
+            k = max(1, min(k, len(P)-3))
+            t0,t1,t2,t3 = t[k-1],t[k],t[k+1],t[k+2]
+            p0,p1,p2,p3 = P[k-1],P[k],P[k+1],P[k+2]
+            def lerp(a,b,ta,tb,tu): 
+                w = (tu-ta)/(tb-ta); return (1-w)*a + w*b
+            A1 = lerp(p0,p1,t0,t1,u); A2 = lerp(p1,p2,t1,t2,u); A3 = lerp(p2,p3,t2,t3,u)
+            B1 = lerp(A1,A2,t0,t2,u); B2 = lerp(A2,A3,t1,t3,u)
+            C  = lerp(B1,B2,t1,t2,u)
+            out.append(C)
+        return np.asarray(out)
+    S = _catmull_rom(XY, n=400)
 
-    def _angle(A, B, C):
-        # 在 P 面计算 ∠ABC
-        Ap = ops['projP'](A); Bp = ops['projP'](B); Cp = ops['projP'](C)
-        u = Ap - Bp; v = Cp - Bp
-        nu, nv = _len(u), _len(v)
-        if nu<EPS or nv<EPS: return None
-        c = np.clip(_dot(u, v)/(nu*nv), -1.0, 1.0)
-        return float(np.degrees(np.arccos(c)))
+    # 曲率（离散二阶差分近似）
+    V1 = np.gradient(S, axis=0); V2 = np.gradient(V1, axis=0)
+    speed = np.linalg.norm(V1, axis=1) + 1e-9
+    kappa = np.abs(V1[:,0]*V2[:,1] - V1[:,1]*V2[:,0]) / (speed**3)
+    # 分段中位数
+    n = len(kappa); 
+    front = kappa[int(n*0.40):int(n*0.60)];  post = np.hstack([kappa[:int(n*0.15)], kappa[int(n*0.85):]])
+    if len(front)==0 or len(post)==0: 
+        return {'form':'缺失','summary_text':'Arch_Form_v2*: 缺失','quality':'missing'}
+    K = float(np.median(front) / (np.median(post)+1e-9))
 
-    def _range_distance(val: float) -> float:
-        if val is None:
-            return float('inf')
-        if 140.0 <= val <= 175.0:
-            return 0.0
-        if val < 140.0:
-            return 140.0 - val
-        return val - 175.0
-
-    def _robust_average(angle_map: Dict[str, Optional[float]]) -> Tuple[Optional[float], Dict[str, float]]:
-        valid = {side: ang for side, ang in angle_map.items() if isinstance(ang, (int, float))}
-        if not valid:
-            return None, {}
-        if len(valid) == 1:
-            side, val = next(iter(valid.items()))
-            return float(val), {side: float(val)}
-        vals = list(valid.values())
-        median = float(np.median(vals))
-        filtered = {side: ang for side, ang in valid.items() if abs(ang - median) <= 3.0}
-        if not filtered:
-            filtered = valid
-        avg = float(np.mean(list(filtered.values())))
-        return avg, filtered
-
-    angles_primary = {
-        'right': _angle(A_R, B_R, C_R),
-        'left': _angle(A_L, B_L, C_L),
-    }
-    if not any(isinstance(v, (int, float)) for v in angles_primary.values()):
-        return {
-            'form': '缺失',
-            'indices': {},
-            'summary_text': 'Arch_Form_牙弓形态*: 缺失',
-            'quality': 'missing',
-        }
-
-    valid_primary_vals = [v for v in angles_primary.values() if isinstance(v, (int, float))]
-    raw_avg_primary = float(np.mean(valid_primary_vals))
-
-    if valid_primary_vals and (raw_avg_primary >= 175.0 or raw_avg_primary <= 140.0):
-        # 尝试非常规回退（剔除 mr，改用 mc/b）
-        C_R_alt = _prefer('14mc', '14b')
-        C_L_alt = _prefer('24mc', '24b')
-        alt_angles = {
-            'right': _angle(A_R, B_R, C_R_alt) if C_R_alt is not None else None,
-            'left': _angle(A_L, B_L, C_L_alt) if C_L_alt is not None else None,
-        }
-        alt_valid = [v for v in alt_angles.values() if isinstance(v, (int, float))]
-        if alt_valid:
-            alt_avg = float(np.mean(alt_valid))
-            if _range_distance(alt_avg) + 1e-6 < _range_distance(raw_avg_primary):
-                angles_primary = alt_angles
-                raw_avg_primary = alt_avg
-            elif abs(_range_distance(alt_avg) - _range_distance(raw_avg_primary)) <= 1e-6:
-                # tie-break：选择更接近中间值（约156.5°）
-                if abs(alt_avg - 156.5) < abs(raw_avg_primary - 156.5):
-                    angles_primary = alt_angles
-                    raw_avg_primary = alt_avg
-
-    alpha_avg, used_angles = _robust_average(angles_primary)
-    if alpha_avg is None:
-        return {
-            'form': '缺失',
-            'indices': {},
-            'summary_text': 'Arch_Form_牙弓形态*: 缺失',
-            'quality': 'missing',
-        }
-
-    quality = 'ok'
-    valid_count = len([v for v in angles_primary.values() if isinstance(v, (int, float))])
-    if len(used_angles) == 0:
-        quality = 'missing'
-    elif len(used_angles) < valid_count:
-        quality = 'fallback'
-
-    # 分型阈值仍沿用 160/168° 经验口径
-    if alpha_avg <= 160.0:
-        form = '尖圆形'
-    elif alpha_avg >= 168.0:
-        form = '方圆形'
-    else:
-        form = '卵圆形'
-
-    indices = {'alpha_deg': round(alpha_avg, dec)}
-    if 'right' in used_angles:
-        indices['alpha_right_deg'] = round(used_angles['right'], dec)
-    if 'left' in used_angles:
-        indices['alpha_left_deg'] = round(used_angles['left'], dec)
+    # 组合判型（无监督/弱监督更稳的阈值带）
+    # 建议：在你们已有病例上对 R 与 K 分别做 1D K-means(k=3)得三段阈值；这里给一个保守初始带
+    r_lo, r_hi = 0.95, 1.05
+    k_lo, k_hi = 0.90, 1.15
+    if (R <= r_lo and K >= k_hi): form = '尖圆形'
+    elif (R >= r_hi and K <= k_lo): form = '方圆形'
+    else: form = '卵圆形'
 
     return {
         'form': form,
-        'indices': indices,
-        'summary_text': f"Arch_Form_牙弓形态*: {form}",
-        'quality': quality
+        'indices': {'R': round(R,3), 'K': round(K,3)},
+        'summary_text': f"Arch_Form_v2*: {form} (R={R:.3f}, K={K:.3f})",
+        'quality': 'ok'
     }
 
 # =========================
@@ -698,80 +751,115 @@ def compute_bolton(
 # 4) 尖牙关系 — 用 13m/23m 对 43dc/33dc 的 y 差
 # =========================
 def compute_canine_relationship(
-    landmarks: Dict[str, List[float]],
-    ops: Dict,
-    dec: int = 2,
-    cfg: Optional[Dict[str, Any]] = None,
+    landmarks: Dict[str, List[float]], ops: Dict, dec: int = 2, cfg: Optional[Dict[str, Any]] = None
 ) -> Dict:
     """
-    尖牙关系（统一咬合平面 P）：
-      右侧 dy = y(13m) - y(43dc)；左侧 dy = y(23m) - y(33dc)
-      - 上颌：仅 13m/23m；缺失则该侧缺失
-      - 下颌：dc 缺失回退 m（不再使用 dr）
-    分度（|dy| 单位 mm）：
-      |dy| ≤ neutral_tol         → 中性（尖对尖）
-      0.5 < |dy| < complete_tol 且 dy>0 → 远中尖对尖
-      0.5 < |dy| < complete_tol 且 dy<0 → 近中尖对尖
-      |dy| ≥ complete_tol 且 dy>0 → 完全远中
-      |dy| ≥ complete_tol 且 dy<0 → 完全近中
-    备注：build_module0 已保证 Ŷ=前+，因此 dy>0 表示下颌参照点相对上颌更“后/远中”。
+    【新版逻辑】
+    计算尖牙关系：比较上颌尖牙牙尖 (U) 的 Y 坐标（前后向）与
+    下颌尖牙远中点 (L1) 和第一前磨牙近中点 (L2) 连线中点 (Target) 的 Y 坐标。
+    
+    坐标系：Y 轴（前后），前为正 (ops['y'])。
+
+    偏移量 offset = y(U) - y(Target)
+    
+    - offset > 0: 上牙尖 U 在 目标邻接点 Target 的前方 → 远中关系 (Class II)
+    - offset < 0: 上牙尖 U 在 目标邻接点 Target 的后方 → 近中关系 (Class III)
+    - offset ≈ 0: 上牙尖 U 落在 目标邻接点 Target 处 → 中性关系 (Class I)
     """
     cfg = cfg or {}
+    
+    # 容差1：中性关系的容差（例如 ±0.5mm）
+    # 沿用旧版脚本的 cfg 设置
     neutral_tol = float(cfg.get("canine_neutral_tol_mm", 0.5))
-    complete_tol = float(cfg.get("canine_complete_tol_mm", 2.0))
+    
+    # 容差2：区分 "尖对尖" 和 "完全" 的阈值
+    # 默认为 2.5mm，可自定义
+    cusp_tol = float(cfg.get("canine_cusp_tol_mm", 2.5))
 
-    def _get(label: str) -> Optional[np.ndarray]:
-        return _v(landmarks.get(label))
+    # _v 是 calc_metrics.py 中的全局辅助函数，这里假设它可用
+    # def _v(a) -> Optional[np.ndarray]: ...
 
-    def _side(upper_m: str, lower_dc: str, lower_m: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-        dbg = {"upper": upper_m, "lower_candidates": [lower_dc, lower_m]}
-        U = _get(upper_m)
-        if U is None:
-            dbg["status"] = "missing_upper"
+    def _one(side: str, U_label: str, L_canine_label: str, L_premolar_label: str):
+        """计算单侧关系"""
+        dbg = {'side': side, 'labels': [U_label, L_canine_label, L_premolar_label]}
+
+        # 1. 获取所有需要的点
+        U = _v(landmarks.get(U_label))
+        L1 = _v(landmarks.get(L_canine_label))
+        L2 = _v(landmarks.get(L_premolar_label))
+
+        # 2. 检查缺失
+        if U is None or L1 is None or L2 is None:
+            missing = []
+            if U is None: missing.append(U_label)
+            if L1 is None: missing.append(L_canine_label)
+            if L2 is None: missing.append(L_premolar_label)
+            dbg['status'] = f"missing_landmarks: {','.join(missing)}"
             return None, dbg
-        L = _get(lower_dc)
-        used_lower = lower_dc
-        if L is None:
-            L = _get(lower_m)
-            used_lower = lower_m if L is not None else None
-        if L is None:
-            dbg["status"] = "missing_lower"
+
+        # 3. 仅比较 Y 轴（前后）坐标
+        try:
+            y_U = float(ops['y'](U))
+            y_L1 = float(ops['y'](L1))
+            y_L2 = float(ops['y'](L2))
+        except Exception as e:
+            dbg['status'] = f"ops_y_failed: {e}"
             return None, dbg
 
-        dy = float(ops['y'](U) - ops['y'](L))
-        ady = abs(dy)
+        # 4. 计算下颌目标邻接点 (e.g., 43dc 和 44mc) 的 Y 轴中点
+        y_Target = 0.5 * (y_L1 + y_L2)
 
-        if ady <= neutral_tol:
-            label = "中性（尖对尖）"
-        elif dy > 0:
-            label = "远中尖对尖" if ady < complete_tol else "完全远中"
-        else:
-            label = "近中尖对尖" if ady < complete_tol else "完全近中"
+        # 5. 计算偏移量 (上牙尖 - 目标邻接点)
+        offset_mm = y_U - y_Target
+        
+        # 6. 分类
+        #    offset > 0: U 在 Target 前方 -> 远中 (Class II)
+        #    offset < 0: U 在 Target 后方 -> 近中 (Class III)
+        klass = '中性'
+        if abs(offset_mm) <= neutral_tol:
+            klass = '中性'
+        elif offset_mm > neutral_tol:
+            # 远中 (Class II)
+            if offset_mm < cusp_tol:
+                klass = '中性偏远中' # (End-to-end Class II)
+            else:
+                klass = '远中' # (Full cusp Class II)
+        elif offset_mm < -neutral_tol:
+            # 近中 (Class III)
+            if abs(offset_mm) < cusp_tol:
+                klass = '中性偏近中' # (End-to-end Class III)
+            else:
+                klass = '近中' # (Full cusp Class III)
 
         detail = {
-            "class": label,
-            "offset_mm": round(dy, dec),
-            "raw_offset_mm": dy,
-            "upper_label": upper_m,
-            "lower_label": used_lower,
+            'class': klass,
+            'offset_mm': float(np.round(offset_mm, dec)),
+            'raw_offset_mm': offset_mm,
+            'upper_label': U_label,
+            'lower_target_labels': [L_canine_label, L_premolar_label],
+            'y_U_mm': float(np.round(y_U, dec)),
+            'y_Target_mm': float(np.round(y_Target, dec))
         }
-        dbg.update({"status": "ok", "dy": dy, "neutral_tol_mm": neutral_tol, "complete_tol_mm": complete_tol})
+        dbg.update({'status': 'ok', 'offset_mm': offset_mm, 'method': 'Y_axis_vs_embrasure'})
         return detail, dbg
 
-    right, dbgR = _side("13m", "43dc", "43m")
-    left,  dbgL = _side("23m", "33dc", "33m")
-
+    # --- 主流程 ---
+    # 计算右侧: 13m vs (43dc + 44mc)
+    right, dbgR = _one('right', '13m', '43dc', '44mc')
+    # 计算左侧: 23m vs (33dc + 34mc)
+    left,  dbgL = _one('left',  '23m', '33dc', '34mc')
+    
     parts = [f"右侧{right['class']}" if right else "右侧缺失",
-             f"左侧{left['class']}" if left else "左侧缺失"]
-    summary_text = "Canine_Relationship_尖牙关系*: " + " ".join(parts)
-    quality = "ok" if (right and left) else ("fallback" if (right or left) else "missing")
-
+             f"左侧{left['class']}"  if left  else "左侧缺失"]
+    quality = 'ok' if (right and left) else ('fallback' if (right or left) else 'missing')
+    
     return {
-        "right": right, "left": left,
-        "summary_text": summary_text,
-        "quality": quality,
-        "debug": {"right": dbgR, "left": dbgL},
-        "thresholds": {"neutral_tol_mm": neutral_tol, "complete_tol_mm": complete_tol},
+        'right': right, 
+        'left': left,
+        'summary_text': "Canine_Relationship_尖牙关系*: " + " ".join(parts),
+        'quality': quality,
+        'debug': {'right': dbgR, 'left': dbgL},
+        'thresholds': {'neutral_tol_mm': neutral_tol, 'cusp_tol_mm': cusp_tol},
     }
 
 # =========================
@@ -864,7 +952,6 @@ def _pt_for_crowding(landmarks: Dict[str, List[float]], label: str) -> Optional[
         return None
     return _v(landmarks.get(label))
 
-
 def _get_crowding_nodes(
     landmarks: Dict[str, List[float]],
     order: List[str],
@@ -935,307 +1022,101 @@ def _get_crowding_nodes(
         return None, missing or ['insufficient_nodes']
     return nodes, []
 
-
-def _sum_strict_widths_v3(landmarks: Dict[str, List[float]], order: List[str], wt_callable) -> Optional[float]:
-    """严格 mc↔dc 宽度求和。"""
-    total = 0.0
-    for tooth in order:
-        w = wt_callable(tooth, allow_fallback=False)
-        if w is None:
-            return None
-        total += float(w)
-    return total
-
-
-def _arc_len_spline_v1(
-    points_list: List[np.ndarray],
-    ops: Dict[str, Any],
-    samples_per_seg: int = 40,
-    tension: float = 0.5
-) -> float:
-    """
-    在 P 面对医生链点做参数样条（C1 连续的 Hermite/Catmull-Rom 近似），
-    逐段等参采样并累加弧长；若点数不足则回退折线长度。
-    - samples_per_seg: 每段采样密度（>=10；弧长随之收敛）
-    - tension: 0~1，越大曲线越贴折线。0.5 对口扫数据较稳健。
-    """
-    projP = ops['projP']
-    x_of, y_of = ops['x'], ops['y']
-    H = ops['H']
-
-    P2: List[np.ndarray] = []
-    for p in points_list or []:
-        pP = projP(p)
-        P2.append(np.array([x_of(pP), y_of(pP)], dtype=float))
-    P2 = np.asarray(P2, float)
-
-    if P2.shape[0] < 3:
-        length = 0.0
-        if points_list:
-            for a, b in zip(points_list[:-1], points_list[1:]):
-                length += H(a, b)
-        return float(length)
-
-    n = P2.shape[0]
-    T = np.zeros_like(P2)
-    T[0] = (P2[1] - P2[0])
-    T[-1] = (P2[-1] - P2[-2])
-    if n > 2:
-        T[1:-1] = 0.5 * (P2[2:] - P2[:-2])
-    T *= float(tension)
-
-    def hermite(P0, P1, M0, M1, t):
-        t2 = t * t
-        t3 = t2 * t
-        h00 = 2 * t3 - 3 * t2 + 1
-        h10 = t3 - 2 * t2 + t
-        h01 = -2 * t3 + 3 * t2
-        h11 = t3 - t2
-        return h00 * P0 + h10 * M0 + h01 * P1 + h11 * M1
-
-    length = 0.0
-    prev = P2[0]
-    m = max(10, int(samples_per_seg))
-    for i in range(n - 1):
-        P0, P1 = P2[i], P2[i + 1]
-        M0, M1 = T[i], T[i + 1]
-        for k in range(1, m + 1):
-            t = k / m
-            cur = hermite(P0, P1, M0, M1, t)
-            length += float(np.linalg.norm(cur - prev))
-            prev = cur
-    return float(length)
-
-
-
-def compute_crowding(
-    landmarks: Dict[str, List[float]],
-    ops: Dict,
-    wt_callable,   # 严格宽度：mc↔dc
-    dec: int = 1,
-) -> Dict:
-    """
-    Crowding（ALD）= Σ(mc↔dc) - 牙弓弧长
-    - 弓长：医生链功能点 → P 面拟合曲线（二维多项式，弦长参数化），失败/异常回退折线；
-            6–6 端点使用 mb（缺→db→m），7–7 端点使用 dc（缺→dr→m），切缘 * 用 (ma+da)/2，缺回退 m。
-    - 双口径：同时计算 6–6 与 7–7；优先报告 6–6（缺失再退 7–7），两套结果都保留在 detail。
-    - 严格牙宽：仅 mc↔dc；缺失即该口径不出 ALD 值。
-    """
-
-    # ————— 医生链：功能点顺序（按您提供的口径） —————
-    U_CHAIN_66 = ['16mb','15b','14b','13m','12*','11*','21*','22*','23m','24b','25b','26mb']
-    U_CHAIN_77 = ['17dc'] + U_CHAIN_66 + ['27dc']
-    L_CHAIN_66 = ['46mb','45b','44b','43m','42*','41*','31*','32*','33m','34b','35b','36mb']
-    L_CHAIN_77 = ['47dc'] + L_CHAIN_66 + ['37dc']
-
-    U_TEETH_66 = ['16','15','14','13','12','11','21','22','23','24','25','26']
-    U_TEETH_77 = ['17'] + U_TEETH_66 + ['27']
-    L_TEETH_66 = ['46','45','44','43','42','41','31','32','33','34','35','36']
-    L_TEETH_77 = ['47'] + L_TEETH_66 + ['37']
-
-    # ————— 取点：带回退规则（dc→dr→m，mc→mr→m，mb→db→m，*→(ma+da)/2→m） —————
-    def _pick(label: str) -> Optional[np.ndarray]:
-        if not isinstance(label, str):
-            return None
-        if label.endswith('*'):
-            base = label[:-1]
-            _, star = _star_mid(landmarks, base)  # (ma+da)/2，内部已做 ma/da 缺失回退
-            if star is not None: return star
-            # 兜底回退：若星点失败，直接用 m
-            return _v(landmarks.get(base + 'm'))
-
-        if label.endswith('dc'):
-            t = label[:-2]
-            for suf in ('dc', 'dr', 'm'):
-                pt = _v(landmarks.get(t + suf))
-                if pt is not None: return pt
-            return None
-
-        if label.endswith('mc'):
-            t = label[:-2]
-            for suf in ('mc', 'mr', 'm'):
-                pt = _v(landmarks.get(t + suf))
-                if pt is not None: return pt
-            return None
-
-        if label.endswith('mb'):
-            t = label[:-2]
-            for suf in ('mb', 'db', 'm'):
-                pt = _v(landmarks.get(t + suf))
-                if pt is not None: return pt
-            return None
-
-        return _v(landmarks.get(label))
-
-    def _chain_points(tags: List[str]) -> Tuple[Optional[List[np.ndarray]], List[str]]:
-        pts, missing = [], []
-        for tag in tags:
-            p = _pick(tag)
-            if p is None:
-                missing.append(tag)
+def compute_crowding(landmarks, ops, wt_callable, dec=1, cfg=None):
+    cfg = cfg or {}
+    def _v(nm): 
+        p = landmarks.get(nm); 
+        return np.asarray(p, float) if isinstance(p,(list,tuple,np.ndarray)) and len(p)==3 else None
+    def _nodes_6to6(teeth, left_mc, right_mc):
+        A = _v(right_mc); B = _v(left_mc)
+        if A is None or B is None: return None
+        nodes=[A]
+        for a,b in zip(teeth[:-1], teeth[1:]):
+            if a.endswith('11') and b.endswith('21'):
+                _tmp = _v('11mc')
+                leftp = _tmp if _tmp is not None else _v('11m')
+                _tmp2 = _v('21mc')
+                rightp = _tmp2 if _tmp2 is not None else _v('21m')
+                if leftp is None or rightp is None:
+                    return None
+                mid = 0.5 * (leftp + rightp)
             else:
-                pts.append(p)
-        if missing or len(pts) < 4:
-            return None, missing
-        return pts, []
+                pa = _v(f"{a}dc")
+                if pa is None:
+                    pa = _v(f"{a}dr")
+                if pa is None:
+                    pa = _v(f"{a}m")
+                pb = _v(f"{b}mc")
+                if pb is None:
+                    pb = _v(f"{b}mr")
+                if pb is None:
+                    pb = _v(f"{b}m")
+                if pa is None or pb is None:
+                    return None
+                mid = 0.5 * (pa + pb)
+            nodes.append(mid)
+        nodes.append(B)
+        return nodes
 
-    # ————— P 面折线长度（作为回退与守护的参考） —————
-    def _polyline_len(pts: List[np.ndarray]) -> float:
-        H = ops['H']
-        return float(sum(H(a, b) for a, b in zip(pts[:-1], pts[1:])))
+    def _arc_len(nodes3d):
+        XY = np.array([[ops['x'](ops['projP'](p)), ops['y'](ops['projP'](p))] for p in nodes3d], float)
+        # 折线
+        L_poly = float(np.sum(np.linalg.norm(np.diff(XY, axis=0), axis=1)))
+        # Catmull‑Rom
+        def _cr(xy, n=400, alpha=0.5):
+            P = xy.copy()
+            if len(P) < 4: P = np.vstack([P[0],P,P[-1],P[-1]])
+            t=[0.0]
+            for i in range(1,len(P)): t.append(t[-1]+np.linalg.norm(P[i]-P[i-1])**alpha)
+            t=np.array(t); ts=np.linspace(t[1],t[-2],n)
+            out=[]
+            for u in ts:
+                k=max(1, min(np.searchsorted(t,u)-1, len(P)-3))
+                t0,t1,t2,t3=t[k-1],t[k],t[k+1],t[k+2]; p0,p1,p2,p3=P[k-1],P[k],P[k+1],P[k+2]
+                def L(a,b,ta,tb,tu): w=(tu-ta)/(tb-ta); return (1-w)*a+w*b
+                A1,A2,A3=L(p0,p1,t0,t1,u), L(p1,p2,t1,t2,u), L(p2,p3,t2,t3,u)
+                B1,B2=L(A1,A2,t0,t2,u), L(A2,A3,t1,t3,u); C=L(B1,B2,t1,t2,u); out.append(C)
+            S=np.asarray(out)
+            return float(np.sum(np.linalg.norm(np.diff(S,axis=0),axis=1)))
+        L_spline = _cr(XY)
+        # 守护：样条不得短于折线，且不应 >1.10×折线
+        if (L_spline < L_poly) or (L_spline > 1.10*L_poly): 
+            return L_poly, 'polyline', {'fit_len_mm': L_spline, 'polyline_len_mm': L_poly}
+        return L_spline, 'spline', {'fit_len_mm': L_spline, 'polyline_len_mm': L_poly}
 
-    # ————— 弦长参数化二维拟合弧长（稳） —————
-    def _arc_len_parametric(pts: List[np.ndarray], deg: int = 5, num_samples: int = 400) -> Optional[float]:
-        if not pts or len(pts) < max(4, deg + 1):
-            return None
-        projP, x_of, y_of = ops['projP'], ops['x'], ops['y']
-        try:
-            xs = np.array([x_of(projP(p)) for p in pts], dtype=float)
-            ys = np.array([y_of(projP(p)) for p in pts], dtype=float)
-        except Exception:
-            return None
-        seg = np.sqrt(np.diff(xs)**2 + np.diff(ys)**2)
-        s = np.concatenate([[0.0], np.cumsum(seg)])
-        total = float(s[-1])
-        if total <= EPS:
-            return None
-        t = s / total
-        deg = int(max(3, min(deg, len(xs) - 1)))
-        try:
-            cx = np.polyfit(t, xs, deg);  cy = np.polyfit(t, ys, deg)
-            dcx = np.polyder(cx);        dcy = np.polyder(cy)
-        except (np.linalg.LinAlgError, ValueError):
-            return None
-        ts = np.linspace(0.0, 1.0, int(max(50, num_samples)))
-        dx = np.polyval(dcx, ts);  dy = np.polyval(dcy, ts)
-        speed = np.sqrt(dx*dx + dy*dy)
-        try:
-            return float(np.trapz(speed, ts))
-        except Exception:
-            return None
-
-    # ————— 计算某条功能链的弓长：优先拟合，守护回退折线 —————
-    def _arc_len_by_fit(tags: List[str]) -> Tuple[Optional[float], List[str], Dict[str, Any]]:
-        pts, miss = _chain_points(tags)
-        if pts is None:
-            return None, miss, {'arc_mode': 'missing', 'missing_nodes': miss}
-
-        L_poly = _polyline_len(pts)
-        L_fit  = _arc_len_parametric(pts, deg=5, num_samples=400)
-
-        arc_mode, chosen = 'param', L_fit
-        reasons, ratio = [], None
-        if L_fit is None:
-            arc_mode, chosen = ('polyline' if L_poly > EPS else 'missing'), L_poly
-            reasons.append('fit_failed')
-        else:
-            if L_poly > EPS:
-                ratio = float(L_fit / L_poly)
-                # 守护：拟合不应比折线短；也不应 > 1.15×折线（过度外插）
-                if (ratio < 1.0 - 1e-6) or (ratio > 1.15):
-                    arc_mode, chosen = 'polyline', L_poly
-                    reasons.append('fit_guard_fallback')
-
-        detail = {
-            'arc_mode': arc_mode,
-            'fit_len_mm': float(L_fit) if L_fit is not None else None,
-            'polyline_len_mm': float(L_poly),
-            'fit_to_poly_ratio': (float(ratio) if ratio is not None else None),
-        }
-        if reasons: detail['reasons'] = reasons
-        if chosen is not None: detail['chosen_len_mm'] = float(chosen)
-        return (float(chosen) if chosen is not None else None, [], detail)
-
-    # ————— 严格口径的牙冠宽度和（mc↔dc；带缺失列表） —————
-    def _sum_width_strict(teeth: List[str]) -> Tuple[Optional[float], List[str]]:
-        total, missing = 0.0, []
+    def _sum_width(teeth):
+        s=0.0; miss=[]
         for t in teeth:
-            w = wt_callable(t, allow_fallback=False)
-            if w is None:
-                missing.append(t)
-            else:
-                total += float(w)
-        return (None, missing) if missing else (float(total), [])
+            w = wt_callable(t, allow_fallback=False)  # 严格 mc↔dc
+            if w is None: miss.append(t)
+            else: s += float(w)
+        return (None, miss) if miss else (s, [])
 
-    # ————— 单弓汇总：同时产出 6–6 与 7–7，优先 6–6 —————
-    def _one_arch(label: str, chain66, chain77, teeth66, teeth77):
-        modes, msgs, cache = {}, [], {}
-        for mode, chain_tags, tooth_list in (('6-6', chain66, teeth66), ('7-7', chain77, teeth77)):
-            L, miss_nodes, arc_detail = _arc_len_by_fit(chain_tags)
-            S, miss_width = _sum_width_strict(tooth_list)
-            cache[mode] = {'arc_len': L, 'sum_width': S, 'arc_detail': arc_detail}
+    U_teeth = ['16','15','14','13','12','11','21','22','23','24','25','26']
+    L_teeth = ['36','35','34','33','32','31','41','42','43','44','45','46']
+    U_nodes = _nodes_6to6(U_teeth, left_mc='26mc', right_mc='16mc')
+    L_nodes = _nodes_6to6(L_teeth, left_mc='36mc', right_mc='46mc')
+    if U_nodes is None and L_nodes is None:
+        return {'upper':None,'lower':None,'summary_text':'Crowding_v2*: 缺失','quality':'missing'}
 
-            if L is None or S is None:
-                if miss_nodes: msgs.append(f"{label}{mode}弓长缺失({','.join(miss_nodes)})")
-                if miss_width: msgs.append(f"{label}{mode}牙宽缺失({','.join(miss_width)})")
-                continue
+    out_detail = {}
+    def _one(label, nodes, teeth):
+        if nodes is None:
+            return None, f"{label}链缺失"
+        L, mode, info = _arc_len(nodes)
+        S, miss = _sum_width(teeth)
+        if S is None: 
+            return None, f"{label}冠宽缺失({','.join(miss)})"
+        ald = S - L
+        txt = f"6-6{'拥挤' if ald>0 else '间隙' if ald<0 else '拥挤/间隙0.0'}{abs(ald):.{dec}f}mm(Σ{S:.1f}mm, L{L:.1f}mm, {mode})"
+        return {'ald_mm': round(ald,dec), 'sum_width_mm': round(S,dec), 'arc_len_mm': round(L,dec),
+                'arc_mode': mode, 'arc_detail': info, 'text': txt}, None
 
-            ald_raw = S - L
-            entry = {
-                'mode': mode,
-                'ald_mm': float(np.round(ald_raw, dec)),
-                'raw_ald_mm': float(ald_raw),
-                'sum_width_mm': float(np.round(S, dec)),
-                'raw_sum_width_mm': float(S),
-                'arc_len_mm': float(np.round(L, dec)),
-                'raw_arc_len_mm': float(L),
-                'arc_mode': arc_detail.get('arc_mode'),
-                'arc_detail': arc_detail,
-                'width_policy': 'strict',
-            }
-            r = arc_detail.get('fit_to_poly_ratio')
-            ratio_txt = (f", ratio:{r:.3f}" if isinstance(r, (int, float)) else "")
-            crowd_txt = (
-                f"拥挤{entry['ald_mm']:.{dec}f}mm" if entry['ald_mm'] > 0 else
-                f"间隙{abs(entry['ald_mm']):.{dec}f}mm" if entry['ald_mm'] < 0 else
-                f"拥挤/间隙{0:.{dec}f}mm"
-            )
-            entry['text'] = (
-                f"{mode}{crowd_txt}(Σ{entry['sum_width_mm']:.{dec}f}mm, "
-                f"L{entry['arc_len_mm']:.{dec}f}mm, arc:{entry['arc_mode']}{ratio_txt}, strict)"
-            )
-            modes[mode] = entry
-
-        primary = modes.get('6-6') or modes.get('7-7')
-        return primary, modes, msgs, cache
-
-    up_primary, up_modes, up_msgs, _ = _one_arch('上牙列', U_CHAIN_66, U_CHAIN_77, U_TEETH_66, U_TEETH_77)
-    lo_primary, lo_modes, lo_msgs, _ = _one_arch('下牙列', L_CHAIN_66, L_CHAIN_77, L_TEETH_66, L_TEETH_77)
-
-    if not up_modes and not lo_modes:
-        return {
-            'upper': None, 'lower': None,
-            'summary_text': 'Crowding_拥挤度*: 缺失',
-            'quality': 'missing',
-            'detail': {'upper': {'messages': up_msgs}, 'lower': {'messages': lo_msgs}}
-        }
-
-    def _summary(label: str, modes: Dict[str, Dict[str, Any]], msgs: List[str]) -> str:
-        parts = [modes[m]['text'] for m in ('6-6', '7-7') if m in modes]
-        if not parts:
-            return f"{label}: " + ('；'.join(msgs) if msgs else '缺失')
-        if msgs: parts.extend(msgs)
-        return f"{label}: " + '；'.join(parts)
-
-    summary_text = 'Crowding_拥挤度*: ' + '；'.join([
-        _summary('上牙列', up_modes, up_msgs),
-        _summary('下牙列', lo_modes, lo_msgs),
-    ])
-
-    quality = 'ok'
-    if (up_primary is None) or (lo_primary is None):
-        quality = 'fallback' if (up_modes or lo_modes) else 'missing'
-
-    return {
-        'upper': up_primary,
-        'lower': lo_primary,
-        'summary_text': summary_text,
-        'quality': quality,
-        'detail': {
-            'upper': {'primary_mode': (up_primary or {}).get('mode'), 'modes': up_modes, 'messages': up_msgs},
-            'lower': {'primary_mode': (lo_primary or {}).get('mode'), 'modes': lo_modes, 'messages': lo_msgs},
-        },
-    }
+    up, up_msg = _one('上弓', U_nodes, U_teeth)
+    lo, lo_msg = _one('下弓', L_nodes, L_teeth)
+    msgs = '；'.join([m for m in (up_msg, lo_msg) if m])
+    summary = 'Crowding_v2*: ' + '；'.join([up['text'] if up else '上弓缺失', lo['text'] if lo else '下弓缺失', msgs]).strip('；')
+    return {'upper': up, 'lower': lo, 'summary_text': summary, 'quality': 'ok' if (up and lo) else 'fallback'}
 
 # =========================
 # 7) Curve of Spee — 竖直深度判定（6–6 / 7–7）
@@ -1464,153 +1345,153 @@ def compute_midline_alignment(
         }
     }
 
-
 # =========================
 # 9) 第一磨牙关系 — 16/26 对 46bg/36bg（个体化阈值）
 # =========================
-def compute_molar_relationship(landmarks: Dict[str, List[float]], ops: Dict, wt_callable, dec:int=1, cfg: Optional[Dict[str, Any]]=None) -> Dict:
+# =========================
+# 9) 第一磨牙关系 — 【新版：全局 Y 轴法】
+# =========================
+def compute_molar_relationship(
+    landmarks: Dict[str, List[float]], ops: Dict, wt: Optional[Dict[str, Any]] = None, dec: int = 1, cfg: Optional[Dict[str, Any]] = None
+) -> Dict:
     """
-    第一磨牙关系（与尖牙口径一致）：
-    - 方向：上对下。d = dot(上颌近中颊尖 - 下颌参考点, 下颌近中→远中方向单位向量)
-      d > 0 → 近中；d < 0 → 远中。
-    - 上颌代表点：仅用 16mb/26mb；缺失回退 m（质量降级）。
-    - 下颌参考点：优先用 46bg/36bg；bg 缺失才回退 (mb,db) 中点。
-    - 分度：|d| ≤ 0.5 → 中性；
-            0.5 < |d| < 2.5 → 中性偏近/远中；
-            | |d| - 2.5 | ≤ 0.5 → 近中/远中尖对尖；
-            | |d| - 5.0 | ≤ 0.5 或 |d| > 5.0 → 完全近/远中；
-            其余 → 介于分度之间（趋向近/远中）。
+    【新版逻辑】
+    计算第一磨牙关系：比较上颌第一磨牙近中颊尖 (U_mb) 的 Y 坐标（前后向）与
+    下颌第一磨牙颊沟点 (L_groove) 的 Y 坐标。
+    
+    坐标系：Y 轴（前后），前为正 (ops['y'])。
+
+    偏移量 offset = y(U_mb) - y(L_groove)
+    
+    - offset > 0: 上牙尖 U 在 下颌沟 L 的前方 → 远中关系 (Class II)
+    - offset < 0: 上牙尖 U 在 下颌沟 L 的后方 → 近中关系 (Class III)
+    - offset ≈ 0: 上牙尖 U 落在 下颌沟 L 处 → 中性关系 (Class I)
     """
     cfg = cfg or {}
-    neutral_tol  = float(cfg.get('molar_neutral_tol_mm', 0.5))
-    cusp_mm      = float(cfg.get('molar_cusp_mm', 2.5))
-    complete_mm  = float(cfg.get('molar_complete_mm', 5.0))
-    match_tol    = float(cfg.get('molar_match_tol_mm', 0.5))
+    neutral_tol = float(cfg.get("molar_neutral_tol_mm", 0.5))
+    cusp_mm = float(cfg.get("molar_cusp_mm", 2.5))
+    complete_mm = float(cfg.get("molar_complete_mm", 5.0))
+    match_tol = float(cfg.get("molar_match_tol_mm", 0.5))
+    bg_quality_tol = float(cfg.get("molar_bg_quality_tol_mm", 1.25))
 
-    def _get(nm): return _v(landmarks.get(nm))
-    projP = ops['projP']
+    # _v 是 calc_metrics.py 中的全局辅助函数
+    # def _v(a) -> Optional[np.ndarray]: ...
 
-    def _project(pt: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        return projP(pt) if pt is not None else None
-
-    # —— 下颌颊沟（严格 bg，缺失才回退中点）——
-    def _lower_groove_strict(tooth: str):
-        bg  = _get(f"{tooth}bg")
-        if bg is not None:
-            return bg, {'status': 'bg_only'}
-        mb, db = _get(f"{tooth}mb"), _get(f"{tooth}db")
-        if (mb is not None) and (db is not None):
-            return 0.5*(mb+db), {'status': 'midpoint_fallback'}
-        return None, {'status': 'missing'}
-
-    # —— 上颌仅用近中颊尖（缺失才回退 m）——
-    def _upper_mb_strict(upper_tooth: str):
-        mb = _get(f"{upper_tooth}mb")
-        if mb is not None:
-            return mb, 'mb'
-        m = _get(f"{upper_tooth}m")
-        if m is not None:
-            return m, 'm_fallback'
-        return None, 'missing'
-
-    def _scalar(pt: Optional[np.ndarray], origin: np.ndarray, axis: np.ndarray) -> Optional[float]:
-        if pt is None:
-            return None
-        p = _project(pt)
-        if p is None:
-            return None
-        return float(_dot(p - origin, axis))
-
-    def _classify_fixed(d: float) -> str:
-        a = abs(d)
+    def _classify(offset: float) -> str:
+        """
+        根据 offset (y_U - y_L) 进行分类
+        offset > 0: 上颌靠前 -> 远中 (Class II)
+        offset < 0: 上颌靠后 -> 近中 (Class III)
+        """
+        a = abs(offset)
         if a <= neutral_tol:
             return '中性'
-        if a < cusp_mm - match_tol:
-            return '中性偏近中' if d > 0 else '中性偏远中'
-        if abs(a - cusp_mm) <= match_tol:
-            return '近中尖对尖' if d > 0 else '远中尖对尖'
-        if abs(a - complete_mm) <= match_tol or a > complete_mm:
-            return '完全近中' if d > 0 else '完全远中'
-        # 介于 2.5 与 5.0 之间但不在匹配带内
-        return '介于分度之间（趋向近中）' if d > 0 else '介于分度之间（趋向远中）'
+        
+        if offset > 0: 
+            # 远中关系 (Class II)
+            if a < max(cusp_mm - match_tol, neutral_tol): return '中性偏远中'
+            if abs(a - cusp_mm) <= match_tol: return '远中尖对尖'
+            if abs(a - complete_mm) <= match_tol or a > complete_mm: return '完全远中'
+            return '远中'
+        else: 
+            # 近中关系 (Class III)
+            if a < max(cusp_mm - match_tol, neutral_tol): return '中性偏近中'
+            if abs(a - cusp_mm) <= match_tol: return '近中尖对尖'
+            if abs(a - complete_mm) <= match_tol or a > complete_mm: return '完全近中'
+            return '近中'
 
-    def _one(upper: str, lower: str):
-        groove_raw, groove_info = _lower_groove_strict(lower)
-        if groove_raw is None:
-            return None
-        grooveP = _project(groove_raw)
-        if grooveP is None:
-            return None
+    # 下颌沟点（沿用旧口径：bg→(mb+db)/2→(ml+dl)/2，并打质量标记）
+    def _lower_groove_strict(tooth: str):
+        info = {'status':'missing','threshold_mm': bg_quality_tol,'bg_midpoint_delta_mm':None,'sources':{}}
+        bg, mb, db = _v(landmarks.get(f"{tooth}bg")), _v(landmarks.get(f"{tooth}mb")), _v(landmarks.get(f"{tooth}db"))
+        ml, dl = _v(landmarks.get(f"{tooth}ml")), _v(landmarks.get(f"{tooth}dl"))
+        midpoint = 0.5*(mb + db) if (mb is not None and db is not None) else None
+        
+        used_label = 'missing'
+        
+        if bg is not None:
+            info['sources']['bg'] = True
+            used_label = f"{tooth}bg"
+            if midpoint is not None:
+                dist = float(np.linalg.norm(bg - midpoint))
+                info['bg_midpoint_delta_mm'] = float(np.round(dist, 3))
+                if dist > bg_quality_tol:
+                    info.update({'status':'midpoint_quality','used':'bg'}); info['sources']['mb_db_mean']=True; return bg, used_label, info
+            info.update({'status':'bg_only','used':'bg'}); return bg, used_label, info
+        
+        if midpoint is not None:
+            used_label = f"mean({tooth}mb,{tooth}db)"
+            info.update({'status':'midpoint_fallback','used':'midpoint','sources':{'mb_db_mean':True}}); return midpoint, used_label, info
+        
+        if (ml is not None) and (dl is not None):
+            pal_mid = 0.5*(ml + dl)
+            used_label = f"mean({tooth}ml,{tooth}dl)"
+            info.update({'status':'palatal_fallback','used':'palatal_midpoint','sources':{'ml_dl_mean':True}}); return pal_mid, used_label, info
+        
+        return None, used_label, info
 
-        lower_mc, lower_dc = _get(f"{lower}mc"), _get(f"{lower}dc")
-        if lower_mc is None or lower_dc is None:
-            return None
-        mcP, dcP = _project(lower_mc), _project(lower_dc)
-        if mcP is None or dcP is None:
-            return None
+    def _one(side: str, U_mb_label: str, L_tooth: str):
+        dbg = {'side': side, 'upper_label': U_mb_label, 'lower_tooth': L_tooth}
+        
+        # 1. 获取上颌点
+        U_mb = _v(landmarks.get(U_mb_label))
+        if U_mb is None: 
+            dbg['status']='missing_upper_mb'
+            return None, dbg
+        
+        # 2. 获取下颌点
+        L_groove, L_label_used, ginfo = _lower_groove_strict(L_tooth)
+        dbg['groove_info'] = ginfo
+        if L_groove is None: 
+            dbg['status']='missing_lower_groove'
+            return None, dbg
+            
+        # 3. 计算 Y 轴偏移量
+        try:
+            y_U = float(ops['y'](U_mb))
+            y_L = float(ops['y'](L_groove))
+            offset_mm = y_U - y_L
+        except Exception as e:
+            dbg['status'] = f"ops_y_failed: {e}"
+            return None, dbg
 
-        # 轴：近中方向为正
-        axis_vec  = mcP - dcP
-        axis_len  = _len(axis_vec)
-        if axis_len < EPS:
-            return None
-        axis_unit = axis_vec / axis_len
-
-        upper_mb, upper_src = _upper_mb_strict(upper)
-        if upper_mb is None:
-            return None
-        upperP = _project(upper_mb)
-        if upperP is None:
-            return None
-
-        # 上对下偏移（沿下颌 mc→dc 方向）：正值→近中，负值→远中
-        offset_up = float(_dot(upperP - grooveP, axis_unit))
-        offset_down = -offset_up
-
-        label = _classify_fixed(offset_up)
-
-        # 为了便于对齐老版调试字段，把两种标量都保留
-        lower_mb = _get(f"{lower}mb"); lower_db = _get(f"{lower}db")
-        upper_m  = _get(f"{upper}m")
-        def _round(v): 
-            return None if v is None or not np.isfinite(v) else float(np.round(v, 3))
-
-        result = {
-            'offset_mm': float(np.round(offset_up, dec)),   # 上对下（近中为正）
-            'raw_offset_mm': float(offset_up),
-            'offset_lower_vs_upper_mm': float(np.round(offset_down, dec)),  # 下对上（近中为正）
-            'label': label,
-            'width_mm': _round(_len(dcP - mcP)),
-            'neutral_tol_mm': neutral_tol,
-            'cusp_mm': cusp_mm,
-            'complete_mm': complete_mm,
-            'match_tol_mm': match_tol,
-            'lower_axis_mm': {
-                'bg': 0.0,
-                'mc': _round(_scalar(lower_mc, grooveP, axis_unit)),
-                'dc': _round(_scalar(lower_dc, grooveP, axis_unit)),
-                'mb': _round(_scalar(lower_mb, grooveP, axis_unit)) if lower_mb is not None else None,
-                'db': _round(_scalar(lower_db, grooveP, axis_unit)) if lower_db is not None else None,
-            },
-            'upper_axis_mm': {
-                'mb': _round(_scalar(upper_mb, grooveP, axis_unit)),
-                'm':  _round(_scalar(upper_m,  grooveP, axis_unit)) if upper_m is not None else None,
-            },
-            'groove_status': groove_info.get('status'),
-            'upper_pick': upper_src,
+        # 4. 分类
+        klass = _classify(offset_mm)
+        
+        detail = {
+            'class': klass, 
+            'label': klass,
+            'offset_mm': float(np.round(offset_mm, dec)), 
+            'raw_offset_mm': offset_mm,
+            'upper_label': U_mb_label, 
+            'lower_label': L_label_used, # (e.g., '46bg' or 'mean(46mb,46db)')
+            'bg_quality': ginfo.get('status'),
+            'y_U_mm': float(np.round(y_U, dec)),
+            'y_L_mm': float(np.round(y_L, dec)),
         }
-        return result
+        dbg.update({
+            'status':'ok',
+            'offset_mm': offset_mm,
+            'method': 'Y_axis_direct_comparison',
+            'thresholds': {'neutral_tol_mm': neutral_tol,'cusp_mm': cusp_mm,'complete_mm': complete_mm,'match_tol_mm': match_tol}
+        })
+        return detail, dbg
 
-    R = _one('16', '46')
-    L = _one('26', '36')
-    if R is None and L is None:
-        return {'summary_text': 'Molar_Relationship_磨牙关系*: 缺失', 'quality': 'missing'}
+    # --- 主流程 ---
+    right, dbgR = _one('right','16mb','46')
+    left,  dbgL = _one('left', '26mb','36')
+    
+    parts = [f"右侧{right['class']}" if right else "右侧缺失",
+             f"左侧{left['class']}"  if left  else "左侧缺失"]
+    quality = 'ok' if (right and left) else ('fallback' if (right or left) else 'missing')
+    
     return {
-        'right': R, 'left': L,
-        'summary_text': f"Molar_Relationship_磨牙关系*: 右侧{R['label'] if R else '缺失'} 左侧{L['label'] if L else '缺失'}",
-        'quality': 'ok' if (R and L) else 'fallback',
+        'right': right, 
+        'left': left,
+        'summary_text': "Molar_Relationship_第一磨牙关系*: " + " ".join(parts),
+        'quality': quality,
+        'debug': {'right': dbgR, 'left': dbgL},
     }
-
 
 # =========================
 # 10) Overbite — 垂直覆𬌗（比值分度）
@@ -1627,7 +1508,6 @@ def _incisal_incisor_point(landmarks: Dict[str, List[float]], tooth: str, ops: D
         return candidates[-1]
     _, star = _star_mid(landmarks, tooth)
     return star
-
 
 def _incisor_pairs(
     landmarks: Dict[str, List[float]],
@@ -1698,7 +1578,6 @@ def _incisor_pairs(
             )
     return pairs
 
-
 def _filter_pairs_by_iqr(pairs: List[Dict[str, Any]], key: str) -> List[Dict[str, Any]]:
     """Remove outlier pairs based on IQR of the selected metric."""
     if len(pairs) < 4:
@@ -1715,197 +1594,605 @@ def _filter_pairs_by_iqr(pairs: List[Dict[str, Any]], key: str) -> List[Dict[str
             filtered.append(p)
     return filtered if filtered else pairs
 
+def compute_overbite(
+    landmarks: Dict[str, List[float]],
+    ops: Dict,
+    cfg: Optional[Dict[str, Any]] = None,
+    dec: int = 1
+) -> Dict:
+    """
+    口径：
+      * 取点：直接使用中切 m 点（11m/21m/41m/31m）
+      * 右侧 OB_R = z(11m) - z(41m)；左侧 OB_L = z(21m) - z(31m)
+      * 口径切换：
+          - overbite_use_midline: True 时按中线计算（上*均值 - 下*均值）
+          - overbite_use_ch_ratio: True 时用比例分度 OB/CH（CH=下中切 *↔bgb 冠高）
+      * “对刃”容差（默认为 0.5 mm）：abs(OB) ≤ edge_tol → “对刃”
+      * 分度（“等号前不取后取”）：
+          - OB < -edge_tol  → 开𬌗：|OB|≤3 Ⅰ度，≤5 Ⅱ度，>5 Ⅲ度
+          - OB >  edge_tol:
+              若 use_ch_ratio 且 CH 可得：
+                  OB/CH ≤ 1/3 正常；≤0.5 Ⅰ度；≤2/3 Ⅱ度；>2/3 Ⅲ度
+              否则（纯毫米）：
+                  OB < 3 正常；≤5 Ⅰ度；≤8 Ⅱ度；>8 Ⅲ度
+    """
+    cfg = cfg or {}
+    use_midline = bool(cfg.get('overbite_use_midline', False))
+    use_ch_ratio = bool(cfg.get('overbite_use_ch_ratio', True))
+    edge_tol = float(cfg.get('overbite_edge_tol_mm', 0.5))
 
-def compute_overbite(landmarks: Dict[str, List[float]], ops: Dict, dec:int=1) -> Dict:
-    # —— 辅助：拿 * 切缘（(ma+da)/2；缺则 m）——
-    def _star(tooth: str) -> Optional[np.ndarray]:
-        _, p = _star_mid(landmarks, tooth)
-        return p
+    U11 = _v(landmarks.get('11m'))
+    U21 = _v(landmarks.get('21m'))
+    L41 = _v(landmarks.get('41m'))
+    L31 = _v(landmarks.get('31m'))
 
-    # 右：11*–41*；左：21*–31*
-    U11, L41 = _star('11'), _star('41')
-    U21, L31 = _star('21'), _star('31')
+    # 侧别值与下中切冠高（用于比例分度）
+    side_vals: Dict[str, float] = {}
+    ch_by_side: Dict[str, float] = {}
 
-    # 两侧都缺 → missing；有一侧缺 → 用另一侧
-    side_vals = {}
-    if (U11 is not None) and (L41 is not None):
+    def _crown_height(star: Optional[np.ndarray], base_label: str) -> Optional[float]:
+        base = _v(landmarks.get(base_label))
+        if star is None or base is None:
+            return None
+        diff = float(abs(ops['z'](star) - ops['z'](base)))
+        return diff if diff > EPS else None
+
+    if U11 is not None and L41 is not None:
         side_vals['right'] = float(ops['z'](U11) - ops['z'](L41))
-    if (U21 is not None) and (L31 is not None):
+        ch = _crown_height(L41, '41bgb')
+        if ch is not None: ch_by_side['right'] = ch
+    if U21 is not None and L31 is not None:
         side_vals['left']  = float(ops['z'](U21) - ops['z'](L31))
+        ch = _crown_height(L31, '31bgb')
+        if ch is not None: ch_by_side['left'] = ch
 
     if not side_vals:
         return {'summary_text': 'Overbite_前牙覆𬌗*: 缺失', 'quality': 'missing'}
 
-    # 选 |OB| 较大侧（并规定平局取右侧）
-    side_of_max = max(sorted(side_vals.keys(), key=lambda s: 0 if s=='right' else 1),
-                      key=lambda s: abs(side_vals[s]))
-    OB = side_vals[side_of_max]
-
-    # 该侧下中切冠高 CH（* ↔ bgb）
-    if side_of_max == 'right':
-        L_star = L41
-        L_bgb  = _v(landmarks.get('41bgb'))
+    # 决定口径：中线 or 侧别 |OB| 最大（平局→右）
+    mode_used = 'midline' if (use_midline and U11 is not None and U21 is not None and L41 is not None and L31 is not None) else 'max_side'
+    if mode_used == 'midline':
+        side_of_max = 'midline'
+        upper_mid = 0.5*(U11 + U21)
+        lower_mid = 0.5*(L41 + L31)
+        OB = float(ops['z'](upper_mid) - ops['z'](lower_mid))
+        CH = (sum(ch_by_side.values())/len(ch_by_side)) if ch_by_side else None
     else:
-        L_star = L31
-        L_bgb  = _v(landmarks.get('31bgb'))
+        side_of_max = max(sorted(side_vals.keys(), key=lambda s: 0 if s=='right' else 1),
+                          key=lambda s: abs(side_vals[s]))
+        OB = side_vals[side_of_max]
+        CH = ch_by_side.get(side_of_max)
 
-    CH = None
-    if (L_star is not None) and (L_bgb is not None):
-        ch_raw = float(abs(ops['z'](L_star) - ops['z'](L_bgb)))
-        if ch_raw > EPS:
-            CH = ch_raw
-
-    # —— 分度（等号前不取、后取）——
-    zero_tol = 0.5
-    if abs(OB) <= zero_tol:
+    # 分度（等号前不取、后取）
+    if abs(OB) <= edge_tol:
         category = '对刃'
-    elif OB < 0:
+    elif OB < 0:  # 开𬌗
         mag = abs(OB)
-        if mag <= 3:
-            category = 'Ⅰ度开𬌗'
-        elif mag <= 5:
-            category = 'Ⅱ度开𬌗'
-        else:
-            category = 'Ⅲ度开𬌗'
-    else:  # OB > 0
-        if CH is not None:
+        category = 'Ⅰ度开𬌗' if mag <= 3 else ('Ⅱ度开𬌗' if mag <= 5 else 'Ⅲ度开𬌗')
+    else:         # 深覆𬌗
+        if use_ch_ratio and CH is not None:
             r = OB / CH
-            if r <= (1.0/3.0):
-                category = '正常覆𬌗'
-            elif r <= 0.5:
-                category = 'Ⅰ度深覆𬌗'
-            elif r <= (2.0/3.0):
-                category = 'Ⅱ度深覆𬌗'
-            else:
-                category = 'Ⅲ度深覆𬌗'
+            category = ('正常覆𬌗' if r <= 1.0/3.0 else
+                        'Ⅰ度深覆𬌗' if r <= 0.5 else
+                        'Ⅱ度深覆𬌗' if r <= 2.0/3.0 else
+                        'Ⅲ度深覆𬌗')
         else:
-            if OB < 3:
-                category = '轻度覆𬌗'
-            elif OB <= 5:
-                category = 'Ⅰ度深覆𬌗'
-            elif OB <= 8:
-                category = 'Ⅱ度深覆𬌗'
-            else:
-                category = 'Ⅲ度深覆𬌗'
+            normal_hi = float(cfg.get('overbite_normal_hi_mm', 3.0))
+            mild_hi = float(cfg.get('overbite_mild_hi_mm', 4.0))
+            moderate_hi = float(cfg.get('overbite_moderate_hi_mm', 6.0))
+            category = ('正常覆𬌗' if OB <= normal_hi else
+                        'Ⅰ度深覆𬌗' if OB <= mild_hi else
+                        'Ⅱ度深覆𬌗' if OB <= moderate_hi else
+                        'Ⅲ度深覆𬌗')
 
+    detail = {
+        'OB_right_mm': round(side_vals.get('right'), dec) if 'right' in side_vals else None,
+        'OB_left_mm':  round(side_vals.get('left'),  dec) if 'left' in side_vals else None,
+        'CH_mm': round(CH, dec) if CH is not None else None,
+        'mode': mode_used,
+    }
     return {
         'value_mm': round(OB, dec),
         'side_of_max': side_of_max,
         'category': category,
         'summary_text': f"Overbite_前牙覆𬌗*: {category}",
         'quality': 'ok',
-        'detail': {
-            'OB_right_mm': round(side_vals.get('right', float('nan')), dec) if 'right' in side_vals else None,
-            'OB_left_mm':  round(side_vals.get('left',  float('nan')), dec) if 'left'  in side_vals else None,
-            'CH_mm': round(CH, dec) if CH is not None else None,
-        }
+        'detail': detail
     }
 
 # =========================
-# 11) Overjet — 水平覆盖（y 前后）
+# VTP 读取 & 下颌唇面提取（31/32/41/42）
 # =========================
-def compute_overjet(landmarks: Dict[str, List[float]], ops: Dict, dec:int=1) -> Dict:
+
+def _guess_y_axis_from_ops(ops: Dict) -> Optional[np.ndarray]:
+    """通过数值法从 ops['y'] 反推世界坐标系 Ŷ 单位向量。"""
+    try:
+        delta = 1e-3
+        o = np.zeros(3, dtype=float)
+        e = np.eye(3, dtype=float)
+        g = np.array([ops['y'](e[i] * delta) - ops['y'](o) for i in range(3)], dtype=float) / float(delta)
+        n = np.linalg.norm(g)
+        return (g / n) if n > EPS else None
+    except Exception:
+        return None
+
+def _vtk_read_polydata(path: str):
+    """优先用 VTK 读取 VTP；若缺 VTK 则返回 (None, 'no_vtk')."""
+    try:
+        import vtk
+        reader = vtk.vtkXMLPolyDataReader()
+        reader.SetFileName(path)
+        reader.Update()
+        return reader.GetOutput(), 'ok'
+    except Exception:
+        return None, 'no_vtk'
+
+def _vtk_triangulate(poly):
+    import vtk
+    tri = vtk.vtkTriangleFilter()
+    tri.SetInputData(poly)
+    tri.PassVertsOff(); tri.PassLinesOff()
+    tri.Update()
+    return tri.GetOutput()
+
+def _vtk_normals(poly):
+    import vtk
+    nf = vtk.vtkPolyDataNormals()
+    nf.SetInputData(poly)
+    nf.SetFeatureAngle(150.0)
+    nf.SplittingOff()
+    nf.ConsistencyOn()
+    nf.AutoOrientNormalsOn()
+    nf.ComputePointNormalsOff()
+    nf.ComputeCellNormalsOn()
+    nf.Update()
+    return nf.GetOutput()
+
+def _vtk_arrays(poly, label_name_pref: List[str]):
+    """拿 cell labels / points / polys 三件套（numpy）。"""
+    import vtk
+    from vtk.util.numpy_support import vtk_to_numpy
+    cdata = poly.GetCellData()
+    arr = None
+    chosen = None
+    for nm in label_name_pref:
+        arr = cdata.GetArray(nm)
+        if arr is not None:
+            chosen = nm
+            break
+    labels = vtk_to_numpy(arr).astype(np.int32) if arr is not None else None
+    pts = poly.GetPoints()
+    V = vtk_to_numpy(pts.GetData()) if pts is not None else None
+    polys = poly.GetPolys()
+    conn = vtk_to_numpy(polys.GetData()) if polys is not None else None
+    if conn is not None and conn.size % 4 == 0:
+        F = conn.reshape(-1, 4)[:, 1:4]
+    else:
+        F = None
+    return labels, chosen, V, F
+
+def _labels_to_mask(labels: np.ndarray,
+                    picked_fdi: Set[str],
+                    label_kind: Optional[str],
+                    cfg: Optional[Dict]) -> np.ndarray:
     """
-    Overjet_前牙覆盖（严格口径）：
-      - 点位：“* 切缘点”= (ma+da)/2，若缺→回退 m
-      - 用到：上中切 11*、21*；下中切 41*、31*
-      - 坐标：统一咬合平面 P；y 为前后向（前为正）
-      - 计算：
-          右侧 OJ_R = y(11*) − y(41*)
-          左侧 OJ_L = y(21*) − y(31*)
-          取 |OJ| 较大侧为 primary_side，OJ 为该侧值
-      - 分度（“等号前不取后取”）：
-          |OJ| ≤ 0.5 → 对刃
-          OJ < -0.5 → 反覆盖
-          OJ > 0.5:
-            OJ ≤ 3         → 轻度覆盖
-            3 < OJ ≤ 5     → Ⅰ度深覆盖
-            5 < OJ ≤ 8     → Ⅱ度深覆盖
-            OJ > 8         → Ⅲ度深覆盖
+    将 cell labels 转换为“是否属于目标牙位”的 mask。
+    - 优先假设 label_kind == 'Label' 即 FDI 数字编码（11..28, 31..48）
+    - 如果拿到的是 'Label_ios'，用 cfg['vtp_label_ios_to_fdi'] 做映射
     """
-    def _star_or_m(tooth: str) -> Tuple[List[str], Optional[np.ndarray]]:
-        labels, pt = _star_mid(landmarks, tooth)  # (ma+da)/2；若缺回退 m
-        return (labels if labels else [f"{tooth}m"]), pt
+    if labels is None:
+        return np.zeros(0, dtype=bool)
+    cfg = cfg or {}
+    kind = (label_kind or '').lower()
+    if kind in ('label', 'tooth', 'toothid'):
+        as_str = np.array([str(int(x)) for x in labels], dtype=object)
+        return np.isin(as_str, list(picked_fdi))
+    if kind in ('label_ios', 'labelios'):
+        mapper = cfg.get('vtp_label_ios_to_fdi')
+        if isinstance(mapper, dict) and mapper:
+            mapped = np.array([str(mapper.get(int(x), '')) for x in labels], dtype=object)
+            return np.isin(mapped, list(picked_fdi))
+        return np.zeros_like(labels, dtype=bool)
+    as_str = np.array([str(int(x)) for x in labels], dtype=object)
+    mask = np.isin(as_str, list(picked_fdi))
+    if mask.any():
+        return mask
+    mapper = cfg.get('vtp_label_ios_to_fdi')
+    if isinstance(mapper, dict) and mapper:
+        mapped = np.array([str(mapper.get(int(x), '')) for x in labels], dtype=object)
+        return np.isin(mapped, list(picked_fdi))
+    return np.zeros_like(labels, dtype=bool)
 
-    # —— 取四个“*”点（或 m 回退）——
-    src11, P11 = _star_or_m('11')
-    src21, P21 = _star_or_m('21')
-    src41, P41 = _star_or_m('41')
-    src31, P31 = _star_or_m('31')
+def _triangles_from_vtp(path: str,
+                        target_fdi: Set[str],
+                        ops: Dict,
+                        cfg: Optional[Dict] = None,
+                        cos_thresh: float = 0.2,
+                        sanity_floor_ratio: float = 0.15) -> Optional[np.ndarray]:
+    """
+    读取 VTP → 三角化 → 统一法向 → 取目标牙位的三角片 → 过滤“唇面”（n·Ŷ > cos_thresh）。
+    返回 (M,3,3) 的三角片坐标；失败时返回 None。
+    """
+    cfg = cfg or {}
+    poly, status = _vtk_read_polydata(path)
+    if poly is None:
+        return None
 
-    # —— 按侧计算 —— 
-    right_val = None
-    left_val  = None
-    detail = {'right': None, 'left': None}
+    polyT = _vtk_triangulate(poly)
+    polyN = _vtk_normals(polyT)
 
-    if P11 is not None and P41 is not None:
-        OJ_R = float(ops['y'](P11) - ops['y'](P41))
-        right_val = OJ_R
-        detail['right'] = {'OJ_R_mm': round(OJ_R, dec), 'sources': {'upper':'11*','lower':'41*','upper_labels':src11,'lower_labels':src41}}
+    label_pref = [str(x) for x in ('Label', 'label', 'Tooth', 'ToothID', 'Label_ios', 'label_ios')]
+    labels, label_used, V, F = _vtk_arrays(polyN, label_pref)
+    if labels is None or V is None or F is None or F.shape[1] != 3:
+        return None
 
-    if P21 is not None and P31 is not None:
-        OJ_L = float(ops['y'](P21) - ops['y'](P31))
-        left_val = OJ_L
-        detail['left'] = {'OJ_L_mm': round(OJ_L, dec), 'sources': {'upper':'21*','lower':'31*','upper_labels':src21,'lower_labels':src31}}
+    mask_teeth = _labels_to_mask(labels, target_fdi, label_used, cfg)
+    if mask_teeth.sum() == 0:
+        mask_teeth = _labels_to_mask(labels, target_fdi, 'Label_ios', cfg)
+        if mask_teeth.sum() == 0:
+            return None
 
-    if right_val is None and left_val is None:
-        return {'summary_text': 'Overjet_前牙覆盖*: 缺失', 'quality': 'missing'}
+    F_sel = F[mask_teeth]
+    T = V[F_sel]
 
-    # —— 选 |OJ| 较大侧 —— 
-    choose_left = (left_val is not None) and (right_val is None or abs(left_val) > abs(right_val) + 1e-9)
-    primary_side = 'left' if choose_left else 'right'
-    OJ = left_val if choose_left else right_val
-    value_mm = round(OJ, dec)
+    Y_hat = _guess_y_axis_from_ops(ops)
+    if Y_hat is None:
+        return None
+    e1 = T[:, 1, :] - T[:, 0, :]
+    e2 = T[:, 2, :] - T[:, 0, :]
+    N = np.cross(e1, e2)
+    nrm = np.linalg.norm(N, axis=1)
+    good = nrm > EPS
+    N[good] = (N[good].T / nrm[good]).T
+    cosv = N @ Y_hat
+    lab = cosv > float(cos_thresh)
+    required = max(int(sanity_floor_ratio * len(T)), 20)
+    if lab.sum() < required:
+        lab = cosv > 0.0
+        if lab.sum() < required:
+            k = max(len(T) // 2, 1)
+            idx = np.argsort(-cosv)
+            sel = np.zeros_like(lab, dtype=bool)
+            sel[idx[:k]] = True
+            lab = sel
 
-    # —— 分度（严格“前不取后取”）——
-    absOJ = abs(OJ)
-    if absOJ <= 0.5:
+    return T[lab] if lab.any() else None
+
+# =========================
+# Overjet — “点到面金标准”实现（自动从 VTP 取唇面）
+# =========================
+
+def _front_trim(
+    T: np.ndarray,
+    ops: Dict,
+    P_upper: np.ndarray,
+    front_band_mm: float = 1.8,
+    x_band_mm: float = 3.5,
+) -> np.ndarray:
+    """
+    收紧候选三角片：前带优先（Y 坐标高的片元），再按与上切缘 x 距离限窗。
+    若裁剪后无片元则回退原集合。
+    """
+    if T is None or len(T) == 0:
+        return T
+    C = T.mean(axis=1)
+    yC = np.array([ops['y'](c) for c in C], dtype=float)
+    y90 = np.quantile(yC, 0.90)
+    mask = yC >= (y90 - float(front_band_mm))
+
+    x0 = float(ops['x'](P_upper))
+    xC = np.array([ops['x'](c) for c in C], dtype=float)
+    mask &= (np.abs(xC - x0) <= float(x_band_mm))
+
+    return T[mask] if mask.any() else T
+
+
+def _ray_triangle_intersect(O: np.ndarray, D: np.ndarray, tri: np.ndarray) -> Optional[Tuple[float, np.ndarray]]:
+    """Möller–Trumbore；返回 (t, Q)，要求 t>=0。D 需为单位向量。"""
+    v0, v1, v2 = tri[0], tri[1], tri[2]
+    e1 = v1 - v0
+    e2 = v2 - v0
+    pvec = np.cross(D, e2)
+    det = float(np.dot(e1, pvec))
+    if abs(det) < 1e-12:
+        return None
+    inv_det = 1.0 / det
+    tvec = O - v0
+    u = float(np.dot(tvec, pvec) * inv_det)
+    if (u < -1e-9) or (u > 1.0 + 1e-9):
+        return None
+    qvec = np.cross(tvec, e1)
+    v = float(np.dot(D, qvec) * inv_det)
+    if (v < -1e-9) or (u + v > 1.0 + 1e-9):
+        return None
+    t = float(np.dot(e2, qvec) * inv_det)
+    if t < 0.0:
+        return None
+    Q = O + t * D
+    return t, Q
+
+def _first_hit_dy_prefer(
+    P_U: np.ndarray,
+    ops: Dict,
+    Y_hat: np.ndarray,
+    triangles: np.ndarray,
+    prefer: str,
+    t_max: float = 50.0,
+) -> Optional[Dict[str, Any]]:
+    """
+    在具备方向先验的情况下发射射线：先尝试 prefer 指定方向，失败再换向。
+    prefer: 'front' → 先 +Ŷ；'back' → 先 -Ŷ。
+    """
+    directions = [('front', +Y_hat), ('back', -Y_hat)]
+    if prefer == 'front':
+        directions = directions[::-1]
+    for label, D in directions:
+        t_best, Q_best = None, None
+        for tri in triangles:
+            hit = _ray_triangle_intersect(P_U, D, tri)
+            if hit is None:
+                continue
+            t, Q = hit
+            if not np.isfinite(t) or t < 0.0 or t > float(t_max):
+                continue
+            if (t_best is None) or (t < t_best):
+                t_best, Q_best = t, Q
+        if t_best is not None:
+            dy = float(ops['y'](P_U) - ops['y'](Q_best))
+            return {'dy': dy, 'Q': Q_best, 'dir': label, 't': float(t_best)}
+    return None
+
+def compute_overjet(
+    landmarks: Dict[str, List[float]],
+    ops: Dict,
+    cfg: Optional[Dict[str, Any]] = None,
+    dec: int = 1
+) -> Dict:
+    """
+    金标准 Overjet：上切缘点 → 下切牙唇面（从 VTP 自动提取）
+      - 右：11m → (41,42) 唇面
+      - 左：21m → (31,32) 唇面
+      - 中线（可选）：(11m+21m)/2 → (31–42) 唇面
+    需要：cfg['vtp_lower_path'] 指向下颌 VTP；若缺失，则回退到旧口径“点到点 y 差”。
+    """
+    cfg = cfg or {}
+    zero_tol = float(cfg.get('overjet_edge_tol_mm', 0.5))
+    baseline = float(cfg.get('overjet_baseline_mm', 0.0))
+    use_mid = bool(cfg.get('overjet_use_midline', False))
+    normal_hi = float(cfg.get('overjet_normal_hi_mm', 3.0))
+    mild_hi = float(cfg.get('overjet_mild_hi_mm', 5.0))
+    moderate_hi = float(cfg.get('overjet_moderate_hi_mm', 8.0))
+    cos_thresh = float(cfg.get('labial_normal_cos_thresh', 0.2))
+    t_guard = float(cfg.get('ray_max_dist_mm', 50.0))
+    front_band = float(cfg.get('labial_front_band_mm', 1.8))
+    x_band = float(cfg.get('labial_x_band_mm', 3.5))
+
+    P11 = _v(landmarks.get('11m'))
+    P21 = _v(landmarks.get('21m'))
+    P41 = _v(landmarks.get('41m'))
+    P31 = _v(landmarks.get('31m'))
+    _, lower41_star = _star_mid(landmarks, '41')
+    _, lower31_star = _star_mid(landmarks, '31')
+    lower_star: Dict[str, Optional[np.ndarray]] = {'41': lower41_star, '31': lower31_star}
+    lower_m: Dict[str, Optional[np.ndarray]] = {'41': P41, '31': P31}
+
+    vtp_lower = cfg.get('vtp_lower_path') or cfg.get('vtp_lower') or cfg.get('vtp_path_lower')
+    T_R = T_L = None
+    if isinstance(vtp_lower, str):
+        T_R = _triangles_from_vtp(vtp_lower, {'41', '42'}, ops, cfg=cfg, cos_thresh=cos_thresh)
+        T_L = _triangles_from_vtp(vtp_lower, {'31', '32'}, ops, cfg=cfg, cos_thresh=cos_thresh)
+    if T_R is not None and P11 is not None:
+        T_R = _front_trim(
+            T_R,
+            ops,
+            P11,
+            front_band_mm=front_band,
+            x_band_mm=x_band,
+        )
+    if T_L is not None and P21 is not None:
+        T_L = _front_trim(
+            T_L,
+            ops,
+            P21,
+            front_band_mm=front_band,
+            x_band_mm=x_band,
+        )
+
+    def _fallback_point_to_point() -> Dict:
+        def _lower_point(tooth: str) -> Optional[np.ndarray]:
+            if tooth not in ('41', '31'):
+                return None
+            pt = lower_m.get(tooth)
+            if pt is not None:
+                return pt
+            cached = lower_star.get(tooth)
+            if cached is not None:
+                return cached
+            _, p = _star_mid(landmarks, tooth)
+            lower_star[tooth] = p
+            return p
+
+        P41_ref = _lower_point('41')
+        P31_ref = _lower_point('31')
+        right = (float(ops['y'](P11) - ops['y'](P41_ref)) - baseline) if (P11 is not None and P41_ref is not None) else None
+        left = (float(ops['y'](P21) - ops['y'](P31_ref)) - baseline) if (P21 is not None and P31_ref is not None) else None
+        if right is None and left is None:
+            return {'summary_text': 'Overjet_前牙覆盖*: 缺失', 'quality': 'missing'}
+        choose_left = (left is not None) and (right is None or abs(left) > abs(right))
+        value = left if choose_left else right
+        side = 'left' if choose_left else 'right'
+        a = abs(value)
+        if a <= zero_tol:
+            cat = '对刃'
+        elif value < -zero_tol:
+            cat = '反覆盖'
+        else:
+            cat = ('正常覆盖' if a <= normal_hi else
+                   'Ⅰ度深覆盖' if a <= mild_hi else
+                   'Ⅱ度深覆盖' if a <= moderate_hi else
+                   'Ⅲ度深覆盖')
+        detail = {
+            'mode': 'point_to_point',
+            'baseline_mm': baseline,
+            'right': {'status': 'ok', 'OJ_mm': round(right, dec)} if right is not None else {'status': 'missing'},
+            'left': {'status': 'ok', 'OJ_mm': round(left, dec)} if left is not None else {'status': 'missing'}
+        }
+        summary = f"Overjet_前牙覆盖*: {abs(round(value, dec))}mm_{cat}"
+        return {
+            'value_mm': round(value, dec),
+            'side_of_max': side,
+            'category': cat,
+            'summary_text': summary,
+            'quality': 'fallback',
+            'detail': detail,
+            'mode': 'point_to_point',
+            'thresholds': {
+                'edge_tol_mm': zero_tol,
+                'normal_hi_mm': normal_hi,
+                'mild_hi_mm': mild_hi,
+                'moderate_hi_mm': moderate_hi,
+            },
+        }
+
+    if (T_R is None) and (T_L is None):
+        return _fallback_point_to_point()
+
+    Y_hat = _guess_y_axis_from_ops(ops)
+    if Y_hat is None or (P11 is None and P21 is None):
+        return _fallback_point_to_point()
+
+    detail: Dict[str, Any] = {'right': None, 'left': None, 'midline': None}
+
+    def _side(
+        PU: Optional[np.ndarray],
+        T: Optional[np.ndarray],
+        lower_star_guess: Optional[np.ndarray],
+        lower_m_guess: Optional[np.ndarray],
+    ) -> Tuple[Optional[float], Dict[str, Any]]:
+        if PU is None or T is None or len(T) == 0:
+            return None, {'status': 'missing_upper_or_surface'}
+        prefer = 'back'
+        ref = lower_star_guess if lower_star_guess is not None else lower_m_guess
+        if ref is not None and PU is not None:
+            prefer = 'back' if ops['y'](PU) >= ops['y'](ref) else 'front'
+        hit = _first_hit_dy_prefer(PU, ops, Y_hat, T, prefer=prefer, t_max=t_guard)
+        if hit is None:
+            return None, {'status': 'ray_no_hit', 't_guard_mm': t_guard, 'baseline_mm': baseline, 'n_tri': int(T.shape[0])}
+        val = float(hit['dy'] - baseline)
+        info = {
+            'status': 'ok',
+            'OJ_mm': round(val, dec),
+            'raw_dy_mm': round(hit['dy'], dec),
+            'dir': hit['dir'],
+            't_mm': round(hit['t'], 3),
+            'baseline_mm': baseline,
+            'n_tri': int(T.shape[0]),
+        }
+        return val, info
+
+    OJ_R, infoR = _side(P11, T_R, lower_star.get('41'), lower_m.get('41')) if T_R is not None else (None, {'status': 'missing_surface'})
+    OJ_L, infoL = _side(P21, T_L, lower_star.get('31'), lower_m.get('31')) if T_L is not None else (None, {'status': 'missing_surface'})
+    detail['right'] = infoR
+    detail['left'] = infoL
+
+    mode_used = 'max_side'
+    primary_side = None
+    OJ_val = None
+    if use_mid and P11 is not None and P21 is not None:
+        Pmid = 0.5 * (P11 + P21)
+        T_all = None
+        if T_R is not None and T_L is not None:
+            T_all = np.concatenate([T_R, T_L], axis=0)
+        elif T_R is not None:
+            T_all = T_R
+        elif T_L is not None:
+            T_all = T_L
+        if T_all is not None:
+            prefer_mid = 'back'
+            lower_mid_ref = None
+            lower_points = [p for p in (lower_m.get('41'), lower_m.get('31'), lower_star.get('41'), lower_star.get('31')) if p is not None]
+            if lower_points:
+                lower_mid_ref = np.mean(lower_points, axis=0)
+            if lower_mid_ref is not None:
+                prefer_mid = 'back' if ops['y'](Pmid) >= ops['y'](lower_mid_ref) else 'front'
+            hitM = _first_hit_dy_prefer(Pmid, ops, Y_hat, T_all, prefer=prefer_mid, t_max=t_guard)
+            if hitM is not None:
+                OJ_mid = float(hitM['dy'] - baseline)
+                detail['midline'] = {
+                    'status': 'ok',
+                    'OJ_mid_mm': round(OJ_mid, dec),
+                    'raw_dy_mm': round(hitM['dy'], dec),
+                    'dir': hitM['dir'],
+                    't_mm': round(hitM['t'], 3),
+                    'baseline_mm': baseline,
+                    'n_tri': int(T_all.shape[0]),
+                }
+                mode_used = 'midline'
+                primary_side = 'midline'
+                OJ_val = OJ_mid
+
+    if OJ_val is None:
+        pairs: List[Tuple[str, float]] = []
+        if isinstance(OJ_R, (int, float)):
+            pairs.append(('right', OJ_R))
+        if isinstance(OJ_L, (int, float)):
+            pairs.append(('left', OJ_L))
+        if not pairs:
+            return _fallback_point_to_point()
+        pairs.sort(key=lambda kv: (abs(kv[1]), 0 if kv[0] == 'right' else 1), reverse=True)
+        primary_side, OJ_val = pairs[0]
+
+    value_mm = round(float(OJ_val), dec)
+    a = abs(float(OJ_val))
+    if a <= zero_tol:
         category = '对刃'
-    elif OJ < -0.5:
+    elif OJ_val < -zero_tol:
         category = '反覆盖'
     else:
-        # OJ > 0.5 → 正覆盖
-        if OJ <= 3:
-            category = '轻度覆盖'
-        elif OJ <= 5:        # 3 < OJ ≤ 5
-            category = 'Ⅰ度深覆盖'
-        elif OJ <= 8:        # 5 < OJ ≤ 8
-            category = 'Ⅱ度深覆盖'
-        else:                 # OJ > 8
-            category = 'Ⅲ度深覆盖'
+        category = ('正常覆盖' if a <= normal_hi else
+                    'Ⅰ度深覆盖' if a <= mild_hi else
+                    'Ⅱ度深覆盖' if a <= moderate_hi else
+                    'Ⅲ度深覆盖')
 
-    summary = f"Overjet_前牙覆盖*: {abs(round(value_mm, dec))}mm_{category}"
-    quality = 'ok' if (right_val is not None and left_val is not None) else 'fallback'
-
+    quality = 'ok' if (isinstance(OJ_R, (int, float)) and isinstance(OJ_L, (int, float))) else 'fallback'
+    summary = f"Overjet_前牙覆盖*: {abs(value_mm):.{dec}f}mm_{category}"
     return {
         'value_mm': value_mm,
         'side_of_max': primary_side,
         'category': category,
         'summary_text': summary,
         'quality': quality,
-        'detail': detail
+        'detail': detail,
+        'mode': mode_used,
+        'thresholds': {
+            'edge_tol_mm': zero_tol,
+            'normal_hi_mm': normal_hi,
+            'mild_hi_mm': mild_hi,
+            'moderate_hi_mm': moderate_hi,
+        },
     }
 
-# =========================
-# 报告行（brief） & 公开接口
-# =========================
 def _fmt_suffix(ok: bool) -> str: return '' if ok else ' ⚠️'
 
-def make_brief_report(landmarks: Dict[str, List[float]], frame_ops: Dict[str, Any]) -> List[str]:
+def make_brief_report(
+    landmarks: Dict[str, List[float]],
+    frame_ops: Dict[str, Any],
+    cfg: Optional[Dict[str, Any]] = None
+) -> List[str]:
     frame, ops, wt = frame_ops['frame'], frame_ops['ops'], frame_ops['wt']
     wt_records = frame_ops.get('wt_records') or {}
-
-    arch_form = compute_arch_form(landmarks, frame, ops)
+    cfg = cfg or {}
+    arch_form = compute_arch_form(landmarks, frame, ops, cfg=cfg)
     arch_width = compute_arch_width(landmarks, ops, cfg=cfg)
     bolton = compute_bolton(landmarks, ops, wt, wt_records=wt_records)
-    canine = compute_canine_relationship(landmarks, ops)
+    canine = compute_canine_relationship(landmarks, ops, cfg=cfg)
     crossbite = compute_crossbite(landmarks, ops)
     crowding = compute_crowding(landmarks, ops, wt)
     spee_info = compute_spee(landmarks, ops)
     midline = compute_midline_alignment(landmarks, ops)
-    molar = compute_molar_relationship(landmarks, ops, wt)
-    ob = compute_overbite(landmarks, ops)
-    oj = compute_overjet(landmarks, ops)
+    molar = compute_molar_relationship(landmarks, ops, wt, cfg=cfg)
+    ob = compute_overbite(landmarks, ops, cfg=cfg)
+    oj = compute_overjet(landmarks, ops, cfg=cfg)
 
     spee_val = spee_info.get('value_mm')
     spee_text = ('%.1fmm' % spee_val) if isinstance(spee_val, (int, float)) else '缺失'
@@ -1993,11 +2280,117 @@ def _load_landmarks_json(path: Optional[Union[str, os.PathLike, Dict[str, Any]]]
                     parsed = None
                 if isinstance(parsed, dict):
                     _ingest_mapping(parsed)
-            _ingest_mapping(data)
+        _ingest_mapping(data)
     return out
 
-def _merge_landmarks(*dicts: Dict[str, List[float]]) -> Dict[str, List[float]]:
-    out = {};  [out.update(d or {}) for d in dicts];  return out
+# =========================
+# Emergency polarity hotfix — 仅在“强证据”下互换 mc↔dc（前牙）
+# =========================
+def _apply_polarity_hotfix(
+    landmarks: Dict[str, List[float]],
+    ops: Dict[str, Any],
+    cfg: Optional[Dict[str, Any]] = None
+) -> Tuple[Dict[str, List[float]], Dict[str, Any]]:
+    """
+    无需 GT 的极性热修补：
+      对每颗前牙 t，比较邻接一致性分数：
+        as_is   = H(t.mc, M.dc) + H(t.dc, D.mc)
+        swapped = H(t.dc, M.dc) + H(t.mc, D.mc)
+      同时要求 X 轴次序违例（象限期望相反且越界>tol）。
+      仅当 gain>=gain_min 且 swapped<=swap_max 时才互换 mc↔dc。
+    只作用 1–3 号牙；邻牙点缺失则跳过。
+    """
+    cfg = cfg or {}
+    enable = bool(cfg.get("polarity_hotfix_enable", True))
+    H = ops.get("H") if isinstance(ops, dict) else None
+    X = ops.get("x") if isinstance(ops, dict) else None
+    if (not enable) or (H is None) or (X is None) or (not callable(H)) or (not callable(X)):
+        return landmarks, {"applied": False, "changes": {}, "reason": "disabled_or_ops_missing"}
+
+    gain_min = float(cfg.get("polarity_gain_min_mm", 4.0))
+    swap_max = float(cfg.get("polarity_swapped_score_max_mm", 3.0))
+    x_tol = float(cfg.get("polarity_x_tol_mm", 0.6))
+
+    def _digits(t: str) -> Optional[Tuple[int, int]]:
+        ds = "".join(ch for ch in t if ch.isdigit())
+        if len(ds) >= 2:
+            return int(ds[-2]), int(ds[-1])
+        return None
+
+    def _quadrant(t: str) -> Optional[int]:
+        d = _digits(t)
+        return d[0] if d else None
+
+    def _mesial_distal_neighbors(t: str) -> Tuple[Optional[str], Optional[str]]:
+        d = _digits(t)
+        if not d:
+            return None, None
+        q, n = d
+        if n == 1:
+            across = {1: "21", 2: "11", 3: "41", 4: "31"}.get(q)
+            mesial = across
+            distal = f"{q}{n + 1}" if n < 7 else None
+        else:
+            mesial = f"{q}{n - 1}"
+            distal = f"{q}{n + 1}" if n < 7 else None
+        return mesial, distal
+
+    def _get(lbl: str) -> Optional[np.ndarray]:
+        return _v(landmarks.get(lbl))
+
+    target_teeth = [f"{q}{n}" for q in (1, 2, 3, 4) for n in (1, 2, 3)]
+
+    new_map = dict(landmarks)
+    changes: Dict[str, Any] = {}
+
+    for t in target_teeth:
+        mc = _get(f"{t}mc")
+        dc = _get(f"{t}dc")
+        if mc is None or dc is None:
+            continue
+
+        M, D = _mesial_distal_neighbors(t)
+        if not M or not D:
+            continue
+        Mdc = _get(f"{M}dc")
+        Dmc = _get(f"{D}mc")
+        if Mdc is None or Dmc is None:
+            continue
+
+        try:
+            as_is = float(H(mc, Mdc) + H(dc, Dmc))
+            swapped = float(H(dc, Mdc) + H(mc, Dmc))
+        except Exception:
+            continue
+
+        gain = as_is - swapped
+        q = _quadrant(t)
+        if q is None:
+            continue
+        expect_mc_less = q in (1, 4)
+        dx = float(X(mc) - X(dc))
+        x_bad = (dx > x_tol) if expect_mc_less else (dx < -x_tol)
+
+        if (gain >= gain_min) and (swapped <= swap_max) and x_bad:
+            new_map[f"{t}mc"], new_map[f"{t}dc"] = new_map[f"{t}dc"], new_map[f"{t}mc"]
+            changes[t] = {
+                "action": "swap_mc_dc",
+                "gain_mm": round(gain, 2),
+                "as_is_mm": round(as_is, 2),
+                "swapped_mm": round(swapped, 2),
+                "x_mc_minus_dc_mm": round(dx, 2),
+                "x_expect": "mc<dc" if expect_mc_less else "mc>dc",
+            }
+
+    return new_map, {
+        "applied": bool(changes),
+        "changes": changes,
+        "thresholds": {
+            "gain_min_mm": gain_min,
+            "swapped_score_max_mm": swap_max,
+            "x_tol_mm": x_tol,
+        },
+    }
 
 # ---- Public API ----
 def make_doctor_cn_simple(
@@ -2013,17 +2406,17 @@ def make_doctor_cn_simple(
     wt_records = frame_ops.get('wt_records') or {}
     extended = bool(cfg.get('include_extended_fields', False))
 
-    arch_form = compute_arch_form(landmarks, frame, ops)
+    arch_form = compute_arch_form(landmarks, frame, ops, cfg=cfg)
     arch_width = compute_arch_width(landmarks, ops, cfg=cfg)
     bolton = compute_bolton(landmarks, ops, wt, wt_records=wt_records)
-    canine = compute_canine_relationship(landmarks, ops)
+    canine = compute_canine_relationship(landmarks, ops, cfg=cfg)
     crossbite = compute_crossbite(landmarks, ops)
     crowding = compute_crowding(landmarks, ops, wt)
     spee_info = compute_spee(landmarks, ops, cfg=cfg)
     midline = compute_midline_alignment(landmarks, ops)
-    molar = compute_molar_relationship(landmarks, ops, wt)
-    overbite = compute_overbite(landmarks, ops)
-    overjet = compute_overjet(landmarks, ops)
+    molar = compute_molar_relationship(landmarks, ops, wt, cfg=cfg)
+    overbite = compute_overbite(landmarks, ops, cfg=cfg)
+    overjet = compute_overjet(landmarks, ops, cfg=cfg)
 
     def _ok(d: Any, key: Optional[str] = None) -> bool:
         if not isinstance(d, dict):
@@ -2329,7 +2722,6 @@ def _collect_landmarks(sources: Iterable[Any]) -> Dict[str, List[float]]:
         merged.update(lm)
     return merged
 
-
 def generate_metrics(
     landmarks_payload: Union[Dict[str, Any], List[Any], Tuple[Any, ...], str, os.PathLike],
     out_path: str = "",
@@ -2345,27 +2737,46 @@ def generate_metrics(
         landmarks = _load_landmarks_json(landmarks_payload)
     return _generate_metrics_from_landmarks(landmarks, out_path=out_path, cfg=cfg)
 
-
 def _generate_metrics_from_landmarks(
     landmarks: Dict[str, List[float]],
     out_path: str = "",
     cfg: Optional[Dict] = None
 ) -> Dict:
-    # 2) 前置坐标系（严格 I/L/R）
-    frame_ops = build_module0(landmarks)
-    if frame_ops.get('frame') is None or frame_ops.get('ops') is None:
+    landmarks = dict(landmarks or {})
+    cfg = dict(cfg) if cfg else {}
+
+    # 0) 极性快检：提前矫正明显的 mc↔dc 对调
+    polarity_log = _apply_polarity_guard(landmarks, cfg)
+    if polarity_log:
+        cfg.setdefault('polarity_guard_log', []).extend(polarity_log)
+
+    # 1) 先用（可能已修正的）点建坐标系，供热修补判定用
+    frame_ops0 = build_module0(landmarks)
+    if frame_ops0.get('frame') is None or frame_ops0.get('ops') is None:
         kv = {"错误": "坐标系缺失，无法生成报告"}
         if out_path:
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(kv, f, ensure_ascii=False, indent=2)
         return kv
 
-    cfg = cfg or {}
-    # 仅保留中文医生端键值对输出，统一口径。
-    kv = make_doctor_cn_simple(landmarks, frame_ops, cfg=cfg)
-    kv.pop('warnings', None)
+    # 2) 紧急极性热修补（默认关闭，可由 cfg['polarity_hotfix_enable'] 控制）
+    hotfix_enabled = bool(cfg.get('polarity_hotfix_enable', False))
+    if hotfix_enabled:
+        landmarks_fixed, hotfix_info = _apply_polarity_hotfix(landmarks, frame_ops0['ops'], cfg)
+    else:
+        landmarks_fixed = landmarks
+        hotfix_info = {"applied": False, "changes": {}, "reason": "disabled"}
 
-    # 4) 可选落盘
+    # 3) 用修补后的点重建坐标/算指标
+    frame_ops = build_module0(landmarks_fixed)
+
+    kv = make_doctor_cn_simple(landmarks_fixed, frame_ops, cfg=cfg)
+    kv.pop('warnings', None)
+    if polarity_log:
+        kv['Polarity_Guard_Log'] = polarity_log
+    if cfg.get('include_extended_fields'):
+        kv['Polarity_Hotfix'] = hotfix_info
+
     if out_path:
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(kv, f, ensure_ascii=False, indent=2)
@@ -2404,6 +2815,27 @@ if __name__ == "__main__":
         help="一个或多个点位来源（支持 dots.json、Slicer Markups JSON 等路径）。",
     )
     ap.add_argument("--out", required=True, help="输出 JSON 路径")
+    ap.add_argument(
+        "--overbite-midline",
+        action="store_true",
+        help="使用中线（上下中切平均）计算前牙覆𬌗，取代左右最大值。",
+    )
+    ap.add_argument(
+        "--no-overbite-ch-ratio",
+        action="store_true",
+        help="禁用冠高比值口径，始终按绝对毫米阈值分度前牙覆𬌗。",
+    )
+    ap.add_argument(
+        "--overbite-edge-tol-mm",
+        type=float,
+        default=0.5,
+        help="对刃判定的容差（默认 0.5mm）。",
+    )
     args = ap.parse_args()
-    kv = generate_metrics(args.sources, out_path=args.out)
+    cfg = {
+        "overbite_use_midline": args.overbite_midline,
+        "overbite_use_ch_ratio": not args.no_overbite_ch_ratio,
+        "overbite_edge_tol_mm": args.overbite_edge_tol_mm,
+    }
+    kv = generate_metrics(args.sources, out_path=args.out, cfg=cfg)
     print(f"saved to: {args.out} ({len(kv)} items)")
